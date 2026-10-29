@@ -283,12 +283,12 @@ impl Default for AppConfig {
                 mainland: vec![
                     "udp://223.5.5.5:53".to_string(),
                     "udp://119.29.29.29:53".to_string(),
-                    "https://223.5.5.5/dns-query -host-name dns.alidns.com".to_string(),
-                    "https://101.226.4.6/dns-query -host-name doh.360.cn".to_string(),
+                    "https://223.5.5.5/dns-query#sni=dns.alidns.com".to_string(),
+                    "https://101.226.4.6/dns-query#sni=doh.360.cn".to_string(),
                 ],
                 gfw: vec![
-                    "https://8.8.8.8/dns-query -host-name dns.google -proxy default".to_string(),
-                    "https://cloudflare-dns.com/dns-query".to_string(),
+                    "https://8.8.8.8/dns-query#sni=dns.google&proxy=default".to_string(),
+                    "https://cloudflare-dns.com/dns-query#proxy=default".to_string(),
                     "udp://8.8.8.8:53".to_string(),
                 ],
                 overseas: vec![

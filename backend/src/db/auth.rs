@@ -48,6 +48,7 @@ impl AuthManager {
     }
 
     pub fn authenticate(conn: &Connection, username: &str, password: &str) -> Result<Option<(String, String)>, String> {
+        let _ = Self::init_tables(conn);
         let mut stmt = conn
             .prepare("SELECT password_hash, salt FROM users WHERE username = ?1")
             .map_err(|e| e.to_string())?;
@@ -77,6 +78,7 @@ impl AuthManager {
     }
 
     pub fn validate_token(conn: &Connection, token: &str) -> Option<String> {
+        let _ = Self::init_tables(conn);
         let now = Utc::now().to_rfc3339();
         conn.query_row(
             "SELECT username FROM sessions WHERE token = ?1 AND expires_at > ?2",
@@ -91,6 +93,7 @@ impl AuthManager {
     }
 
     pub fn change_password(conn: &Connection, username: &str, old_pass: &str, new_pass: &str) -> Result<(), String> {
+        let _ = Self::init_tables(conn);
         if new_pass.len() < 6 {
             return Err("新密码长度不能少于 6 位".to_string());
         }

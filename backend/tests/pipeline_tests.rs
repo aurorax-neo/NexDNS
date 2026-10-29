@@ -79,23 +79,27 @@ fn test_upstream_server_parsing() {
     assert_eq!(s1.host_name, None);
     assert_eq!(s1.proxy, None);
 
-    // DoH with -host-name
-    let s2 = UpstreamServer::parse("mainland", "https://101.226.4.6/dns-query -host-name doh.360.cn").unwrap();
+    // DoH with NexDNS native URI fragment #sni=doh.360.cn
+    let s2 = UpstreamServer::parse("mainland", "https://101.226.4.6/dns-query#sni=doh.360.cn").unwrap();
     assert_eq!(s2.protocol, UpstreamProtocol::Doh);
     assert_eq!(s2.addr, "https://101.226.4.6/dns-query");
     assert_eq!(s2.host_name.as_deref(), Some("doh.360.cn"));
     assert_eq!(s2.proxy, None);
 
-    // DoH with -host-name and -proxy
-    let s3 = UpstreamServer::parse("gfw", "https://8.8.8.8/dns-query -host-name dns.google -proxy default").unwrap();
+    // DoH with NexDNS native URI fragment #sni=...&proxy=...
+    let s3 = UpstreamServer::parse("gfw", "https://8.8.8.8/dns-query#sni=dns.google&proxy=default").unwrap();
     assert_eq!(s3.protocol, UpstreamProtocol::Doh);
     assert_eq!(s3.host_name.as_deref(), Some("dns.google"));
     assert_eq!(s3.proxy.as_deref(), Some("default"));
 
-    // TCP with -proxy
-    let s4 = UpstreamServer::parse("overseas", "tcp://1.1.1.1:53 -proxy local_clash").unwrap();
+    // TCP with NexDNS native URI fragment #proxy=...
+    let s4 = UpstreamServer::parse("overseas", "tcp://1.1.1.1:53#proxy=local_clash").unwrap();
     assert_eq!(s4.protocol, UpstreamProtocol::Tcp);
     assert_eq!(s4.proxy.as_deref(), Some("local_clash"));
+
+    // Fallback compatibility with -host-name
+    let s5 = UpstreamServer::parse("mainland", "https://101.226.4.6/dns-query -host-name doh.360.cn").unwrap();
+    assert_eq!(s5.host_name.as_deref(), Some("doh.360.cn"));
 }
 
 #[test]

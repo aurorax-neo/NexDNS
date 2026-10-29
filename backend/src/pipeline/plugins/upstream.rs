@@ -29,7 +29,12 @@ pub struct UpstreamServer {
 
 impl UpstreamServer {
     pub fn parse(tag: &str, raw: &str) -> Option<Self> {
-        let mut parts = raw.split_whitespace();
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let mut parts = trimmed.split_whitespace();
         let mut uri = String::new();
         let mut host_name: Option<String> = None;
         let mut proxy: Option<String> = None;
@@ -37,7 +42,7 @@ impl UpstreamServer {
         while let Some(part) = parts.next() {
             if part == "server-https" || part == "server-tcp" || part == "server-udp" {
                 continue;
-            } else if part == "-host-name" {
+            } else if part == "-host-name" || part == "-sni" {
                 if let Some(h) = parts.next() {
                     host_name = Some(h.to_string());
                 }
@@ -56,11 +61,33 @@ impl UpstreamServer {
             return None;
         }
 
-        if host_name.is_none() {
-            if let Some(pos) = uri.find('#') {
-                let frag = uri[pos + 1..].to_string();
-                uri.truncate(pos);
-                host_name = Some(frag);
+        // Support NexDNS native URI fragment metadata:
+        // e.g. https://101.226.4.6/dns-query#sni=doh.360.cn&proxy=default
+        // or e.g. https://101.226.4.6/dns-query#doh.360.cn
+        if let Some(pos) = uri.find('#') {
+            let frag = uri[pos + 1..].to_string();
+            uri.truncate(pos);
+
+            if frag.contains('=') {
+                for pair in frag.split('&') {
+                    if let Some((k, v)) = pair.split_once('=') {
+                        match k.trim() {
+                            "sni" | "host" => {
+                                if host_name.is_none() {
+                                    host_name = Some(v.trim().to_string());
+                                }
+                            }
+                            "proxy" => {
+                                if proxy.is_none() {
+                                    proxy = Some(v.trim().to_string());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            } else if !frag.trim().is_empty() && host_name.is_none() {
+                host_name = Some(frag.trim().to_string());
             }
         }
 

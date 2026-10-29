@@ -54,13 +54,19 @@ export const UpstreamsPage: React.FC = () => {
     if (!newAddr.trim()) return;
     try {
       let finalAddr = newAddr.trim();
+      const params: string[] = [];
       if (newHostName.trim()) {
-        finalAddr += ` -host-name ${newHostName.trim()}`;
+        params.push(`sni=${newHostName.trim()}`);
       }
       if (newProxyMode !== 'default') {
-        finalAddr += ` -proxy ${newProxyMode}`;
+        if (newProxyMode !== 'none' || targetGroup !== 'mainland') {
+          params.push(`proxy=${newProxyMode}`);
+        }
       } else if (targetGroup !== 'mainland') {
-        finalAddr += ' -proxy default';
+        params.push('proxy=default');
+      }
+      if (params.length > 0) {
+        finalAddr += `#${params.join('&')}`;
       }
       await api.addUpstream(targetGroup, finalAddr);
       setIsAddModalOpen(false);
@@ -93,17 +99,35 @@ export const UpstreamsPage: React.FC = () => {
   };
 
   const parseUpstreamEntry = (raw: string) => {
-    const parts = raw.split(/\s+/);
-    let uri = parts[0] || '';
+    let cleanStr = raw.trim();
     let hostName: string | null = null;
     let proxy: string | null = null;
 
+    // Support NexDNS native URI fragment metadata: #sni=...&proxy=...
+    if (cleanStr.includes('#')) {
+      const [base, frag] = cleanStr.split('#', 2);
+      cleanStr = base;
+      if (frag.includes('=')) {
+        for (const pair of frag.split('&')) {
+          const [k, v] = pair.split('=', 2);
+          if (k === 'sni' || k === 'host') hostName = v.trim();
+          if (k === 'proxy') proxy = v.trim();
+        }
+      } else if (frag.trim()) {
+        hostName = frag.trim();
+      }
+    }
+
+    // Backward compatibility for CLI flags
+    const parts = cleanStr.split(/\s+/);
+    let uri = parts[0] || '';
+
     for (let i = 1; i < parts.length; i++) {
-      if (parts[i] === '-host-name' && i + 1 < parts.length) {
-        hostName = parts[i + 1];
+      if ((parts[i] === '-host-name' || parts[i] === '-sni') && i + 1 < parts.length) {
+        if (!hostName) hostName = parts[i + 1];
         i++;
       } else if (parts[i] === '-proxy' && i + 1 < parts.length) {
-        proxy = parts[i + 1];
+        if (!proxy) proxy = parts[i + 1];
         i++;
       }
     }
@@ -325,13 +349,13 @@ export const UpstreamsPage: React.FC = () => {
 
           <div>
             <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
-              自定义主机名 / SNI (可选，用于 IP 直连 DoH)
+              自定义 SNI / 主机名 (可选，直连 DoH 节点)
             </label>
             <input
               type="text"
               value={newHostName}
               onChange={(e) => setNewHostName(e.target.value)}
-              placeholder="例如: doh.360.cn (若地址填了 IP，则用于 TLS SNI 和 Host 头)"
+              placeholder="例如: doh.360.cn (将自动组装为原生 URI: #sni=doh.360.cn)"
               className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-cyan-500"
             />
           </div>

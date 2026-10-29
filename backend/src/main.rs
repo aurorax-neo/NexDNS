@@ -63,9 +63,15 @@ async fn main() -> anyhow::Result<()> {
     }
     let config = Arc::new(cfg);
 
+    let db_path = cli.config
+        .parent()
+        .map(|p| p.join("nexdns.db"))
+        .unwrap_or_else(|| std::path::PathBuf::from("data/nexdns.db"));
+    let db_path_str = db_path.to_string_lossy().to_string();
+
     // Init DB
-    let db = Database::init("data/nexdns.db")?;
-    tracing::info!("SQLite WAL 数据库初始化成功 (data/nexdns.db)");
+    let db = Database::init(&db_path)?;
+    tracing::info!("SQLite WAL 数据库初始化成功 ({})", db_path_str);
 
     // Init Metrics
     let metrics = MetricsCollector::new();
@@ -141,10 +147,15 @@ async fn main() -> anyhow::Result<()> {
     // 6. Plugins: IP Registry
     let ip_registry = Arc::new(IpListRegistry::new());
 
+    let rules_dir = cli.config
+        .parent()
+        .map(|p| p.join("rules"))
+        .unwrap_or_else(|| std::path::PathBuf::from("data/rules"));
+
     // Rule File Manager (loads direct.txt, proxy.txt, private.txt, ipv4_china.txt from data/rules)
     let rule_manager = Arc::new(RuleFileManager::new(
-        "data/rules",
-        "data/nexdns.db",
+        rules_dir,
+        &db_path_str,
         domain_registry.clone(),
         ip_registry.clone(),
     ));

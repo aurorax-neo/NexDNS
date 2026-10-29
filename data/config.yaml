@@ -16,10 +16,11 @@ upstreams:
   mainland:
   - udp://223.5.5.5:53
   - udp://119.29.29.29:53
-  - https://dns.alidns.com/dns-query
+  - https://223.5.5.5/dns-query#sni=dns.alidns.com
+  - https://101.226.4.6/dns-query#sni=doh.360.cn
   gfw:
-  - https://dns.google/dns-query
-  - https://cloudflare-dns.com/dns-query
+  - https://8.8.8.8/dns-query#sni=dns.google&proxy=default
+  - https://cloudflare-dns.com/dns-query#proxy=default
   - udp://8.8.8.8:53
   overseas:
   - udp://1.1.1.1:53

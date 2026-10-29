@@ -17,6 +17,7 @@ export interface OverviewPageProps {
 export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -26,6 +27,12 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
     } catch (e) {
       console.error('Failed to fetch overview data', e);
     }
+  };
+
+  const handleManualRefresh = async () => {
+    setIsRefreshing(true);
+    await fetchData();
+    setTimeout(() => setIsRefreshing(false), 700);
   };
 
   useEffect(() => {
@@ -73,19 +80,12 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={fetchData}
-            className="inline-flex items-center gap-1.5 min-h-[36px] px-3 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors"
+            onClick={handleManualRefresh}
+            disabled={isRefreshing}
+            className="inline-flex items-center gap-1.5 min-h-[36px] px-3.5 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-all active:scale-95 disabled:opacity-75"
           >
-            <RefreshCw className="w-3.5 h-3.5 align-icon" />
+            <RefreshCw className={`w-3.5 h-3.5 align-icon ${isRefreshing ? 'animate-spin' : ''}`} />
             刷新
-          </button>
-          <button
-            type="button"
-            onClick={() => onNavigate('pipeline')}
-            className="inline-flex items-center gap-1.5 min-h-[36px] px-3 text-xs text-cyan-700 dark:text-cyan-300 hover:text-cyan-800 dark:hover:text-cyan-200 bg-cyan-50 dark:bg-cyan-950/40 border border-cyan-200 dark:border-cyan-800/60 rounded-md transition-colors"
-          >
-            查看流水线
-            <ArrowUpRight className="w-3.5 h-3.5 align-icon" />
           </button>
         </div>
       </div>

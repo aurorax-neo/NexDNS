@@ -1,22 +1,28 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use crate::pipeline::plugins::domain_match::{DomainListRegistry, DomainMatcher};
 use crate::pipeline::plugins::ip_match::{IpListRegistry, IpMatcher};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RuleFileInfo {
+    pub id: String,
     pub name: String,
     pub file_name: String,
+    pub group_type: String, // "mainland", "gfw", "private", "china_ip"
     pub count: usize,
     pub size_bytes: u64,
     pub updated_at: String,
     pub url: String,
+    pub enabled: bool,
 }
 
 pub struct RuleFileManager {
     base_dir: PathBuf,
+    db_path: String,
     domain_registry: Arc<DomainListRegistry>,
     ip_registry: Arc<IpListRegistry>,
 }
@@ -24,75 +30,150 @@ pub struct RuleFileManager {
 impl RuleFileManager {
     pub fn new<P: AsRef<Path>>(
         base_dir: P,
+        db_path: &str,
         domain_registry: Arc<DomainListRegistry>,
         ip_registry: Arc<IpListRegistry>,
     ) -> Self {
         let p = base_dir.as_ref().to_path_buf();
         let _ = fs::create_dir_all(&p);
-        Self {
+        let s = Self {
             base_dir: p,
+            db_path: db_path.to_string(),
             domain_registry,
             ip_registry,
-        }
+        };
+        let _ = s.init_db();
+        s
     }
 
-    pub fn list_rules(&self) -> Vec<RuleFileInfo> {
-        let defaults = vec![
-            (
-                "大陆直连域名 (direct.txt)",
-                "direct.txt",
-                "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/direct.txt",
-            ),
-            (
-                "代理过滤域名 (proxy.txt)",
-                "proxy.txt",
-                "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/proxy.txt",
-            ),
-            (
-                "局域私有域名 (private.txt)",
-                "private.txt",
-                "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/private.txt",
-            ),
-            (
-                "中国 IPv4 网段 (ipv4_china.txt)",
-                "ipv4_china.txt",
-                "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/ipv4_china.txt",
-            ),
-            (
-                "中国 IPv6 网段 (ipv6_china.txt)",
-                "ipv6_china.txt",
-                "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/ipv6_china.txt",
-            ),
-        ];
+    fn get_conn(&self) -> rusqlite::Result<Connection> {
+        Connection::open(&self.db_path)
+    }
 
-        let mut result = Vec::new();
-        for (name, file_name, url) in defaults {
-            let file_path = self.base_dir.join(file_name);
-            let (count, size, updated) = if file_path.exists() {
-                let metadata = fs::metadata(&file_path).ok();
-                let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-                let updated = metadata
-                    .and_then(|m| m.modified().ok())
-                    .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
-                    .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    fn init_db(&self) -> rusqlite::Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS routing_rule_files (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                file_name TEXT NOT NULL UNIQUE,
+                group_type TEXT NOT NULL,
+                url TEXT,
+                enabled INTEGER NOT NULL,
+                line_count INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            );"
+        )?;
+
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM routing_rule_files", [], |r| r.get(0))?;
+        if count == 0 {
+            let defaults = vec![
+                ("大陆直连主规则 (direct.txt)", "direct.txt", "mainland", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/direct.txt"),
+                ("代理过滤主规则 (proxy.txt)", "proxy.txt", "gfw", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/proxy.txt"),
+                ("局域私有域名 (private.txt)", "private.txt", "private", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/private.txt"),
+                ("中国 IPv4 地址段 (ipv4_china.txt)", "ipv4_china.txt", "china_ip", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/ipv4_china.txt"),
+                ("中国 IPv6 地址段 (ipv6_china.txt)", "ipv6_china.txt", "china_ip", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/ipv6_china.txt"),
+            ];
+
+            for (name, file_name, group_type, url) in defaults {
+                let id = Uuid::new_v4().to_string();
+                let file_path = self.base_dir.join(file_name);
+                let size = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
                 let line_count = fs::read_to_string(&file_path)
                     .map(|s| s.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count())
                     .unwrap_or(0);
-                (line_count, size, updated)
-            } else {
-                (0, 0, "-".to_string())
-            };
 
-            result.push(RuleFileInfo {
-                name: name.to_string(),
-                file_name: file_name.to_string(),
-                count,
-                size_bytes: size,
-                updated_at: updated,
-                url: url.to_string(),
-            });
+                let _ = conn.execute(
+                    "INSERT INTO routing_rule_files (id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8)",
+                    params![id, name, file_name, group_type, url, line_count as i64, size as i64, chrono::Utc::now().to_rfc3339()],
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub fn list_rules(&self) -> Vec<RuleFileInfo> {
+        let Ok(conn) = self.get_conn() else {
+            return Vec::new();
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at FROM routing_rule_files ORDER BY group_type ASC, name ASC"
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let rows = stmt.query_map([], |r| {
+            Ok(RuleFileInfo {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                file_name: r.get(2)?,
+                group_type: r.get(3)?,
+                url: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                enabled: r.get::<_, i32>(5)? == 1,
+                count: r.get::<_, i64>(6)? as usize,
+                size_bytes: r.get::<_, i64>(7)? as u64,
+                updated_at: r.get(8)?,
+            })
+        });
+
+        let mut result = Vec::new();
+        if let Ok(it) = rows {
+            for item in it {
+                if let Ok(rf) = item {
+                    result.push(rf);
+                }
+            }
         }
         result
+    }
+
+    pub fn add_rule_file(&self, name: &str, file_name: &str, group_type: &str, url: &str, content: &str) -> anyhow::Result<()> {
+        let file_path = self.base_dir.join(file_name);
+        if !content.is_empty() {
+            fs::write(&file_path, content)?;
+        }
+
+        let size = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+        let line_count = fs::read_to_string(&file_path)
+            .map(|s| s.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count())
+            .unwrap_or(0);
+
+        let conn = self.get_conn()?;
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT OR REPLACE INTO routing_rule_files (id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8)",
+            params![id, name, file_name, group_type, url, line_count as i64, size as i64, chrono::Utc::now().to_rfc3339()],
+        )?;
+
+        self.load_local_rules();
+        Ok(())
+    }
+
+    pub fn toggle_rule_file(&self, id: &str) -> anyhow::Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "UPDATE routing_rule_files SET enabled = (CASE WHEN enabled = 1 THEN 0 ELSE 1 END) WHERE id = ?1",
+            params![id],
+        )?;
+        self.load_local_rules();
+        Ok(())
+    }
+
+    pub fn delete_rule_file(&self, id: &str) -> anyhow::Result<()> {
+        let conn = self.get_conn()?;
+        let file_name: String = conn.query_row(
+            "SELECT file_name FROM routing_rule_files WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        conn.execute("DELETE FROM routing_rule_files WHERE id = ?1", params![id])?;
+        let _ = fs::remove_file(self.base_dir.join(file_name));
+        self.load_local_rules();
+        Ok(())
     }
 
     pub async fn update_rule_file(&self, file_name: &str, url: &str) -> anyhow::Result<usize> {
@@ -106,8 +187,16 @@ impl RuleFileManager {
             .lines()
             .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
             .count();
+        let size = text.len() as u64;
 
-        self.reload_file(file_name, &text);
+        if let Ok(conn) = self.get_conn() {
+            let _ = conn.execute(
+                "UPDATE routing_rule_files SET line_count = ?1, size_bytes = ?2, updated_at = ?3 WHERE file_name = ?4",
+                params![line_count as i64, size as i64, chrono::Utc::now().to_rfc3339(), file_name],
+            );
+        }
+
+        self.load_local_rules();
         Ok(line_count)
     }
 
@@ -115,61 +204,77 @@ impl RuleFileManager {
         let files = self.list_rules();
         let mut res = Vec::new();
         for f in files {
-            match self.update_rule_file(&f.file_name, &f.url).await {
-                Ok(cnt) => res.push((f.file_name, Ok(cnt))),
-                Err(e) => res.push((f.file_name, Err(e.to_string()))),
+            if !f.url.is_empty() && f.url.starts_with("http") {
+                match self.update_rule_file(&f.file_name, &f.url).await {
+                    Ok(cnt) => res.push((f.file_name, Ok(cnt))),
+                    Err(e) => res.push((f.file_name, Err(e.to_string()))),
+                }
             }
         }
         res
     }
 
     pub fn load_local_rules(&self) {
-        let files = [
-            "direct.txt",
-            "proxy.txt",
-            "private.txt",
-            "ipv4_china.txt",
-            "ipv6_china.txt",
-        ];
+        let rules = self.list_rules();
 
-        for f in files {
-            let path = self.base_dir.join(f);
-            if path.exists() {
-                if let Ok(text) = fs::read_to_string(&path) {
-                    self.reload_file(f, &text);
+        let mut direct_text = String::new();
+        let mut proxy_text = String::new();
+        let mut private_text = String::new();
+        let mut china_ipv4_text = String::new();
+        let mut china_ipv6_text = String::new();
+
+        for r in rules {
+            if !r.enabled {
+                continue;
+            }
+            let p = self.base_dir.join(&r.file_name);
+            if let Ok(content) = fs::read_to_string(&p) {
+                match r.group_type.as_str() {
+                    "mainland" => {
+                        direct_text.push_str(&content);
+                        direct_text.push('\n');
+                    }
+                    "gfw" | "proxy" => {
+                        proxy_text.push_str(&content);
+                        proxy_text.push('\n');
+                    }
+                    "private" => {
+                        private_text.push_str(&content);
+                        private_text.push('\n');
+                    }
+                    "china_ip" => {
+                        if r.file_name.contains("ipv6") {
+                            china_ipv6_text.push_str(&content);
+                            china_ipv6_text.push('\n');
+                        } else {
+                            china_ipv4_text.push_str(&content);
+                            china_ipv4_text.push('\n');
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
-    }
 
-    fn reload_file(&self, file_name: &str, text: &str) {
-        match file_name {
-            "direct.txt" => {
-                let mut m = DomainMatcher::new("domain_direct");
-                m.load_from_text(text);
-                self.domain_registry.register(m);
-            }
-            "proxy.txt" => {
-                let mut m = DomainMatcher::new("domain_proxy");
-                m.load_from_text(text);
-                self.domain_registry.register(m);
-            }
-            "private.txt" => {
-                let mut m = DomainMatcher::new("domain_private");
-                m.load_from_text(text);
-                self.domain_registry.register(m);
-            }
-            "ipv4_china.txt" => {
-                let mut m = IpMatcher::new("ipv4_china");
-                m.load_from_text(text);
-                self.ip_registry.register(m);
-            }
-            "ipv6_china.txt" => {
-                let mut m = IpMatcher::new("ipv6_china");
-                m.load_from_text(text);
-                self.ip_registry.register(m);
-            }
-            _ => {}
-        }
+        // Combine into domain and IP registries
+        let mut direct_matcher = DomainMatcher::new("domain_direct");
+        direct_matcher.load_from_text(&direct_text);
+        self.domain_registry.register(direct_matcher);
+
+        let mut proxy_matcher = DomainMatcher::new("domain_proxy");
+        proxy_matcher.load_from_text(&proxy_text);
+        self.domain_registry.register(proxy_matcher);
+
+        let mut private_matcher = DomainMatcher::new("domain_private");
+        private_matcher.load_from_text(&private_text);
+        self.domain_registry.register(private_matcher);
+
+        let mut china_ipv4_matcher = IpMatcher::new("ipv4_china");
+        china_ipv4_matcher.load_from_text(&china_ipv4_text);
+        self.ip_registry.register(china_ipv4_matcher);
+
+        let mut china_ipv6_matcher = IpMatcher::new("ipv6_china");
+        china_ipv6_matcher.load_from_text(&china_ipv6_text);
+        self.ip_registry.register(china_ipv6_matcher);
     }
 }

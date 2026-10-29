@@ -44,7 +44,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="min-h-[38px] min-w-[130px] px-3 py-1.5 flex items-center justify-between gap-2 text-xs rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700/80 text-neutral-800 dark:text-neutral-200 hover:border-neutral-400 dark:hover:border-neutral-600 focus:outline-none transition-colors shadow-xs"
+        className="w-full min-h-[38px] min-w-[130px] px-3 py-1.5 flex items-center justify-between gap-2 text-xs rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700/80 text-neutral-800 dark:text-neutral-200 hover:border-neutral-400 dark:hover:border-neutral-600 focus:outline-none transition-colors shadow-xs"
       >
         <div className="flex items-center gap-1.5 truncate">
           {selectedOption?.badge}

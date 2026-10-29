@@ -4,28 +4,37 @@ import {
   Zap,
   CheckCircle2,
   XCircle,
-  Play,
+  RefreshCw,
   Globe,
   Shield,
   Plus,
   Trash2,
 } from 'lucide-react';
-import { api, UpstreamTestItem, UpstreamsResponse } from '../lib/api';
+import { api, UpstreamTestItem, UpstreamsResponse, ProxyItem } from '../lib/api';
 import { Modal } from '../components/ui/Modal';
 import { Popconfirm } from '../components/ui/Popconfirm';
 import { Snackbar } from '../components/ui/Snackbar';
+import { CustomSelect } from '../components/ui/CustomSelect';
 
 export const UpstreamsPage: React.FC = () => {
   const [upstreams, setUpstreams] = useState<UpstreamsResponse | null>(null);
+  const [proxyList, setProxyList] = useState<ProxyItem[]>([]);
   const [testResults, setTestResults] = useState<UpstreamTestItem[]>([]);
   const [testing, setTesting] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [targetGroup, setTargetGroup] = useState<'mainland' | 'gfw' | 'overseas'>('mainland');
+  const [targetGroup, setTargetGroup] = useState<string>('mainland');
   const [newAddr, setNewAddr] = useState('');
+  const [newHostName, setNewHostName] = useState('');
+  const [newProxyMode, setNewProxyMode] = useState('default');
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
 
   useEffect(() => {
     api.getUpstreams().then(setUpstreams).catch(console.error);
+    api.getSettings().then((s) => {
+      if (s.proxy?.list) {
+        setProxyList(s.proxy.list);
+      }
+    }).catch(console.error);
   }, []);
 
   const handleBenchmark = async () => {
@@ -42,11 +51,22 @@ export const UpstreamsPage: React.FC = () => {
 
   const handleAddUpstream = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newAddr) return;
+    if (!newAddr.trim()) return;
     try {
-      await api.addUpstream(targetGroup, newAddr);
+      let finalAddr = newAddr.trim();
+      if (newHostName.trim()) {
+        finalAddr += ` -host-name ${newHostName.trim()}`;
+      }
+      if (newProxyMode !== 'default') {
+        finalAddr += ` -proxy ${newProxyMode}`;
+      } else if (targetGroup !== 'mainland') {
+        finalAddr += ' -proxy default';
+      }
+      await api.addUpstream(targetGroup, finalAddr);
       setIsAddModalOpen(false);
       setNewAddr('');
+      setNewHostName('');
+      setNewProxyMode('default');
       const updated = await api.getUpstreams();
       setUpstreams(updated);
       setSnackbarMessage('已添加上游服务器');
@@ -72,6 +92,29 @@ export const UpstreamsPage: React.FC = () => {
     return match;
   };
 
+  const parseUpstreamEntry = (raw: string) => {
+    const parts = raw.split(/\s+/);
+    let uri = parts[0] || '';
+    let hostName: string | null = null;
+    let proxy: string | null = null;
+
+    for (let i = 1; i < parts.length; i++) {
+      if (parts[i] === '-host-name' && i + 1 < parts.length) {
+        hostName = parts[i + 1];
+        i++;
+      } else if (parts[i] === '-proxy' && i + 1 < parts.length) {
+        proxy = parts[i + 1];
+        i++;
+      }
+    }
+
+    const isDoh = uri.startsWith('https://');
+    const isTcp = uri.startsWith('tcp://');
+    const proto = isDoh ? 'DoH' : isTcp ? 'TCP' : 'UDP';
+
+    return { uri, hostName, proxy, proto };
+  };
+
   const renderGroup = (title: string, groupKey: 'mainland' | 'gfw' | 'overseas', icon: React.ReactNode, desc: string) => {
     const servers = upstreams ? upstreams[groupKey] : [];
     return (
@@ -92,16 +135,17 @@ export const UpstreamsPage: React.FC = () => {
         <div className="space-y-2.5">
           {servers.map((addr) => {
             const score = getLatencyScore(addr);
-            const isDoh = addr.startsWith('https://');
-            const isTcp = addr.startsWith('tcp://');
-            const proto = isDoh ? 'DoH' : isTcp ? 'TCP' : 'UDP';
+            const { uri, hostName, proxy, proto } = parseUpstreamEntry(addr);
+            const isDoh = proto === 'DoH';
+            const isTcp = proto === 'TCP';
+            const effectiveProxy = proxy || (groupKey === 'mainland' ? 'none' : 'default');
 
             return (
               <div
                 key={addr}
                 className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800/80 hover:border-neutral-300 dark:hover:border-neutral-700 transition-colors"
               >
-                <div className="flex items-center gap-3 min-w-0 pr-3">
+                <div className="flex items-center gap-2 min-w-0 pr-3 flex-wrap">
                   <span
                     className={`px-1.5 py-0.5 text-[10px] font-mono font-bold rounded ${
                       isDoh
@@ -113,7 +157,27 @@ export const UpstreamsPage: React.FC = () => {
                   >
                     {proto}
                   </span>
-                  <span className="font-mono text-xs text-neutral-800 dark:text-neutral-200 truncate">{addr}</span>
+                  <span className="font-mono text-xs text-neutral-800 dark:text-neutral-200 truncate">
+                    {uri}
+                  </span>
+                  {hostName && (
+                    <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-400 border border-cyan-200 dark:border-cyan-800/40 shrink-0">
+                      SNI: {hostName}
+                    </span>
+                  )}
+                  {effectiveProxy === 'none' ? (
+                    <span className="px-1.5 py-0.5 text-[10px] rounded bg-neutral-200/70 dark:bg-surface-3 text-neutral-600 dark:text-neutral-400 shrink-0">
+                      直连
+                    </span>
+                  ) : effectiveProxy === 'default' ? (
+                    <span className="px-1.5 py-0.5 text-[10px] rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800/40 shrink-0">
+                      默认代理
+                    </span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 text-[10px] rounded bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-400 border border-purple-200 dark:border-purple-800/40 shrink-0">
+                      代理: {proxyList.find((p) => p.id === effectiveProxy)?.name || effectiveProxy}
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-3 shrink-0">
@@ -130,7 +194,7 @@ export const UpstreamsPage: React.FC = () => {
                                 : 'text-neutral-400'
                             }`}
                           >
-                            {score.latency_ms! < 1 ? '< 1 ms' : `${score.latency_ms!.toFixed(1)} ms`}
+                            {score.latency_ms! < 0.1 ? '< 0.1 ms' : `${score.latency_ms!.toFixed(1)} ms`}
                           </span>
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 align-icon" />
                         </>
@@ -193,7 +257,7 @@ export const UpstreamsPage: React.FC = () => {
             disabled={testing}
             className="inline-flex items-center gap-2 min-h-[38px] px-4 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md transition-colors shadow-xs disabled:opacity-50"
           >
-            <Play className="w-3.5 h-3.5 align-icon" />
+            <RefreshCw className={`w-3.5 h-3.5 align-icon ${testing ? 'animate-spin' : ''}`} />
             {testing ? '正在并发测试...' : '测试上游连通性与时延'}
           </button>
         </div>
@@ -226,22 +290,23 @@ export const UpstreamsPage: React.FC = () => {
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
         title="添加上游 DNS 节点"
-        size="sm"
+        size="md"
       >
         <form onSubmit={handleAddUpstream} className="space-y-4 text-xs">
           <div>
             <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
               所属分组
             </label>
-            <select
+            <CustomSelect
+              options={[
+                { value: 'mainland', label: '大陆直连组 (mainland)' },
+                { value: 'gfw', label: 'GFW / 境外代理组 (gfw)' },
+                { value: 'overseas', label: '海外备用组 (overseas)' },
+              ]}
               value={targetGroup}
-              onChange={(e) => setTargetGroup(e.target.value as any)}
-              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
-            >
-              <option value="mainland">大陆直连组 (mainland)</option>
-              <option value="gfw">GFW / 境外代理组 (gfw)</option>
-              <option value="overseas">海外备用组 (overseas)</option>
-            </select>
+              onChange={setTargetGroup}
+              className="w-full"
+            />
           </div>
 
           <div>
@@ -252,9 +317,41 @@ export const UpstreamsPage: React.FC = () => {
               type="text"
               value={newAddr}
               onChange={(e) => setNewAddr(e.target.value)}
-              placeholder="例如: https://1.12.12.12/dns-query 或 udp://223.5.5.5:53"
+              placeholder="例如: https://101.226.4.6/dns-query 或 udp://223.5.5.5:53"
               required
-              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              自定义主机名 / SNI (可选，用于 IP 直连 DoH)
+            </label>
+            <input
+              type="text"
+              value={newHostName}
+              onChange={(e) => setNewHostName(e.target.value)}
+              placeholder="例如: doh.360.cn (若地址填了 IP，则用于 TLS SNI 和 Host 头)"
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              代理策略 (Proxy Route)
+            </label>
+            <CustomSelect
+              options={[
+                { value: 'none', label: '直连 (不使用代理)' },
+                { value: 'default', label: '系统默认代理 (推荐)' },
+                ...proxyList.map((p) => ({
+                  value: p.id,
+                  label: `${p.name} (${p.addr})`,
+                })),
+              ]}
+              value={newProxyMode}
+              onChange={setNewProxyMode}
+              className="w-full"
             />
           </div>
 

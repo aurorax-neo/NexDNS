@@ -85,7 +85,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 className="w-full min-h-[40px] pl-9 pr-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:border-cyan-500 transition-colors"
-                placeholder="请输入密码 (默认: admin1234)"
+                placeholder="请输入密码"
               />
             </div>
           </div>
@@ -99,10 +99,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
             <ArrowRight className="w-4 h-4 align-icon" />
           </button>
         </form>
-
-        <div className="text-center text-[11px] text-neutral-400 border-t border-neutral-200 dark:border-neutral-800/80 pt-4">
-          首次部署默认凭据: <span className="font-mono text-neutral-600 dark:text-neutral-300">admin / admin1234</span>
-        </div>
       </div>
     </div>
   );

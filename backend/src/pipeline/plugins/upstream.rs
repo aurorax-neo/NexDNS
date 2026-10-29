@@ -1,6 +1,7 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
+use std::str::FromStr;
 use async_trait::async_trait;
 use futures_util::future::select_ok;
 use tokio::net::{TcpStream, UdpSocket};
@@ -22,44 +23,65 @@ pub struct UpstreamServer {
     pub addr: String,
     pub protocol: UpstreamProtocol,
     pub bootstrap_ip: Option<String>,
+    pub host_name: Option<String>,
     pub proxy: Option<String>,
 }
 
 impl UpstreamServer {
-    pub fn parse(tag: &str, uri: &str) -> Option<Self> {
-        if let Some(rest) = uri.strip_prefix("https://") {
-            Some(Self {
-                tag: tag.to_string(),
-                addr: format!("https://{}", rest),
-                protocol: UpstreamProtocol::Doh,
-                bootstrap_ip: None,
-                proxy: None,
-            })
-        } else if let Some(rest) = uri.strip_prefix("tcp://") {
-            Some(Self {
-                tag: tag.to_string(),
-                addr: rest.to_string(),
-                protocol: UpstreamProtocol::Tcp,
-                bootstrap_ip: None,
-                proxy: None,
-            })
-        } else if let Some(rest) = uri.strip_prefix("udp://") {
-            Some(Self {
-                tag: tag.to_string(),
-                addr: rest.to_string(),
-                protocol: UpstreamProtocol::Udp,
-                bootstrap_ip: None,
-                proxy: None,
-            })
-        } else {
-            Some(Self {
-                tag: tag.to_string(),
-                addr: uri.to_string(),
-                protocol: UpstreamProtocol::Udp,
-                bootstrap_ip: None,
-                proxy: None,
-            })
+    pub fn parse(tag: &str, raw: &str) -> Option<Self> {
+        let mut parts = raw.split_whitespace();
+        let mut uri = String::new();
+        let mut host_name: Option<String> = None;
+        let mut proxy: Option<String> = None;
+
+        while let Some(part) = parts.next() {
+            if part == "server-https" || part == "server-tcp" || part == "server-udp" {
+                continue;
+            } else if part == "-host-name" {
+                if let Some(h) = parts.next() {
+                    host_name = Some(h.to_string());
+                }
+            } else if part == "-proxy" {
+                if let Some(p) = parts.next() {
+                    proxy = Some(p.to_string());
+                }
+            } else if part.starts_with("-") {
+                let _ = parts.next();
+            } else if uri.is_empty() {
+                uri = part.to_string();
+            }
         }
+
+        if uri.is_empty() {
+            return None;
+        }
+
+        if host_name.is_none() {
+            if let Some(pos) = uri.find('#') {
+                let frag = uri[pos + 1..].to_string();
+                uri.truncate(pos);
+                host_name = Some(frag);
+            }
+        }
+
+        let (protocol, clean_addr) = if let Some(rest) = uri.strip_prefix("https://") {
+            (UpstreamProtocol::Doh, format!("https://{}", rest))
+        } else if let Some(rest) = uri.strip_prefix("tcp://") {
+            (UpstreamProtocol::Tcp, rest.to_string())
+        } else if let Some(rest) = uri.strip_prefix("udp://") {
+            (UpstreamProtocol::Udp, rest.to_string())
+        } else {
+            (UpstreamProtocol::Udp, uri)
+        };
+
+        Some(Self {
+            tag: tag.to_string(),
+            addr: clean_addr,
+            protocol,
+            bootstrap_ip: None,
+            host_name,
+            proxy,
+        })
     }
 
     pub async fn query(&self, req_bytes: &[u8], timeout_duration: Duration) -> Result<Message, String> {
@@ -119,14 +141,43 @@ impl UpstreamServer {
             UpstreamProtocol::Doh => {
                 let mut builder = reqwest::Client::builder().timeout(timeout_duration);
                 if let Some(ref p) = self.proxy {
-                    if let Ok(proxy) = reqwest::Proxy::all(p) {
-                        builder = builder.proxy(proxy);
+                    if p != "none" && !p.is_empty() {
+                        let mut p_addr = p.clone();
+                        if !p_addr.contains("://") {
+                            p_addr = format!("socks5h://{}", p_addr);
+                        } else if p_addr.starts_with("socks5://") {
+                            p_addr = p_addr.replacen("socks5://", "socks5h://", 1);
+                        }
+                        if let Ok(proxy) = reqwest::Proxy::all(&p_addr) {
+                            builder = builder.proxy(proxy);
+                        }
                     }
                 }
+
+                let mut final_url = self.addr.clone();
+
+                // Handle -host-name override (e.g. https://101.226.4.6/dns-query -host-name doh.360.cn)
+                if let Some(ref host) = self.host_name {
+                    if let Some(rest) = self.addr.strip_prefix("https://") {
+                        let (host_port_str, path) = match rest.find('/') {
+                            Some(idx) => (&rest[..idx], &rest[idx..]),
+                            None => (rest, "/dns-query"),
+                        };
+                        let (ip_str, port) = match host_port_str.split_once(':') {
+                            Some((ip_part, port_part)) => (ip_part, port_part.parse().unwrap_or(443)),
+                            None => (host_port_str, 443),
+                        };
+                        if let Ok(ip) = IpAddr::from_str(ip_str) {
+                            builder = builder.resolve(host, SocketAddr::new(ip, port));
+                            final_url = format!("https://{}{}", host, path);
+                        }
+                    }
+                }
+
                 let client = builder.build().map_err(|e| e.to_string())?;
 
                 let resp = client
-                    .post(&self.addr)
+                    .post(&final_url)
                     .header("content-type", "application/dns-message")
                     .body(req_bytes.to_vec())
                     .send()
@@ -146,7 +197,7 @@ impl UpstreamServer {
 
 pub struct UpstreamGroup {
     pub name: String,
-    pub upstreams: Vec<UpstreamServer>,
+    pub upstreams: parking_lot::RwLock<Vec<UpstreamServer>>,
     pub timeout: Duration,
 }
 
@@ -154,23 +205,27 @@ impl UpstreamGroup {
     pub fn new(name: &str, upstreams: Vec<UpstreamServer>, timeout_ms: u64) -> Self {
         Self {
             name: name.to_string(),
-            upstreams,
+            upstreams: parking_lot::RwLock::new(upstreams),
             timeout: Duration::from_millis(timeout_ms),
         }
     }
 
+    pub fn set_servers(&self, servers: Vec<UpstreamServer>) {
+        *self.upstreams.write() = servers;
+    }
+
     pub async fn query_parallel(&self, req_bytes: &[u8]) -> Result<Message, String> {
-        if self.upstreams.is_empty() {
+        let servers = self.upstreams.read().clone();
+        if servers.is_empty() {
             return Err(format!("Upstream group '{}' has no servers", self.name));
         }
 
         let mut futures = Vec::new();
-        for s in &self.upstreams {
-            let s_clone = s.clone();
+        for s in servers {
             let bytes_vec = req_bytes.to_vec();
             let dur = self.timeout;
             futures.push(Box::pin(async move {
-                s_clone.query(&bytes_vec, dur).await
+                s.query(&bytes_vec, dur).await
             }));
         }
 

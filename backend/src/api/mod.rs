@@ -4,7 +4,7 @@ use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, State, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -27,9 +27,38 @@ pub struct AppState {
     pub engine: Arc<PipelineEngine>,
     pub db: Arc<Database>,
     pub metrics: Arc<MetricsCollector>,
-    pub config: Arc<AppConfig>,
+    pub config: Arc<parking_lot::RwLock<AppConfig>>,
+    pub config_path: String,
     pub rule_manager: Arc<RuleFileManager>,
     pub start_time: std::time::Instant,
+}
+
+impl AppState {
+    pub fn reload_engine_upstreams(&self) {
+        let (cfg, proxy) = {
+            let c = self.config.read();
+            (c.clone(), c.proxy.clone())
+        };
+        let mainland = cfg.upstreams.mainland.iter().filter_map(|u| {
+            let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("mainland", u)?;
+            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "none".to_string());
+            s.proxy = proxy.find_proxy_addr(&proxy_mode);
+            Some(s)
+        }).collect();
+        let gfw = cfg.upstreams.gfw.iter().filter_map(|u| {
+            let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("gfw", u)?;
+            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
+            s.proxy = proxy.find_proxy_addr(&proxy_mode);
+            Some(s)
+        }).collect();
+        let overseas = cfg.upstreams.overseas.iter().filter_map(|u| {
+            let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("overseas", u)?;
+            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
+            s.proxy = proxy.find_proxy_addr(&proxy_mode);
+            Some(s)
+        }).collect();
+        self.engine.reload_upstreams(mainland, gfw, overseas);
+    }
 }
 
 pub fn create_router(state: AppState) -> Router {
@@ -60,6 +89,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/upstreams/remove", post(remove_upstream))
         .route("/api/v1/routing/rules", get(get_routing_rules))
         .route("/api/v1/routing/rules/update", post(update_routing_rules))
+        .route("/api/v1/routing/rules/add", post(add_routing_rule))
+        .route("/api/v1/routing/rules/{id}", delete(delete_routing_rule))
+        .route("/api/v1/routing/rules/{id}/toggle", post(toggle_routing_rule))
+        .route("/api/v1/routing/rules/{id}/refresh", post(refresh_routing_rule))
         .route("/api/v1/routing/rules/{file_name}/content", get(get_routing_rule_content).put(update_routing_rule_content))
         .route("/api/v1/config/raw", get(get_raw_config).put(update_raw_config))
         .route("/api/v1/rewrites", get(get_rewrites).post(add_rewrite))
@@ -162,7 +195,7 @@ async fn change_password_handler(
 }
 
 async fn get_settings(State(state): State<AppState>) -> Json<AppConfig> {
-    Json((*state.config).clone())
+    Json(state.config.read().clone())
 }
 
 async fn update_settings(
@@ -174,8 +207,9 @@ async fn update_settings(
     state.engine.qtype_65_enabled.store(payload.routing.qtype_65_reject, Ordering::SeqCst);
     state.engine.speed_check_enabled.store(payload.speed_check.enabled, Ordering::SeqCst);
 
-    // Save to data/config.yaml
-    payload.save("data/config.yaml").map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    *state.config.write() = payload.clone();
+    payload.save(&state.config_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.reload_engine_upstreams();
 
     Ok(StatusCode::OK)
 }
@@ -196,26 +230,54 @@ async fn test_proxy(
     Json(payload): Json<TestProxyPayload>,
 ) -> Json<TestProxyResponse> {
     let start = std::time::Instant::now();
-    match reqwest::Proxy::all(&payload.socks5) {
+    let mut proxy_str = payload.socks5.trim().to_string();
+    if proxy_str.is_empty() {
+        return Json(TestProxyResponse {
+            ok: false,
+            latency_ms: None,
+            error: Some("代理地址不能为空".to_string()),
+        });
+    }
+
+    if !proxy_str.contains("://") {
+        proxy_str = format!("socks5://{}", proxy_str);
+    }
+
+    match reqwest::Proxy::all(&proxy_str) {
         Ok(p) => {
             match reqwest::Client::builder()
                 .proxy(p)
-                .timeout(std::time::Duration::from_millis(2500))
+                .timeout(std::time::Duration::from_millis(4000))
                 .build()
             {
                 Ok(client) => {
-                    match client.get("https://cloudflare-dns.com/dns-query").send().await {
-                        Ok(_) => Json(TestProxyResponse {
-                            ok: true,
-                            latency_ms: Some(start.elapsed().as_secs_f64() * 1000.0),
-                            error: None,
-                        }),
-                        Err(e) => Json(TestProxyResponse {
-                            ok: false,
-                            latency_ms: None,
-                            error: Some(e.to_string()),
-                        }),
+                    let test_urls = [
+                        "https://dns.google/resolve?name=example.com",
+                        "https://www.google.com/generate_204",
+                        "https://1.1.1.1/dns-query",
+                        "https://cloudflare-dns.com/dns-query",
+                    ];
+                    let mut last_err = String::new();
+                    for url in test_urls {
+                        match client.get(url).send().await {
+                            Ok(_) => {
+                                let rtt = (start.elapsed().as_micros() as f64) / 1000.0;
+                                return Json(TestProxyResponse {
+                                    ok: true,
+                                    latency_ms: Some(rtt),
+                                    error: None,
+                                });
+                            }
+                            Err(e) => {
+                                last_err = e.to_string();
+                            }
+                        }
                     }
+                    Json(TestProxyResponse {
+                        ok: false,
+                        latency_ms: None,
+                        error: Some(format!("代理连接失败: {}", last_err)),
+                    })
                 }
                 Err(e) => Json(TestProxyResponse {
                     ok: false,
@@ -227,7 +289,7 @@ async fn test_proxy(
         Err(e) => Json(TestProxyResponse {
             ok: false,
             latency_ms: None,
-            error: Some(e.to_string()),
+            error: Some(format!("代理配置解析失败: {}", e)),
         }),
     }
 }
@@ -267,11 +329,15 @@ struct StatusResponse {
 }
 
 async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
+    let (dns_p, web_p) = {
+        let c = state.config.read();
+        (c.dns.port, c.web.port)
+    };
     Json(StatusResponse {
         version: "0.1.0",
         uptime_seconds: state.start_time.elapsed().as_secs(),
-        dns_port: state.config.dns.port,
-        web_port: state.config.web.port,
+        dns_port: dns_p,
+        web_port: web_p,
         cache_entries: state.engine.cache.size(),
         adblock_rules_count: state.engine.adblock.rule_count(),
         anti_pollution: state.engine.anti_pollution_enabled.load(Ordering::Relaxed),
@@ -402,23 +468,23 @@ async fn get_pipeline(State(state): State<AppState>) -> Json<Vec<PipelineNode>> 
         },
         PipelineNode {
             id: "adblock",
-            name: "AdGuard 规则拦截",
+            name: "安全规则拦截",
             stage: "filter",
-            description: "ABP/Hosts/正则语法毫秒级过滤广告与恶意域名",
+            description: "标准规则/Hosts/正则高并发毫秒级过滤广告与威胁域名",
             enabled: state.engine.adblock_enabled.load(Ordering::Relaxed),
         },
         PipelineNode {
             id: "cache",
-            name: "SmartDNS 智能缓存",
+            name: "高性能智能缓存",
             stage: "cache",
-            description: "Serve-Expired 过期秒返与高频域名静默预取",
+            description: "Serve-Expired 零等待秒级应答与热点记录静默预取",
             enabled: state.engine.cache_enabled.load(Ordering::Relaxed),
         },
         PipelineNode {
             id: "router",
-            name: "MosDNS 分流器",
+            name: "动态分流调度引擎",
             stage: "routing",
-            description: "国内 Direct 域名直连，Proxy 走境外，未知走 Fallback",
+            description: "按 Direct 直连、Proxy 代理及 GeoIP 归属进行原生动态分流与防污染调度",
             enabled: true,
         },
         PipelineNode {
@@ -624,10 +690,11 @@ struct UpstreamsResponse {
 }
 
 async fn get_upstreams(State(state): State<AppState>) -> Json<UpstreamsResponse> {
+    let cfg = state.config.read();
     Json(UpstreamsResponse {
-        mainland: state.config.upstreams.mainland.clone(),
-        gfw: state.config.upstreams.gfw.clone(),
-        overseas: state.config.upstreams.overseas.clone(),
+        mainland: cfg.upstreams.mainland.clone(),
+        gfw: cfg.upstreams.gfw.clone(),
+        overseas: cfg.upstreams.overseas.clone(),
     })
 }
 
@@ -640,12 +707,16 @@ struct UpstreamTestItem {
 }
 
 async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestItem>> {
+    let (mainland, gfw, overseas, proxy_cfg) = {
+        let cfg = state.config.read();
+        (cfg.upstreams.mainland.clone(), cfg.upstreams.gfw.clone(), cfg.upstreams.overseas.clone(), cfg.proxy.clone())
+    };
     let mut results = Vec::new();
 
     let groups = [
-        ("mainland", &state.config.upstreams.mainland),
-        ("gfw", &state.config.upstreams.gfw),
-        ("overseas", &state.config.upstreams.overseas),
+        ("mainland", &mainland),
+        ("gfw", &gfw),
+        ("overseas", &overseas),
     ];
 
     for (group_name, list) in groups {
@@ -656,16 +727,17 @@ async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestI
             let mut rtt = None;
 
             if let Some(mut s) = server {
-                if state.config.proxy.enabled && (group_name == "gfw" || group_name == "overseas") {
-                    s.proxy = Some(state.config.proxy.socks5.clone());
-                }
+                let proxy_mode = s.proxy.clone().unwrap_or_else(|| {
+                    if group_name == "mainland" { "none".to_string() } else { "default".to_string() }
+                });
+                s.proxy = proxy_cfg.find_proxy_addr(&proxy_mode);
                 let mut req = hickory_proto::op::Message::query();
                 req.add_query(hickory_proto::op::Query::query(
                     hickory_proto::rr::Name::from_ascii("example.com.").unwrap(),
                     hickory_proto::rr::RecordType::A,
                 ));
                 if let Ok(bytes) = req.to_vec() {
-                    if s.query(&bytes, std::time::Duration::from_millis(1500)).await.is_ok() {
+                    if s.query(&bytes, std::time::Duration::from_millis(3500)).await.is_ok() {
                         ok = true;
                         rtt = Some((start.elapsed().as_micros() as f64) / 1000.0);
                     }
@@ -843,14 +915,17 @@ async fn add_upstream(
     State(state): State<AppState>,
     Json(payload): Json<UpstreamActionPayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let mut cfg = (*state.config).clone();
-    match payload.group.as_str() {
-        "mainland" => cfg.upstreams.mainland.push(payload.addr),
-        "gfw" => cfg.upstreams.gfw.push(payload.addr),
-        "overseas" => cfg.upstreams.overseas.push(payload.addr),
-        _ => return Err((StatusCode::BAD_REQUEST, "Unknown group".to_string())),
+    {
+        let mut cfg = state.config.write();
+        match payload.group.as_str() {
+            "mainland" => cfg.upstreams.mainland.push(payload.addr),
+            "gfw" => cfg.upstreams.gfw.push(payload.addr),
+            "overseas" => cfg.upstreams.overseas.push(payload.addr),
+            _ => return Err((StatusCode::BAD_REQUEST, "Unknown group".to_string())),
+        }
+        let _ = cfg.save(&state.config_path);
     }
-    let _ = cfg.save("data/config.yaml");
+    state.reload_engine_upstreams();
     Ok(StatusCode::OK)
 }
 
@@ -858,14 +933,17 @@ async fn remove_upstream(
     State(state): State<AppState>,
     Json(payload): Json<UpstreamActionPayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let mut cfg = (*state.config).clone();
-    match payload.group.as_str() {
-        "mainland" => cfg.upstreams.mainland.retain(|s| s != &payload.addr),
-        "gfw" => cfg.upstreams.gfw.retain(|s| s != &payload.addr),
-        "overseas" => cfg.upstreams.overseas.retain(|s| s != &payload.addr),
-        _ => return Err((StatusCode::BAD_REQUEST, "Unknown group".to_string())),
+    {
+        let mut cfg = state.config.write();
+        match payload.group.as_str() {
+            "mainland" => cfg.upstreams.mainland.retain(|s| s != &payload.addr),
+            "gfw" => cfg.upstreams.gfw.retain(|s| s != &payload.addr),
+            "overseas" => cfg.upstreams.overseas.retain(|s| s != &payload.addr),
+            _ => return Err((StatusCode::BAD_REQUEST, "Unknown group".to_string())),
+        }
+        let _ = cfg.save(&state.config_path);
     }
-    let _ = cfg.save("data/config.yaml");
+    state.reload_engine_upstreams();
     Ok(StatusCode::OK)
 }
 
@@ -969,5 +1047,74 @@ async fn update_raw_config(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid YAML: {}", e)))?;
     std::fs::write("data/config.yaml", &payload.content)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(StatusCode::OK)
+}
+#[derive(Deserialize)]
+struct AddRoutingRulePayload {
+    name: String,
+    file_name: String,
+    group_type: String,
+    url: Option<String>,
+    content: Option<String>,
+}
+
+async fn add_routing_rule(
+    State(state): State<AppState>,
+    Json(payload): Json<AddRoutingRulePayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let url_str = payload.url.unwrap_or_default();
+    let mut content_str = payload.content.unwrap_or_default();
+
+    if content_str.is_empty() && url_str.starts_with("http") {
+        if let Ok(resp) = reqwest::get(&url_str).await {
+            if let Ok(text) = resp.text().await {
+                content_str = text;
+            }
+        }
+    }
+
+    state.rule_manager.add_rule_file(
+        &payload.name,
+        &payload.file_name,
+        &payload.group_type,
+        &url_str,
+        &content_str,
+    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(StatusCode::CREATED)
+}
+
+async fn delete_routing_rule(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state.rule_manager.delete_rule_file(&id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(StatusCode::OK)
+}
+
+async fn toggle_routing_rule(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state.rule_manager.toggle_rule_file(&id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(StatusCode::OK)
+}
+
+async fn refresh_routing_rule(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let rules = state.rule_manager.list_rules();
+    let Some(r) = rules.into_iter().find(|item| item.id == id) else {
+        return Err((StatusCode::NOT_FOUND, "Rule file not found".to_string()));
+    };
+
+    if !r.url.is_empty() && r.url.starts_with("http") {
+        state.rule_manager.update_rule_file(&r.file_name, &r.url).await
+            .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    }
+
     Ok(StatusCode::OK)
 }

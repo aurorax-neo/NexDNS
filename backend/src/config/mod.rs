@@ -3,16 +3,71 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyItem {
+    pub id: String,
+    pub name: String,
+    pub addr: String,
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
+    #[serde(default)]
     pub enabled: bool,
-    pub socks5: String,
+    #[serde(default)]
+    pub socks5: Option<String>,
+    #[serde(default = "default_proxy_list")]
+    pub list: Vec<ProxyItem>,
+}
+
+fn default_proxy_list() -> Vec<ProxyItem> {
+    vec![
+        ProxyItem {
+            id: "local_clash".to_string(),
+            name: "本地 Clash/Mihomo 节点".to_string(),
+            addr: "socks5://10.96.1.108:7890".to_string(),
+            is_default: true,
+        }
+    ]
+}
+
+impl ProxyConfig {
+    pub fn default_proxy_addr(&self) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+        self.list
+            .iter()
+            .find(|p| p.is_default)
+            .or_else(|| self.list.first())
+            .map(|p| p.addr.clone())
+            .or_else(|| self.socks5.clone())
+    }
+
+    pub fn find_proxy_addr(&self, id_or_mode: &str) -> Option<String> {
+        if !self.enabled || id_or_mode == "none" || id_or_mode.is_empty() {
+            return None;
+        }
+        if id_or_mode == "default" {
+            return self.default_proxy_addr();
+        }
+        if let Some(p) = self.list.iter().find(|p| p.id == id_or_mode || p.name == id_or_mode) {
+            return Some(p.addr.clone());
+        }
+        if id_or_mode.contains("://") {
+            return Some(id_or_mode.to_string());
+        }
+        self.default_proxy_addr()
+    }
 }
 
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            socks5: "socks5://10.96.1.108:7890".to_string(),
+            socks5: Some("socks5://10.96.1.108:7890".to_string()),
+            list: default_proxy_list(),
         }
     }
 }
@@ -228,10 +283,11 @@ impl Default for AppConfig {
                 mainland: vec![
                     "udp://223.5.5.5:53".to_string(),
                     "udp://119.29.29.29:53".to_string(),
-                    "https://dns.alidns.com/dns-query".to_string(),
+                    "https://223.5.5.5/dns-query -host-name dns.alidns.com".to_string(),
+                    "https://101.226.4.6/dns-query -host-name doh.360.cn".to_string(),
                 ],
                 gfw: vec![
-                    "https://dns.google/dns-query".to_string(),
+                    "https://8.8.8.8/dns-query -host-name dns.google -proxy default".to_string(),
                     "https://cloudflare-dns.com/dns-query".to_string(),
                     "udp://8.8.8.8:53".to_string(),
                 ],

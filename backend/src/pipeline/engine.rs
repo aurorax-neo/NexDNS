@@ -90,6 +90,17 @@ impl PipelineEngine {
         }
     }
 
+    pub fn reload_upstreams(
+        &self,
+        mainland: Vec<crate::pipeline::plugins::upstream::UpstreamServer>,
+        gfw: Vec<crate::pipeline::plugins::upstream::UpstreamServer>,
+        overseas: Vec<crate::pipeline::plugins::upstream::UpstreamServer>,
+    ) {
+        self.forward_mainland.group.set_servers(mainland);
+        self.forward_gfw.group.set_servers(gfw);
+        self.forward_overseas.group.set_servers(overseas);
+    }
+
     pub fn has_china_ip(&self, resp: &Message) -> bool {
         for ans in &resp.answers {
             match &ans.data {
@@ -152,7 +163,7 @@ impl PipelineEngine {
             return;
         }
 
-        // 4. Adblock Rules (AdGuard)
+        // 4. Adblock Rules (Security Filter)
         ctx.record_timing("adblock");
         if self.adblock_enabled.load(Ordering::Relaxed) {
             if self.adblock.execute(ctx).await == crate::pipeline::plugin::PluginResult::Accept {
@@ -161,7 +172,7 @@ impl PipelineEngine {
             }
         }
 
-        // 5. Cache (SmartDNS serve-expired)
+        // 5. Cache (Serve-expired)
         ctx.record_timing("cache");
         if self.cache_enabled.load(Ordering::Relaxed) {
             if self.cache.execute(ctx).await == crate::pipeline::plugin::PluginResult::Accept {
@@ -170,7 +181,7 @@ impl PipelineEngine {
             }
         }
 
-        // 6. Router & Dispatch (MosDNS pipeline)
+        // 6. Router & Dispatch (Routing pipeline)
         ctx.record_timing("route");
         let is_direct = self.domain_registry.matches("domain_direct", &ctx.qname);
         let is_proxy = self.domain_registry.matches("domain_proxy", &ctx.qname);
@@ -206,7 +217,7 @@ impl PipelineEngine {
             }
         }
 
-        // 7. Speed Check (SmartDNS fastest IP)
+        // 7. Speed Check (Fastest IP)
         if ctx.response.is_some() {
             if self.speed_check_enabled.load(Ordering::Relaxed) {
                 ctx.record_timing("speed_check");

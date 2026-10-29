@@ -36,16 +36,16 @@ export const ActivityChart: React.FC<ActivityChartProps> = ({ data }) => {
   const areaD = `${pathD} L ${width} ${paddingTop + chartHeight} L 0 ${paddingTop + chartHeight} Z`;
 
   return (
-    <div className="relative w-full">
-      <div className="w-full overflow-hidden">
+    <div className="relative w-full select-none">
+      <div className="w-full overflow-hidden h-36">
         <svg
           viewBox={`0 0 ${width} ${height}`}
-          className="w-full h-44 overflow-visible"
+          className="w-full h-full overflow-visible"
           preserveAspectRatio="none"
         >
           <defs>
             <linearGradient id="queryGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.35" />
+              <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.3" />
               <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.0" />
             </linearGradient>
           </defs>
@@ -102,31 +102,28 @@ export const ActivityChart: React.FC<ActivityChartProps> = ({ data }) => {
               />
             </g>
           ))}
-
-          {/* X 轴时间刻度 (间隔显示) */}
-          {points.map((pt, i) => {
-            if (i % 4 !== 0 && i !== data.length - 1) return null;
-            return (
-              <text
-                key={i}
-                x={pt.x}
-                y={height - 4}
-                textAnchor="middle"
-                className="text-[10px] font-mono fill-neutral-400 select-none"
-              >
-                {pt.data.hour}
-              </text>
-            );
-          })}
         </svg>
+      </div>
+
+      {/* X 轴时间刻度：使用原生 HTML 绝对/弹性定位，彻底解决 SVG 非等比拉伸导致文字形变的问题 */}
+      <div className="flex justify-between items-center w-full pt-2 px-1 text-[11px] font-mono text-neutral-500 dark:text-neutral-400 select-none">
+        {data.map((item, i) => {
+          if (i % 4 !== 0 && i !== data.length - 1) return null;
+          return (
+            <span key={i} className="tabular-nums">
+              {item.hour}
+            </span>
+          );
+        })}
       </div>
 
       {/* 悬停浮层 Tooltip */}
       {hoveredIndex !== null && data[hoveredIndex] && (
         <div
-          className="absolute z-20 top-2 transform -translate-x-1/2 p-2.5 rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 shadow-xl pointer-events-none text-xs"
+          className="absolute z-20 top-2 p-2.5 rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 shadow-xl pointer-events-none text-xs"
           style={{
             left: `${(hoveredIndex / (data.length - 1)) * 100}%`,
+            transform: hoveredIndex > data.length - 4 ? 'translateX(-85%)' : hoveredIndex < 3 ? 'translateX(0%)' : 'translateX(-50%)',
           }}
         >
           <div className="font-mono text-neutral-500 dark:text-neutral-400 font-semibold mb-1">

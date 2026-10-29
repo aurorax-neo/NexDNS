@@ -67,3 +67,60 @@ async fn test_cache_serve_expired() {
     assert!(!is_expired);
     assert_eq!(cached_msg.answers.len(), 1);
 }
+
+#[test]
+fn test_upstream_server_parsing() {
+    use nexdns::pipeline::plugins::upstream::{UpstreamServer, UpstreamProtocol};
+
+    // Standard UDP
+    let s1 = UpstreamServer::parse("mainland", "udp://223.5.5.5:53").unwrap();
+    assert_eq!(s1.protocol, UpstreamProtocol::Udp);
+    assert_eq!(s1.addr, "223.5.5.5:53");
+    assert_eq!(s1.host_name, None);
+    assert_eq!(s1.proxy, None);
+
+    // DoH with -host-name
+    let s2 = UpstreamServer::parse("mainland", "https://101.226.4.6/dns-query -host-name doh.360.cn").unwrap();
+    assert_eq!(s2.protocol, UpstreamProtocol::Doh);
+    assert_eq!(s2.addr, "https://101.226.4.6/dns-query");
+    assert_eq!(s2.host_name.as_deref(), Some("doh.360.cn"));
+    assert_eq!(s2.proxy, None);
+
+    // DoH with -host-name and -proxy
+    let s3 = UpstreamServer::parse("gfw", "https://8.8.8.8/dns-query -host-name dns.google -proxy default").unwrap();
+    assert_eq!(s3.protocol, UpstreamProtocol::Doh);
+    assert_eq!(s3.host_name.as_deref(), Some("dns.google"));
+    assert_eq!(s3.proxy.as_deref(), Some("default"));
+
+    // TCP with -proxy
+    let s4 = UpstreamServer::parse("overseas", "tcp://1.1.1.1:53 -proxy local_clash").unwrap();
+    assert_eq!(s4.protocol, UpstreamProtocol::Tcp);
+    assert_eq!(s4.proxy.as_deref(), Some("local_clash"));
+}
+
+#[test]
+fn test_proxy_config_lookup() {
+    use nexdns::config::{ProxyConfig, ProxyItem};
+
+    let mut cfg = ProxyConfig::default();
+    cfg.enabled = true;
+    cfg.list = vec![
+        ProxyItem {
+            id: "p1".to_string(),
+            name: "Node 1".to_string(),
+            addr: "socks5://10.96.1.108:7890".to_string(),
+            is_default: true,
+        },
+        ProxyItem {
+            id: "p2".to_string(),
+            name: "Node 2".to_string(),
+            addr: "socks5://10.96.1.108:1080".to_string(),
+            is_default: false,
+        },
+    ];
+
+    assert_eq!(cfg.find_proxy_addr("none"), None);
+    assert_eq!(cfg.find_proxy_addr("default").as_deref(), Some("socks5://10.96.1.108:7890"));
+    assert_eq!(cfg.find_proxy_addr("p2").as_deref(), Some("socks5://10.96.1.108:1080"));
+    assert_eq!(cfg.find_proxy_addr("socks5://127.0.0.1:9050").as_deref(), Some("socks5://127.0.0.1:9050"));
+}

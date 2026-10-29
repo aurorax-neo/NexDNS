@@ -91,18 +91,34 @@ export interface DnsRewriteRecord {
 }
 
 export interface RuleFileInfo {
+  id: string;
   name: string;
   file_name: string;
+  group_type: string;
   count: number;
   size_bytes: number;
   updated_at: string;
   url: string;
+  enabled: boolean;
 }
 
 export interface AuthResponse {
   token: string;
   username: string;
   expires_at: string;
+}
+
+export interface ProxyItem {
+  id: string;
+  name: string;
+  addr: string;
+  is_default: boolean;
+}
+
+export interface ProxyConfig {
+  enabled: boolean;
+  socks5?: string;
+  list: ProxyItem[];
 }
 
 export interface AppSettings {
@@ -115,10 +131,7 @@ export interface AppSettings {
   web: {
     port: number;
   };
-  proxy: {
-    enabled: boolean;
-    socks5: string;
-  };
+  proxy: ProxyConfig;
   cache: {
     size: number;
     serve_expired: boolean;
@@ -357,6 +370,32 @@ export const api = {
   async updateRoutingRules(): Promise<[string, { Ok?: number; Err?: string }][]> {
     const res = await fetch('/api/v1/routing/rules/update', { method: 'POST' });
     return res.json();
+  },
+
+  async addRoutingRule(payload: {
+    name: string;
+    file_name: string;
+    group_type: string;
+    url?: string;
+    content?: string;
+  }): Promise<void> {
+    await fetch('/api/v1/routing/rules/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteRoutingRule(id: string): Promise<void> {
+    await fetch(`/api/v1/routing/rules/${id}`, { method: 'DELETE' });
+  },
+
+  async toggleRoutingRule(id: string): Promise<void> {
+    await fetch(`/api/v1/routing/rules/${id}/toggle`, { method: 'POST' });
+  },
+
+  async refreshRoutingRule(id: string): Promise<void> {
+    await fetch(`/api/v1/routing/rules/${id}/refresh`, { method: 'POST' });
   },
 
   async addUpstream(group: string, addr: string): Promise<void> {

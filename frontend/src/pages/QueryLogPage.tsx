@@ -289,7 +289,7 @@ export const QueryLogPage: React.FC = () => {
       >
         {selectedLog && (
           <div className="space-y-5 text-xs">
-            {/* 核心快捷就地操作栏 (AdGuard 风格) */}
+            {/* 核心快捷就地操作栏 */}
             <div className="p-3.5 rounded-lg bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-2">
               <span className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider block">
                 对该域名的快捷动作

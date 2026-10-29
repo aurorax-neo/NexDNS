@@ -136,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
         config.cache.prefetch,
     ));
 
-    // 5. Plugins: Domain Registry (MosDNS lists)
+    // 5. Plugins: Domain Registry (Routing lists)
     let domain_registry = Arc::new(DomainListRegistry::new());
     // 6. Plugins: IP Registry
     let ip_registry = Arc::new(IpListRegistry::new());
@@ -144,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
     // Rule File Manager (loads direct.txt, proxy.txt, private.txt, ipv4_china.txt from data/rules)
     let rule_manager = Arc::new(RuleFileManager::new(
         "data/rules",
+        "data/nexdns.db",
         domain_registry.clone(),
         ip_registry.clone(),
     ));
@@ -174,7 +175,12 @@ async fn main() -> anyhow::Result<()> {
         .upstreams
         .mainland
         .iter()
-        .filter_map(|u| UpstreamServer::parse("mainland", u))
+        .filter_map(|u| {
+            let mut s = UpstreamServer::parse("mainland", u)?;
+            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "none".to_string());
+            s.proxy = config.proxy.find_proxy_addr(&proxy_mode);
+            Some(s)
+        })
         .collect();
     let gfw_servers: Vec<UpstreamServer> = config
         .upstreams
@@ -182,9 +188,8 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .filter_map(|u| {
             let mut s = UpstreamServer::parse("gfw", u)?;
-            if config.proxy.enabled {
-                s.proxy = Some(config.proxy.socks5.clone());
-            }
+            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
+            s.proxy = config.proxy.find_proxy_addr(&proxy_mode);
             Some(s)
         })
         .collect();
@@ -192,7 +197,12 @@ async fn main() -> anyhow::Result<()> {
         .upstreams
         .overseas
         .iter()
-        .filter_map(|u| UpstreamServer::parse("overseas", u))
+        .filter_map(|u| {
+            let mut s = UpstreamServer::parse("overseas", u)?;
+            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
+            s.proxy = config.proxy.find_proxy_addr(&proxy_mode);
+            Some(s)
+        })
         .collect();
 
     let forward_mainland = Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new(
@@ -242,7 +252,8 @@ async fn main() -> anyhow::Result<()> {
         engine,
         db,
         metrics,
-        config: config.clone(),
+        config: Arc::new(parking_lot::RwLock::new((*config).clone())),
+        config_path: cli.config.to_string_lossy().to_string(),
         rule_manager,
         start_time: std::time::Instant::now(),
     };

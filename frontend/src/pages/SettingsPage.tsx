@@ -41,9 +41,13 @@ export const SettingsPage: React.FC = () => {
   const [passwordMsg, setPasswordMsg] = useState<{ text: string; isError: boolean } | null>(null);
   const [changingPass, setChangingPass] = useState(false);
 
-  // Proxy test state
-  const [proxyTestResult, setProxyTestResult] = useState<{ ok: boolean; latency_ms?: number; error?: string } | null>(null);
-  const [testingProxy, setTestingProxy] = useState(false);
+  // Proxy list and testing state
+  const [proxyTestResults, setProxyTestResults] = useState<Record<string, { ok: boolean; latency_ms?: number; error?: string }>>({});
+  const [testingProxyId, setTestingProxyId] = useState<string | null>(null);
+  const [isAddProxyModalOpen, setIsAddProxyModalOpen] = useState(false);
+  const [newProxyName, setNewProxyName] = useState('');
+  const [newProxyAddr, setNewProxyAddr] = useState('');
+  const [newProxyIsDefault, setNewProxyIsDefault] = useState(false);
 
   const loadData = async () => {
     try {
@@ -75,17 +79,92 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  const handleTestProxy = async () => {
-    if (!settings?.proxy.socks5) return;
-    setTestingProxy(true);
+  const handleTestSingleProxy = async (id: string, addr: string) => {
+    if (!addr) return;
+    setTestingProxyId(id);
     try {
-      const res = await api.testProxy(settings.proxy.socks5);
-      setProxyTestResult(res);
+      const res = await api.testProxy(addr);
+      setProxyTestResults((prev) => ({ ...prev, [id]: res }));
     } catch (e) {
-      setProxyTestResult({ ok: false, error: '网络测试请求失败' });
+      setProxyTestResults((prev) => ({
+        ...prev,
+        [id]: { ok: false, error: '网络测试请求失败' },
+      }));
     } finally {
-      setTestingProxy(false);
+      setTestingProxyId(null);
     }
+  };
+
+  const handleSetDefaultProxy = (id: string) => {
+    if (!settings) return;
+    const currentList = settings.proxy.list || [];
+    const updatedList = currentList.map((p) => ({
+      ...p,
+      is_default: p.id === id,
+    }));
+    const defaultItem = updatedList.find((p) => p.is_default);
+    setSettings({
+      ...settings,
+      proxy: {
+        ...settings.proxy,
+        socks5: defaultItem ? defaultItem.addr : settings.proxy.socks5,
+        list: updatedList,
+      },
+    });
+    setSnackbarMessage('已切换默认代理节点');
+  };
+
+  const handleDeleteProxy = (id: string) => {
+    if (!settings) return;
+    const currentList = settings.proxy.list || [];
+    const target = currentList.find((p) => p.id === id);
+    const updatedList = currentList.filter((p) => p.id !== id);
+    if (target?.is_default && updatedList.length > 0) {
+      updatedList[0].is_default = true;
+    }
+    setSettings({
+      ...settings,
+      proxy: {
+        ...settings.proxy,
+        list: updatedList,
+      },
+    });
+    setSnackbarMessage('已移除代理节点');
+  };
+
+  const handleAddProxy = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!settings || !newProxyName || !newProxyAddr) return;
+    const currentList = settings.proxy.list || [];
+    const newId = `proxy_${Date.now()}`;
+    const willBeDefault = newProxyIsDefault || currentList.length === 0;
+
+    const updatedList = currentList.map((p) => ({
+      ...p,
+      is_default: willBeDefault ? false : p.is_default,
+    }));
+
+    updatedList.push({
+      id: newId,
+      name: newProxyName,
+      addr: newProxyAddr,
+      is_default: willBeDefault,
+    });
+
+    setSettings({
+      ...settings,
+      proxy: {
+        ...settings.proxy,
+        socks5: willBeDefault ? newProxyAddr : settings.proxy.socks5,
+        list: updatedList,
+      },
+    });
+
+    setIsAddProxyModalOpen(false);
+    setNewProxyName('');
+    setNewProxyAddr('');
+    setNewProxyIsDefault(false);
+    setSnackbarMessage('已添加新代理节点，请点击右上角“保存系统配置”使配置持久化');
   };
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -281,7 +360,7 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* 2. 智能缓存设置 (SmartDNS 核心) */}
+          {/* 2. 智能缓存设置 (SmartCache) */}
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Database className="w-4 h-4 text-amber-600 dark:text-amber-400 align-icon" />
@@ -361,7 +440,7 @@ export const SettingsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* 3. 分流与安全防御设置 (MosDNS 核心) */}
+          {/* 3. 分流与安全防御设置 (Routing Pipeline) */}
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Shield className="w-4 h-4 text-rose-600 dark:text-rose-400 align-icon" />
@@ -433,16 +512,16 @@ export const SettingsPage: React.FC = () => {
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Globe className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
-              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">SOCKS5 代理服务 (用于境外上游)</h4>
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">代理服务与节点列表 (Proxy Nodes)</h4>
             </div>
             <div className="space-y-3 text-xs">
               <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
                 <div>
                   <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
-                    启用 SOCKS5 代理
+                    启用代理转发功能
                   </span>
                   <span className="text-[11px] text-neutral-500">
-                    启用后 GFW 境外组 DoH 加密请求将走代理转发
+                    启用后，上游服务器可自由选择直连、默认代理或指定专属代理节点转发请求
                   </span>
                 </div>
                 <Switch
@@ -456,52 +535,101 @@ export const SettingsPage: React.FC = () => {
                 />
               </div>
 
-              <div>
-                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">SOCKS5 代理地址</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={settings.proxy.socks5}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        proxy: { ...settings.proxy, socks5: e.target.value },
-                      })
-                    }
-                    placeholder="socks5://10.96.1.108:7890"
-                    className="flex-1 min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
-                  />
+              {/* 代理节点列表 */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-neutral-700 dark:text-neutral-300">已配置代理节点</span>
                   <button
                     type="button"
-                    onClick={handleTestProxy}
-                    disabled={testingProxy}
-                    className="min-h-[38px] px-3.5 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md text-neutral-800 dark:text-neutral-200 whitespace-nowrap"
+                    onClick={() => setIsAddProxyModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 min-h-[32px] px-3 text-xs bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md text-neutral-800 dark:text-neutral-200 transition-colors"
                   >
-                    {testingProxy ? '测试中...' : '测试代理'}
+                    <Plus className="w-3.5 h-3.5 align-icon" />
+                    添加代理节点
                   </button>
                 </div>
-              </div>
 
-              {proxyTestResult && (
-                <div
-                  className={`p-3 rounded-md border flex items-center gap-2 ${
-                    proxyTestResult.ok
-                      ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400'
-                      : 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400'
-                  }`}
-                >
-                  {proxyTestResult.ok ? (
-                    <CheckCircle2 className="w-4 h-4 shrink-0 align-icon" />
-                  ) : (
-                    <XCircle className="w-4 h-4 shrink-0 align-icon" />
-                  )}
-                  <span>
-                    {proxyTestResult.ok
-                      ? `代理连通正常！握手时延: ${proxyTestResult.latency_ms?.toFixed(1)} ms`
-                      : `代理连接失败: ${proxyTestResult.error || '无法建立握手'}`}
-                  </span>
+                <div className="space-y-2">
+                  {(settings.proxy.list || []).map((p) => {
+                    const testRes = proxyTestResults[p.id];
+                    const isTesting = testingProxyId === p.id;
+
+                    return (
+                      <div
+                        key={p.id}
+                        className="p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-3"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          {p.is_default ? (
+                            <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-400 border border-cyan-200 dark:border-cyan-800/40 shrink-0">
+                              默认代理
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleSetDefaultProxy(p.id)}
+                              className="px-2 py-0.5 text-[11px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 rounded border border-dashed border-neutral-300 dark:border-neutral-700 shrink-0"
+                            >
+                              设为默认
+                            </button>
+                          )}
+                          <div className="min-w-0">
+                            <div className="font-medium text-neutral-900 dark:text-neutral-100 truncate">
+                              {p.name}
+                            </div>
+                            <div className="font-mono text-[11px] text-neutral-500 truncate">
+                              {p.addr}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          {testRes && (
+                            <div className="flex items-center gap-1.5 font-mono text-[11px] tabular-nums">
+                              {testRes.ok ? (
+                                <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5 align-icon" />
+                                  {testRes.latency_ms?.toFixed(1)} ms
+                                </span>
+                              ) : (
+                                <span className="text-rose-600 dark:text-rose-400 flex items-center gap-1" title={testRes.error}>
+                                  <XCircle className="w-3.5 h-3.5 align-icon" />
+                                  连接失败
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => handleTestSingleProxy(p.id, p.addr)}
+                            disabled={isTesting}
+                            className="min-h-[32px] px-2.5 text-xs bg-white dark:bg-surface-3 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded text-neutral-800 dark:text-neutral-200 disabled:opacity-50 transition-colors"
+                          >
+                            {isTesting ? '探测中...' : '测试连通性'}
+                          </button>
+
+                          {(settings.proxy.list || []).length > 1 && (
+                            <Popconfirm
+                              title="确认删除该代理节点？"
+                              actionText="确认删除"
+                              onConfirm={() => handleDeleteProxy(p.id)}
+                            >
+                              <button
+                                type="button"
+                                className="min-w-[32px] min-h-[32px] flex items-center justify-center text-neutral-400 hover:text-red-500"
+                                title="删除节点"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 align-icon" />
+                              </button>
+                            </Popconfirm>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              )}
+              </div>
             </div>
           </div>
 
@@ -699,15 +827,16 @@ export const SettingsPage: React.FC = () => {
 
           <div>
             <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">记录类型</label>
-            <select
+            <CustomSelect
+              options={[
+                { value: 'A', label: 'A 记录 (IPv4)' },
+                { value: 'AAAA', label: 'AAAA 记录 (IPv6)' },
+                { value: 'CNAME', label: 'CNAME 别名' },
+              ]}
               value={recordType}
-              onChange={(e) => setRecordType(e.target.value)}
-              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
-            >
-              <option value="A">A 记录 (IPv4)</option>
-              <option value="AAAA">AAAA 记录 (IPv6)</option>
-              <option value="CNAME">CNAME 别名</option>
-            </select>
+              onChange={setRecordType}
+              className="w-full"
+            />
           </div>
 
           <div>
@@ -735,6 +864,71 @@ export const SettingsPage: React.FC = () => {
               className="min-h-[38px] px-5 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md shadow-xs"
             >
               保存重写
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* 添加代理节点 Modal */}
+      <Modal
+        isOpen={isAddProxyModalOpen}
+        onClose={() => setIsAddProxyModalOpen(false)}
+        title="添加代理节点"
+        size="sm"
+      >
+        <form onSubmit={handleAddProxy} className="space-y-4 text-xs">
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              节点备注名称
+            </label>
+            <input
+              type="text"
+              value={newProxyName}
+              onChange={(e) => setNewProxyName(e.target.value)}
+              placeholder="例如: 本地 Clash 代理 或 香港高速专线"
+              required
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              代理连接地址 (支持 SOCKS5 / HTTP)
+            </label>
+            <input
+              type="text"
+              value={newProxyAddr}
+              onChange={(e) => setNewProxyAddr(e.target.value)}
+              placeholder="例如: socks5://10.96.1.108:7890 或 127.0.0.1:7890"
+              required
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-800 dark:text-neutral-200 block">设为默认代理</span>
+              <span className="text-[11px] text-neutral-500">未指定特定代理的上游节点将默认使用此节点</span>
+            </div>
+            <Switch
+              checked={newProxyIsDefault}
+              onChange={setNewProxyIsDefault}
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-800">
+            <button
+              type="button"
+              onClick={() => setIsAddProxyModalOpen(false)}
+              className="min-h-[36px] px-4 text-neutral-600 dark:text-neutral-400"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              className="min-h-[36px] px-5 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md shadow-xs"
+            >
+              确认添加
             </button>
           </div>
         </form>

@@ -20,20 +20,14 @@ import { Snackbar } from '../components/ui/Snackbar';
 
 export const PipelinePage: React.FC = () => {
   const [nodes, setNodes] = useState<PipelineNode[]>([]);
-  const [ruleFiles, setRuleFiles] = useState<RuleFileInfo[]>([]);
   const [selectedNode, setSelectedNode] = useState<PipelineNode | null>(null);
-  const [updatingRules, setUpdatingRules] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [pipelineRes, rulesRes] = await Promise.all([
-          api.getPipeline(),
-          api.getRoutingRules(),
-        ]);
+        const pipelineRes = await api.getPipeline();
         setNodes(pipelineRes);
-        setRuleFiles(rulesRes);
       } catch (e) {
         console.error('Failed to load pipeline', e);
       }
@@ -51,20 +45,6 @@ export const PipelinePage: React.FC = () => {
       setSnackbarMessage(`已${nextState ? '启用' : '停用'}节点`);
     } catch (e) {
       console.error('Failed to toggle pipeline node', e);
-    }
-  };
-
-  const handleUpdateAllRules = async () => {
-    setUpdatingRules(true);
-    try {
-      await api.updateRoutingRules();
-      const updated = await api.getRoutingRules();
-      setRuleFiles(updated);
-      setSnackbarMessage('全量分流规则文件已成功同步最新版本！');
-    } catch (e) {
-      console.error('Failed to update routing rules', e);
-    } finally {
-      setUpdatingRules(false);
     }
   };
 
@@ -179,52 +159,6 @@ export const PipelinePage: React.FC = () => {
         </div>
       </div>
 
-      {/* 分流规则文件实时同步管理 (MosDNS 核心规则) */}
-      <div className="p-6 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
-        <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800">
-          <div>
-            <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-              <FileCode className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
-              分流与防污染规则集 (Routing Rulesets)
-            </h4>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-              管理直连、代理、私网域名表以及中国 IPv4/IPv6 CIDR 地址段
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleUpdateAllRules}
-            disabled={updatingRules}
-            className="inline-flex items-center gap-1.5 min-h-[36px] px-3.5 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md transition-colors shadow-xs disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 align-icon ${updatingRules ? 'animate-spin' : ''}`} />
-            {updatingRules ? '正在在线同步...' : '一键全量更新规则集'}
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {ruleFiles.map((rf) => (
-            <div
-              key={rf.file_name}
-              className="p-3.5 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800/80 space-y-2"
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-medium text-xs text-neutral-900 dark:text-neutral-100 truncate">
-                  {rf.name}
-                </span>
-                <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-neutral-200 dark:bg-surface-3 text-neutral-700 dark:text-neutral-300">
-                  {rf.count.toLocaleString()} 条
-                </span>
-              </div>
-              <div className="text-[11px] text-neutral-500 font-mono flex items-center justify-between">
-                <span>体积: {(rf.size_bytes / 1024).toFixed(1)} KB</span>
-                <span>更新: {rf.updated_at.split('T')[0] || '-'}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* 节点深度配置 Drawer */}
       <Drawer
         isOpen={!!selectedNode}
@@ -244,20 +178,36 @@ export const PipelinePage: React.FC = () => {
             {selectedNode.id === 'router' && (
               <div className="space-y-4">
                 <h4 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                  分流规则流转拓扑
+                  NexDNS 原生分流策略与调度拓扑
                 </h4>
                 <div className="space-y-2 text-xs">
                   <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center">
-                    <span className="font-mono text-neutral-700 dark:text-neutral-300">qname $domain_direct</span>
-                    <span className="text-cyan-600 dark:text-cyan-400 font-semibold">&rarr; 转发大陆组 (mainland)</span>
+                    <div>
+                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">大陆直连规则匹配 (Direct Match)</div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">命中 direct.txt 及大陆直连分组的域名</div>
+                    </div>
+                    <span className="text-cyan-600 dark:text-cyan-400 font-semibold">&rarr; 转发大陆高速直连组 (mainland)</span>
                   </div>
                   <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center">
-                    <span className="font-mono text-neutral-700 dark:text-neutral-300">qname $domain_proxy</span>
-                    <span className="text-rose-600 dark:text-rose-400 font-semibold">&rarr; 转发 GFW / 境外组 (gfw)</span>
+                    <div>
+                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">境外代理规则匹配 (Proxy Match)</div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">命中 proxy.txt 及出海代理分组的域名</div>
+                    </div>
+                    <span className="text-rose-600 dark:text-rose-400 font-semibold">&rarr; 转发 GFW / 境外代理组 (gfw)</span>
                   </div>
                   <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center">
-                    <span className="font-mono text-neutral-700 dark:text-neutral-300">其他域名</span>
-                    <span className="text-amber-600 dark:text-amber-400 font-semibold">&rarr; 进入 Fallback 回退序列</span>
+                    <div>
+                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">局域网私有域名 (Private Match)</div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">命中 private.txt 及局域网本地域名</div>
+                    </div>
+                    <span className="text-purple-600 dark:text-purple-400 font-semibold">&rarr; 本地内网优先解析 (private)</span>
+                  </div>
+                  <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center">
+                    <div>
+                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">未命中规则域名 (Fallback Routing)</div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">未分配特定策略的普通域名</div>
+                    </div>
+                    <span className="text-amber-600 dark:text-amber-400 font-semibold">&rarr; 优先直连，非中国 IP 触发回退</span>
                   </div>
                 </div>
               </div>

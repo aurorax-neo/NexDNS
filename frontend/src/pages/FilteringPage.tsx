@@ -12,6 +12,7 @@ import {
 import { api, AdblockRuleRecord } from '../lib/api';
 import { Modal } from '../components/ui/Modal';
 import { Snackbar } from '../components/ui/Snackbar';
+import { Switch } from '../components/ui/Switch';
 
 export const FilteringPage: React.FC = () => {
   const [rules, setRules] = useState<AdblockRuleRecord[]>([]);
@@ -41,6 +42,18 @@ export const FilteringPage: React.FC = () => {
   useEffect(() => {
     fetchRules();
   }, []);
+
+  const handleToggleRule = async (ruleId: string, currentEnabled: boolean) => {
+    try {
+      await api.toggleRule(ruleId);
+      setRules((prev) =>
+        prev.map((r) => (r.id === ruleId ? { ...r, enabled: !currentEnabled } : r))
+      );
+      setSnackbarMessage(`已${!currentEnabled ? '启用' : '停用'}规则源`);
+    } catch (e) {
+      console.error('Failed to toggle rule', e);
+    }
+  };
 
   const handleAddRule = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,29 +122,41 @@ export const FilteringPage: React.FC = () => {
     }
   };
 
+  const handleAddQuickFromTest = async (action: 'block' | 'whitelist') => {
+    if (!testDomain) return;
+    try {
+      await api.quickAddRule(testDomain, action);
+      setSnackbarMessage(action === 'block' ? `已将 ${testDomain} 加入黑名单` : `已将 ${testDomain} 加入白名单`);
+      await fetchRules();
+      await handleTestRule();
+    } catch (e) {
+      console.error('Failed to quick add rule', e);
+    }
+  };
+
   const totalRules = rules.reduce((acc, r) => acc + r.rule_count, 0);
 
   return (
     <div className="space-y-6 animate-in fade-in-50 duration-200">
       {/* 顶部总览 */}
-      <div className="flex flex-wrap items-center justify-between gap-4 p-5 rounded-lg bg-surface-1 border border-neutral-800">
+      <div className="flex flex-wrap items-center justify-between gap-4 p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
         <div>
-          <h3 className="text-base font-semibold text-neutral-100 flex items-center gap-2">
-            <Shield className="w-4 h-4 text-rose-400 align-icon" />
-            AdGuard 规则过滤管理
+          <h3 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+            <Shield className="w-4 h-4 text-rose-500 dark:text-rose-400 align-icon" />
+            规则订阅与过滤管理
           </h3>
-          <p className="text-xs text-neutral-400 mt-1 max-w-xl">
+          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-xl">
             全面兼容 Adblock Plus (ABP)、Hosts 文件及正则表达式语法。支持在线 URL 订阅与本地自定义拦截/白名单规则。
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <span className="px-3 py-1 text-xs rounded border border-neutral-700 bg-surface-2 text-neutral-300">
-            生效规则总数: <span className="font-mono text-rose-400 font-semibold tabular-nums">{totalRules.toLocaleString()}</span> 条
+          <span className="px-3 py-1 text-xs rounded border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-surface-2 text-neutral-700 dark:text-neutral-300">
+            生效规则总数: <span className="font-mono text-rose-600 dark:text-rose-400 font-semibold tabular-nums">{totalRules.toLocaleString()}</span> 条
           </span>
           <button
             type="button"
             onClick={() => setIsAddModalOpen(true)}
-            className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 text-xs font-medium text-white bg-rose-600 hover:bg-rose-500 rounded-md transition-colors shadow-sm"
+            className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 text-xs font-medium text-white bg-rose-600 hover:bg-rose-500 rounded-md transition-colors shadow-xs"
           >
             <Plus className="w-4 h-4 align-icon" />
             添加规则订阅
@@ -140,12 +165,12 @@ export const FilteringPage: React.FC = () => {
       </div>
 
       {/* 快速规则测试验证工具 */}
-      <div className="p-5 rounded-lg bg-surface-1 border border-neutral-800">
-        <h4 className="text-sm font-semibold text-neutral-200 mb-2 flex items-center gap-2">
-          <Search className="w-4 h-4 text-cyan-400 align-icon" />
+      <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
+        <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 mb-2 flex items-center gap-2">
+          <Search className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
           域名规则命中诊断
         </h4>
-        <p className="text-xs text-neutral-400 mb-3">输入域名立即检查当前规则库是否生效阻断。</p>
+        <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-3">输入域名即时核验当前规则库是否生效，并可一键加入黑白名单。</p>
         <div className="flex gap-2 max-w-xl">
           <input
             type="text"
@@ -153,73 +178,96 @@ export const FilteringPage: React.FC = () => {
             onChange={(e) => setTestDomain(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleTestRule()}
             placeholder="例如: pos.baidu.com 或 analytics.google.com"
-            className="flex-1 min-h-[38px] px-3 text-xs bg-surface-2 border border-neutral-700/80 rounded-md text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-cyan-500/60"
+            className="flex-1 min-h-[38px] px-3 text-xs bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700/80 rounded-md text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:border-cyan-500"
           />
           <button
             type="button"
             onClick={handleTestRule}
-            className="min-h-[38px] px-4 text-xs font-medium bg-surface-2 border border-neutral-700 hover:border-neutral-600 rounded-md text-neutral-200"
+            className="min-h-[38px] px-4 text-xs font-medium bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md text-neutral-800 dark:text-neutral-200"
           >
             开始测试
           </button>
         </div>
 
         {testResult && (
-          <div className="mt-4 p-3.5 rounded-lg bg-surface-2 border border-neutral-800 flex items-center justify-between text-xs max-w-xl animate-in fade-in-50 duration-100">
-            <div className="flex items-center gap-2">
+          <div className="mt-4 p-3.5 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-3 text-xs max-w-xl animate-in fade-in-50 duration-100">
+            <div className="flex items-center gap-2.5">
               {testResult.blocked ? (
-                <XCircle className="w-4 h-4 text-rose-400 align-icon" />
+                <XCircle className="w-4 h-4 text-rose-500 align-icon" />
               ) : (
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 align-icon" />
+                <CheckCircle2 className="w-4 h-4 text-emerald-500 align-icon" />
               )}
-              <span className="font-mono text-neutral-200 font-semibold">{testResult.domain}</span>
+              <span className="font-mono text-neutral-900 dark:text-neutral-100 font-semibold">{testResult.domain}</span>
               <span
                 className={`px-2 py-0.5 rounded font-medium ${
-                  testResult.blocked ? 'bg-rose-950/60 text-rose-400' : 'bg-emerald-950/60 text-emerald-400'
+                  testResult.blocked ? 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800/40' : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/40'
                 }`}
               >
                 {testResult.blocked ? '将被阻断拦截' : '允许正常解析'}
               </span>
             </div>
-            {testResult.matched_rule && (
-              <span className="font-mono text-neutral-400">规则: {testResult.matched_rule}</span>
-            )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleAddQuickFromTest('block')}
+                className="px-2 py-1 text-[11px] rounded bg-rose-600 hover:bg-rose-500 text-white font-medium"
+              >
+                加入拦截
+              </button>
+              <button
+                type="button"
+                onClick={() => handleAddQuickFromTest('whitelist')}
+                className="px-2 py-1 text-[11px] rounded bg-emerald-600 hover:bg-emerald-500 text-white font-medium"
+              >
+                加入白名单
+              </button>
+            </div>
           </div>
         )}
       </div>
 
       {/* 规则源列表 */}
-      <div className="rounded-lg bg-surface-1 border border-neutral-800 overflow-hidden">
-        <div className="px-5 py-4 border-b border-neutral-800 flex items-center justify-between">
-          <h4 className="text-sm font-semibold text-neutral-200">已订阅规则库列表</h4>
+      <div className="rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
+        <div className="px-5 py-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
+          <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">已订阅规则库列表</h4>
         </div>
-        <div className="divide-y divide-neutral-800/60">
+        <div className="divide-y divide-neutral-200 dark:divide-neutral-800/60">
           {rules.length > 0 ? (
             rules.map((rule) => (
-              <div key={rule.id} className="p-4 flex items-center justify-between hover:bg-surface-2/40 transition-colors">
+              <div key={rule.id} className="p-4 flex items-center justify-between hover:bg-neutral-50 dark:hover:bg-surface-2/40 transition-colors">
                 <div className="flex items-start gap-3">
-                  <div className="p-2 rounded bg-surface-2 border border-neutral-800 text-rose-400 mt-0.5">
+                  <div className="p-2 rounded bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 text-rose-500 dark:text-rose-400 mt-0.5">
                     <FileText className="w-4 h-4 align-icon" />
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-neutral-100">{rule.name}</span>
-                      <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-surface-3 text-neutral-400">
+                      <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{rule.name}</span>
+                      <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-neutral-100 dark:bg-surface-3 text-neutral-600 dark:text-neutral-400">
                         {rule.rule_count.toLocaleString()} 条
                       </span>
+                      {!rule.enabled && (
+                        <span className="px-1.5 py-0.5 text-[10px] rounded bg-neutral-200 dark:bg-neutral-800 text-neutral-500">
+                          已禁用
+                        </span>
+                      )}
                     </div>
-                    <p className="text-xs font-mono text-neutral-400 mt-1 truncate max-w-md">
+                    <p className="text-xs font-mono text-neutral-500 dark:text-neutral-400 mt-1 truncate max-w-md">
                       {rule.url}
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3">
+                  <Switch
+                    checked={rule.enabled}
+                    onChange={() => handleToggleRule(rule.id, rule.enabled)}
+                    ariaLabel={`切换 ${rule.name}`}
+                  />
                   {rule.url.startsWith('http') && (
                     <button
                       type="button"
                       onClick={() => handleRefreshRule(rule.id)}
-                      className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-neutral-100 rounded border border-neutral-800 bg-surface-2"
+                      className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2"
                       title="立即更新"
                     >
                       <RefreshCw className="w-4 h-4 align-icon" />
@@ -228,7 +276,7 @@ export const FilteringPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => handleDeleteRule(rule)}
-                    className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-400 hover:text-red-400 rounded border border-neutral-800 bg-surface-2"
+                    className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-600 dark:text-neutral-400 hover:text-red-500 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2"
                     title="删除规则源"
                   >
                     <Trash2 className="w-4 h-4 align-icon" />
@@ -237,7 +285,7 @@ export const FilteringPage: React.FC = () => {
               </div>
             ))
           ) : (
-            <p className="text-xs text-neutral-500 py-10 text-center">暂未添加任何拦截规则源</p>
+            <p className="text-xs text-neutral-400 py-10 text-center">暂未添加任何拦截规则源</p>
           )}
         </div>
       </div>
@@ -251,30 +299,30 @@ export const FilteringPage: React.FC = () => {
       >
         <form onSubmit={handleAddRule} className="space-y-4 text-xs">
           <div>
-            <label className="block text-neutral-300 font-medium mb-1">规则源名称</label>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">规则源名称</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="例如: EasyList China 或 自定义反诈拦截"
               required
-              className="w-full min-h-[38px] px-3 bg-surface-2 border border-neutral-700/80 rounded-md text-neutral-100 focus:outline-none focus:border-cyan-500/60"
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700/80 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
             />
           </div>
 
           <div>
-            <label className="block text-neutral-300 font-medium mb-1">在线订阅 URL (可选)</label>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">在线订阅 URL (可选)</label>
             <input
               type="url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://example.com/rules.txt"
-              className="w-full min-h-[38px] px-3 bg-surface-2 border border-neutral-700/80 rounded-md text-neutral-100 focus:outline-none focus:border-cyan-500/60"
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700/80 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
             />
           </div>
 
           <div>
-            <label className="block text-neutral-300 font-medium mb-1">
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
               直接粘贴规则内容 (支持 ||domain^、Hosts 或 @@白名单)
             </label>
             <textarea
@@ -282,22 +330,22 @@ export const FilteringPage: React.FC = () => {
               value={customContent}
               onChange={(e) => setCustomContent(e.target.value)}
               placeholder="||ad.example.com^&#10;0.0.0.0 tracking.com&#10;@@||whitelist.com^"
-              className="w-full p-3 font-mono bg-surface-2 border border-neutral-700/80 rounded-md text-neutral-100 focus:outline-none focus:border-cyan-500/60"
+              className="w-full p-3 font-mono bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700/80 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
             />
           </div>
 
-          <div className="flex justify-end gap-2 pt-3 border-t border-neutral-800">
+          <div className="flex justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-800">
             <button
               type="button"
               onClick={() => setIsAddModalOpen(false)}
-              className="min-h-[38px] px-4 text-neutral-400 hover:text-neutral-200"
+              className="min-h-[38px] px-4 text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200"
             >
               取消
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="min-h-[38px] px-5 bg-rose-600 hover:bg-rose-500 text-white font-medium rounded-md shadow-sm"
+              className="min-h-[38px] px-5 bg-rose-600 hover:bg-rose-500 text-white font-medium rounded-md shadow-xs"
             >
               {submitting ? '加载规则中...' : '确认添加'}
             </button>

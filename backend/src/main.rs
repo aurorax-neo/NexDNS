@@ -25,6 +25,7 @@ use pipeline::plugins::qtype_drop::QtypeDropPlugin;
 use pipeline::plugins::rewrite::{RewritePlugin, RewriteTarget};
 use pipeline::plugins::speed_check::SpeedCheckPlugin;
 use pipeline::plugins::upstream::{ForwardPlugin, UpstreamGroup, UpstreamServer};
+use pipeline::rule_files::RuleFileManager;
 use server::DnsServer;
 
 #[derive(Parser, Debug)]
@@ -137,25 +138,37 @@ async fn main() -> anyhow::Result<()> {
 
     // 5. Plugins: Domain Registry (MosDNS lists)
     let domain_registry = Arc::new(DomainListRegistry::new());
-    let mut direct_matcher = DomainMatcher::new("domain_direct");
-    direct_matcher.load_from_text(
-        ".cn\n+.baidu.com\n+.qq.com\n+.aliyun.com\n+.taobao.com\n+.jd.com\n+.bilibili.com\n+.zhihu.com\n+.163.com\n+.weibo.com\n+.tencent.com\n+.douyin.com\n+.bytedance.com"
-    );
-    domain_registry.register(direct_matcher);
-
-    let mut proxy_matcher = DomainMatcher::new("domain_proxy");
-    proxy_matcher.load_from_text(
-        "+.google.com\n+.youtube.com\n+.github.com\n+.twitter.com\n+.x.com\n+.openai.com\n+.cloudflare.com\n+.facebook.com\n+.instagram.com\n+.wikipedia.org"
-    );
-    domain_registry.register(proxy_matcher);
-
-    let mut private_matcher = DomainMatcher::new("domain_private");
-    private_matcher.load_from_text("+.local\n+.lan\n+.internal\n+.home.arpa\n+.corp");
-    domain_registry.register(private_matcher);
-
     // 6. Plugins: IP Registry
     let ip_registry = Arc::new(IpListRegistry::new());
 
+    // Rule File Manager (loads direct.txt, proxy.txt, private.txt, ipv4_china.txt from data/rules)
+    let rule_manager = Arc::new(RuleFileManager::new(
+        "data/rules",
+        domain_registry.clone(),
+        ip_registry.clone(),
+    ));
+    rule_manager.load_local_rules();
+
+    // Seed built-in minimal fallbacks if rule files do not exist yet
+    if !domain_registry.matches("domain_direct", "baidu.com") {
+        let mut direct_matcher = DomainMatcher::new("domain_direct");
+        direct_matcher.load_from_text(
+            ".cn\n+.baidu.com\n+.qq.com\n+.aliyun.com\n+.taobao.com\n+.jd.com\n+.bilibili.com\n+.zhihu.com\n+.163.com\n+.weibo.com\n+.tencent.com\n+.douyin.com\n+.bytedance.com"
+        );
+        domain_registry.register(direct_matcher);
+    }
+    if !domain_registry.matches("domain_proxy", "google.com") {
+        let mut proxy_matcher = DomainMatcher::new("domain_proxy");
+        proxy_matcher.load_from_text(
+            "+.google.com\n+.youtube.com\n+.github.com\n+.twitter.com\n+.x.com\n+.openai.com\n+.cloudflare.com\n+.facebook.com\n+.instagram.com\n+.wikipedia.org"
+        );
+        domain_registry.register(proxy_matcher);
+    }
+    if !domain_registry.matches("domain_private", "nas.home") {
+        let mut private_matcher = DomainMatcher::new("domain_private");
+        private_matcher.load_from_text("+.local\n+.lan\n+.internal\n+.home.arpa\n+.corp");
+        domain_registry.register(private_matcher);
+    }
     // 7. Plugins: Upstreams
     let mainland_servers: Vec<UpstreamServer> = config
         .upstreams
@@ -167,7 +180,13 @@ async fn main() -> anyhow::Result<()> {
         .upstreams
         .gfw
         .iter()
-        .filter_map(|u| UpstreamServer::parse("gfw", u))
+        .filter_map(|u| {
+            let mut s = UpstreamServer::parse("gfw", u)?;
+            if config.proxy.enabled {
+                s.proxy = Some(config.proxy.socks5.clone());
+            }
+            Some(s)
+        })
         .collect();
     let overseas_servers: Vec<UpstreamServer> = config
         .upstreams
@@ -224,6 +243,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         metrics,
         config: config.clone(),
+        rule_manager,
         start_time: std::time::Instant::now(),
     };
 

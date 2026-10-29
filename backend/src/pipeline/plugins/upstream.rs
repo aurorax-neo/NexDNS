@@ -22,6 +22,7 @@ pub struct UpstreamServer {
     pub addr: String,
     pub protocol: UpstreamProtocol,
     pub bootstrap_ip: Option<String>,
+    pub proxy: Option<String>,
 }
 
 impl UpstreamServer {
@@ -32,6 +33,7 @@ impl UpstreamServer {
                 addr: format!("https://{}", rest),
                 protocol: UpstreamProtocol::Doh,
                 bootstrap_ip: None,
+                proxy: None,
             })
         } else if let Some(rest) = uri.strip_prefix("tcp://") {
             Some(Self {
@@ -39,6 +41,7 @@ impl UpstreamServer {
                 addr: rest.to_string(),
                 protocol: UpstreamProtocol::Tcp,
                 bootstrap_ip: None,
+                proxy: None,
             })
         } else if let Some(rest) = uri.strip_prefix("udp://") {
             Some(Self {
@@ -46,6 +49,7 @@ impl UpstreamServer {
                 addr: rest.to_string(),
                 protocol: UpstreamProtocol::Udp,
                 bootstrap_ip: None,
+                proxy: None,
             })
         } else {
             Some(Self {
@@ -53,6 +57,7 @@ impl UpstreamServer {
                 addr: uri.to_string(),
                 protocol: UpstreamProtocol::Udp,
                 bootstrap_ip: None,
+                proxy: None,
             })
         }
     }
@@ -112,10 +117,13 @@ impl UpstreamServer {
                 Message::from_vec(&resp_buf).map_err(|e| e.to_string())
             }
             UpstreamProtocol::Doh => {
-                let client = reqwest::Client::builder()
-                    .timeout(timeout_duration)
-                    .build()
-                    .map_err(|e| e.to_string())?;
+                let mut builder = reqwest::Client::builder().timeout(timeout_duration);
+                if let Some(ref p) = self.proxy {
+                    if let Ok(proxy) = reqwest::Proxy::all(p) {
+                        builder = builder.proxy(proxy);
+                    }
+                }
+                let client = builder.build().map_err(|e| e.to_string())?;
 
                 let resp = client
                     .post(&self.addr)

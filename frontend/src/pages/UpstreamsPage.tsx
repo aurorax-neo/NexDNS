@@ -7,14 +7,22 @@ import {
   Play,
   Globe,
   Shield,
-  Radio,
+  Plus,
+  Trash2,
 } from 'lucide-react';
 import { api, UpstreamTestItem, UpstreamsResponse } from '../lib/api';
+import { Modal } from '../components/ui/Modal';
+import { Popconfirm } from '../components/ui/Popconfirm';
+import { Snackbar } from '../components/ui/Snackbar';
 
 export const UpstreamsPage: React.FC = () => {
   const [upstreams, setUpstreams] = useState<UpstreamsResponse | null>(null);
   const [testResults, setTestResults] = useState<UpstreamTestItem[]>([]);
   const [testing, setTesting] = useState(false);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [targetGroup, setTargetGroup] = useState<'mainland' | 'gfw' | 'overseas'>('mainland');
+  const [newAddr, setNewAddr] = useState('');
+  const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
 
   useEffect(() => {
     api.getUpstreams().then(setUpstreams).catch(console.error);
@@ -32,6 +40,32 @@ export const UpstreamsPage: React.FC = () => {
     }
   };
 
+  const handleAddUpstream = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAddr) return;
+    try {
+      await api.addUpstream(targetGroup, newAddr);
+      setIsAddModalOpen(false);
+      setNewAddr('');
+      const updated = await api.getUpstreams();
+      setUpstreams(updated);
+      setSnackbarMessage('已添加上游服务器');
+    } catch (e) {
+      console.error('Failed to add upstream', e);
+    }
+  };
+
+  const handleRemoveUpstream = async (group: string, addr: string) => {
+    try {
+      await api.removeUpstream(group, addr);
+      const updated = await api.getUpstreams();
+      setUpstreams(updated);
+      setSnackbarMessage('已删除上游节点');
+    } catch (e) {
+      console.error('Failed to remove upstream', e);
+    }
+  };
+
   const getLatencyScore = (addr: string) => {
     const match = testResults.find((r) => r.addr === addr);
     if (!match) return null;
@@ -41,16 +75,16 @@ export const UpstreamsPage: React.FC = () => {
   const renderGroup = (title: string, groupKey: 'mainland' | 'gfw' | 'overseas', icon: React.ReactNode, desc: string) => {
     const servers = upstreams ? upstreams[groupKey] : [];
     return (
-      <div className="p-5 rounded-lg bg-surface-1 border border-neutral-800 space-y-4">
-        <div className="flex items-center justify-between pb-3 border-b border-neutral-800">
+      <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+        <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800">
           <div className="flex items-center gap-2.5">
             {icon}
             <div>
-              <h4 className="text-sm font-semibold text-neutral-100">{title}</h4>
-              <p className="text-xs text-neutral-400 mt-0.5">{desc}</p>
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">{title}</h4>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">{desc}</p>
             </div>
           </div>
-          <span className="text-xs font-mono text-neutral-400 bg-surface-2 px-2 py-0.5 rounded border border-neutral-800">
+          <span className="text-xs font-mono text-neutral-600 dark:text-neutral-400 bg-neutral-100 dark:bg-surface-2 px-2 py-0.5 rounded border border-neutral-200 dark:border-neutral-800">
             {servers.length} 个节点
           </span>
         </div>
@@ -65,49 +99,63 @@ export const UpstreamsPage: React.FC = () => {
             return (
               <div
                 key={addr}
-                className="flex items-center justify-between p-3 rounded-md bg-surface-2 border border-neutral-800/80 hover:border-neutral-700 transition-colors"
+                className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800/80 hover:border-neutral-300 dark:hover:border-neutral-700 transition-colors"
               >
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0 pr-3">
                   <span
                     className={`px-1.5 py-0.5 text-[10px] font-mono font-bold rounded ${
                       isDoh
-                        ? 'bg-purple-950/60 text-purple-400 border border-purple-800/40'
+                        ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-400 border border-purple-200 dark:border-purple-800/40'
                         : isTcp
-                        ? 'bg-blue-950/60 text-blue-400 border border-blue-800/40'
-                        : 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/40'
+                        ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800/40'
+                        : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/40'
                     }`}
                   >
                     {proto}
                   </span>
-                  <span className="font-mono text-xs text-neutral-200">{addr}</span>
+                  <span className="font-mono text-xs text-neutral-800 dark:text-neutral-200 truncate">{addr}</span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3 shrink-0">
                   {score && (
                     <div className="flex items-center gap-1.5 font-mono text-xs tabular-nums">
                       {score.ok ? (
                         <>
                           <span
                             className={`font-semibold ${
-                              score.latency_ms! < 50
-                                ? 'text-emerald-400'
+                              score.latency_ms! < 10
+                                ? 'text-emerald-600 dark:text-emerald-400'
                                 : score.latency_ms! < 150
-                                ? 'text-amber-400'
+                                ? 'text-amber-600 dark:text-amber-400'
                                 : 'text-neutral-400'
                             }`}
                           >
-                            {score.latency_ms} ms
+                            {score.latency_ms! < 1 ? '< 1 ms' : `${score.latency_ms!.toFixed(1)} ms`}
                           </span>
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 align-icon" />
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 align-icon" />
                         </>
                       ) : (
                         <>
-                          <span className="text-rose-400">超时</span>
-                          <XCircle className="w-3.5 h-3.5 text-rose-400 align-icon" />
+                          <span className="text-rose-600 dark:text-rose-400">不可达</span>
+                          <XCircle className="w-3.5 h-3.5 text-rose-500 align-icon" />
                         </>
                       )}
                     </div>
                   )}
+
+                  <Popconfirm
+                    title="确认移除该上游服务器？"
+                    actionText="确认移除"
+                    onConfirm={() => handleRemoveUpstream(groupKey, addr)}
+                  >
+                    <button
+                      type="button"
+                      className="text-neutral-400 hover:text-red-500 transition-colors"
+                      title="删除节点"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 align-icon" />
+                    </button>
+                  </Popconfirm>
                 </div>
               </div>
             );
@@ -120,25 +168,33 @@ export const UpstreamsPage: React.FC = () => {
   return (
     <div className="space-y-6 animate-in fade-in-50 duration-200">
       {/* 头部控制栏 */}
-      <div className="flex flex-wrap items-center justify-between gap-4 p-5 rounded-lg bg-surface-1 border border-neutral-800">
+      <div className="flex flex-wrap items-center justify-between gap-4 p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
         <div>
-          <h3 className="text-base font-semibold text-neutral-100 flex items-center gap-2">
-            <Server className="w-4 h-4 text-cyan-400 align-icon" />
-            SmartDNS 多协议上游组与测速优选
+          <h3 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+            <Server className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
+            多协议上游集群与测速优选
           </h3>
-          <p className="text-xs text-neutral-400 mt-1 max-w-2xl leading-relaxed">
-            分流引擎调度至不同上游组并发解析。支持 UDP 53、TCP 53 以及加密 DNS over HTTPS (DoH)。内置 TCP 80/443 建连测速引擎。
+          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-2xl leading-relaxed">
+            按分组调度解析。支持 UDP 53、TCP 53 及加密 DoH。内置非阻塞 TCP 80/443 建连测速，优先向客户端返回最快可用 IP。
           </p>
         </div>
-        <div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsAddModalOpen(true)}
+            className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 text-xs font-medium text-neutral-800 dark:text-neutral-200 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5 align-icon" />
+            添加上游节点
+          </button>
           <button
             type="button"
             onClick={handleBenchmark}
             disabled={testing}
-            className="inline-flex items-center gap-2 min-h-[38px] px-4 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md transition-colors shadow-sm disabled:opacity-50"
+            className="inline-flex items-center gap-2 min-h-[38px] px-4 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md transition-colors shadow-xs disabled:opacity-50"
           >
             <Play className="w-3.5 h-3.5 align-icon" />
-            {testing ? '正在并发测速中...' : '立即测试全组上游延迟'}
+            {testing ? '正在并发测试...' : '测试上游连通性与时延'}
           </button>
         </div>
       </div>
@@ -148,22 +204,81 @@ export const UpstreamsPage: React.FC = () => {
         {renderGroup(
           '大陆直连组 (mainland)',
           'mainland',
-          <Zap className="w-4 h-4 text-cyan-400 align-icon" />,
-          '国内直连解析，支持阿里 DNS、DNSPub 等低时延节点'
+          <Zap className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />,
+          '直连解析，支持阿里 DNS、DNSPub 等节点'
         )}
         {renderGroup(
           'GFW / 境外组 (gfw)',
           'gfw',
-          <Shield className="w-4 h-4 text-rose-400 align-icon" />,
-          '代理加速与抗污染回退组，走纯净加密 DoH'
+          <Shield className="w-4 h-4 text-rose-500 dark:text-rose-400 align-icon" />,
+          '抗污染回退组，走纯净加密 DoH 解析'
         )}
         {renderGroup(
           '海外备用组 (overseas)',
           'overseas',
-          <Globe className="w-4 h-4 text-emerald-400 align-icon" />,
-          'Cloudflare / Quad9 全球冗余应急解析'
+          <Globe className="w-4 h-4 text-emerald-600 dark:text-emerald-400 align-icon" />,
+          'Cloudflare 全球冗余应急解析'
         )}
       </div>
+
+      {/* 添加上游 Modal */}
+      <Modal
+        isOpen={isAddModalOpen}
+        onClose={() => setIsAddModalOpen(false)}
+        title="添加上游 DNS 节点"
+        size="sm"
+      >
+        <form onSubmit={handleAddUpstream} className="space-y-4 text-xs">
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              所属分组
+            </label>
+            <select
+              value={targetGroup}
+              onChange={(e) => setTargetGroup(e.target.value as any)}
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
+            >
+              <option value="mainland">大陆直连组 (mainland)</option>
+              <option value="gfw">GFW / 境外代理组 (gfw)</option>
+              <option value="overseas">海外备用组 (overseas)</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              服务器地址 (支持 udp://、tcp://、https://)
+            </label>
+            <input
+              type="text"
+              value={newAddr}
+              onChange={(e) => setNewAddr(e.target.value)}
+              placeholder="例如: https://1.12.12.12/dns-query 或 udp://223.5.5.5:53"
+              required
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-800">
+            <button
+              type="button"
+              onClick={() => setIsAddModalOpen(false)}
+              className="min-h-[36px] px-4 text-neutral-600 dark:text-neutral-400"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              className="min-h-[36px] px-4 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md shadow-xs"
+            >
+              确认添加
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {snackbarMessage && (
+        <Snackbar message={snackbarMessage} onClose={() => setSnackbarMessage(null)} />
+      )}
     </div>
   );
 };

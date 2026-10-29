@@ -3,6 +3,21 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyConfig {
+    pub enabled: bool,
+    pub socks5: String,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            socks5: "socks5://10.96.1.108:7890".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsConfig {
     pub port: u16,
     pub connect_ip_version: String,
@@ -37,11 +52,19 @@ pub struct UpstreamsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
     pub dns: DnsConfig,
+    #[serde(default)]
     pub web: WebConfig,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
+    #[serde(default)]
     pub cache: CacheConfig,
+    #[serde(default)]
     pub speed_check: SpeedCheckConfig,
+    #[serde(default)]
     pub anti_pollution: bool,
+    #[serde(default)]
     pub upstreams: UpstreamsConfig,
 }
 
@@ -53,6 +76,7 @@ impl Default for AppConfig {
                 connect_ip_version: "dual".to_string(),
             },
             web: WebConfig { port: 3000 },
+            proxy: ProxyConfig::default(),
             cache: CacheConfig {
                 size: 10000,
                 serve_expired: true,

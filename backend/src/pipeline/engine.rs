@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::{RData, RecordType};
@@ -23,7 +24,11 @@ pub struct PipelineEngine {
     pub forward_gfw: Arc<ForwardPlugin>,
     pub forward_overseas: Arc<ForwardPlugin>,
     pub speed_check: Arc<SpeedCheckPlugin>,
-    pub anti_pollution_enabled: bool,
+    pub qtype_65_enabled: AtomicBool,
+    pub adblock_enabled: AtomicBool,
+    pub cache_enabled: AtomicBool,
+    pub anti_pollution_enabled: AtomicBool,
+    pub speed_check_enabled: AtomicBool,
 }
 
 impl PipelineEngine {
@@ -51,7 +56,37 @@ impl PipelineEngine {
             forward_gfw,
             forward_overseas,
             speed_check,
-            anti_pollution_enabled,
+            qtype_65_enabled: AtomicBool::new(true),
+            adblock_enabled: AtomicBool::new(true),
+            cache_enabled: AtomicBool::new(true),
+            anti_pollution_enabled: AtomicBool::new(anti_pollution_enabled),
+            speed_check_enabled: AtomicBool::new(true),
+        }
+    }
+
+    pub fn toggle_stage(&self, stage_id: &str, enabled: bool) -> bool {
+        match stage_id {
+            "qtype_drop" => {
+                self.qtype_65_enabled.store(enabled, Ordering::SeqCst);
+                true
+            }
+            "adblock" => {
+                self.adblock_enabled.store(enabled, Ordering::SeqCst);
+                true
+            }
+            "cache" => {
+                self.cache_enabled.store(enabled, Ordering::SeqCst);
+                true
+            }
+            "anti_pollution" => {
+                self.anti_pollution_enabled.store(enabled, Ordering::SeqCst);
+                true
+            }
+            "speed_check" => {
+                self.speed_check_enabled.store(enabled, Ordering::SeqCst);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -89,7 +124,7 @@ impl PipelineEngine {
         ctx.record_timing("start");
 
         // 1. Qtype check (e.g. Qtype 65 drop)
-        if ctx.qtype == RecordType::from(65) {
+        if self.qtype_65_enabled.load(Ordering::Relaxed) && ctx.qtype == RecordType::from(65) {
             self.qtype_drop.execute(ctx).await;
             ctx.finish();
             return;
@@ -119,16 +154,20 @@ impl PipelineEngine {
 
         // 4. Adblock Rules (AdGuard)
         ctx.record_timing("adblock");
-        if self.adblock.execute(ctx).await == crate::pipeline::plugin::PluginResult::Accept {
-            ctx.finish();
-            return;
+        if self.adblock_enabled.load(Ordering::Relaxed) {
+            if self.adblock.execute(ctx).await == crate::pipeline::plugin::PluginResult::Accept {
+                ctx.finish();
+                return;
+            }
         }
 
         // 5. Cache (SmartDNS serve-expired)
         ctx.record_timing("cache");
-        if self.cache.execute(ctx).await == crate::pipeline::plugin::PluginResult::Accept {
-            ctx.finish();
-            return;
+        if self.cache_enabled.load(Ordering::Relaxed) {
+            if self.cache.execute(ctx).await == crate::pipeline::plugin::PluginResult::Accept {
+                ctx.finish();
+                return;
+            }
         }
 
         // 6. Router & Dispatch (MosDNS pipeline)
@@ -148,7 +187,7 @@ impl PipelineEngine {
             self.forward_mainland.execute(ctx).await;
 
             // Anti-pollution check: if mainland returned an IP that is NOT in China IP list, drop response and fallback to GFW!
-            if self.anti_pollution_enabled {
+            if self.anti_pollution_enabled.load(Ordering::Relaxed) {
                 if let Some(ref resp) = ctx.response {
                     if self.has_ip_answers(resp) && !self.has_china_ip(resp) {
                         ctx.tags.insert("pollution_detected".to_string());
@@ -169,13 +208,17 @@ impl PipelineEngine {
 
         // 7. Speed Check (SmartDNS fastest IP)
         if ctx.response.is_some() {
-            ctx.record_timing("speed_check");
-            self.speed_check.execute(ctx).await;
+            if self.speed_check_enabled.load(Ordering::Relaxed) {
+                ctx.record_timing("speed_check");
+                self.speed_check.execute(ctx).await;
+            }
 
             // 8. Cache storage
-            if let Some(ref resp) = ctx.response {
-                if resp.metadata.response_code == ResponseCode::NoError {
-                    self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
+            if self.cache_enabled.load(Ordering::Relaxed) {
+                if let Some(ref resp) = ctx.response {
+                    if resp.metadata.response_code == ResponseCode::NoError {
+                        self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
+                    }
                 }
             }
         } else {

@@ -8,6 +8,13 @@ export interface StatusResponse {
   anti_pollution: boolean;
 }
 
+export interface HourlyMetric {
+  hour: string;
+  total: number;
+  blocked: number;
+  avg_duration_ms: number;
+}
+
 export interface MetricsSnapshot {
   total_queries: number;
   blocked_queries: number;
@@ -17,6 +24,7 @@ export interface MetricsSnapshot {
   cache_hit_rate: number;
   avg_duration_ms: number;
   qps: number;
+  hourly_history?: HourlyMetric[];
   top_domains: [string, number][];
   top_blocked: [string, number][];
   top_clients: [string, number][];
@@ -80,6 +88,15 @@ export interface DnsRewriteRecord {
   record_type: string;
   value: string;
   enabled: boolean;
+}
+
+export interface RuleFileInfo {
+  name: string;
+  file_name: string;
+  count: number;
+  size_bytes: number;
+  updated_at: string;
+  url: string;
 }
 
 export const api = {
@@ -178,5 +195,93 @@ export const api = {
 
   async flushCache(): Promise<void> {
     await fetch('/api/v1/cache/flush', { method: 'POST' });
+  },
+  async togglePipelineStage(id: string, enabled: boolean): Promise<void> {
+    await fetch('/api/v1/pipeline/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, enabled }),
+    });
+  },
+
+  async toggleRule(id: string): Promise<void> {
+    await fetch(`/api/v1/rules/${id}/toggle`, { method: 'POST' });
+  },
+
+  async quickAddRule(domain: string, action: 'block' | 'whitelist'): Promise<void> {
+    await fetch('/api/v1/rules/quick-add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain, action }),
+    });
+  },
+
+  async getRoutingRules(): Promise<RuleFileInfo[]> {
+    const res = await fetch('/api/v1/routing/rules');
+    return res.json();
+  },
+
+  async updateRoutingRules(): Promise<[string, { Ok?: number; Err?: string }][]> {
+    const res = await fetch('/api/v1/routing/rules/update', { method: 'POST' });
+    return res.json();
+  },
+
+  async addUpstream(group: string, addr: string): Promise<void> {
+    await fetch('/api/v1/upstreams/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group, addr }),
+    });
+  },
+
+  async removeUpstream(group: string, addr: string): Promise<void> {
+    await fetch('/api/v1/upstreams/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group, addr }),
+    });
+  },
+
+  async getRuleContent(id: string): Promise<{ id: string; content: string }> {
+    const res = await fetch(`/api/v1/rules/${id}/content`);
+    return res.json();
+  },
+
+  async updateRuleContent(id: string, content: string): Promise<void> {
+    await fetch(`/api/v1/rules/${id}/content`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+  },
+
+  async getRoutingRuleContent(fileName: string): Promise<{ file_name: string; content: string }> {
+    const res = await fetch(`/api/v1/routing/rules/${fileName}/content`);
+    return res.json();
+  },
+
+  async updateRoutingRuleContent(fileName: string, content: string): Promise<void> {
+    await fetch(`/api/v1/routing/rules/${fileName}/content`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+  },
+
+  async getRawConfig(): Promise<{ content: string }> {
+    const res = await fetch('/api/v1/config/raw');
+    return res.json();
+  },
+
+  async updateRawConfig(content: string): Promise<void> {
+    const res = await fetch('/api/v1/config/raw', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err);
+    }
   },
 };

@@ -1,9 +1,10 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,7 @@ use crate::db::{AdblockRuleRecord, Database, DnsRewriteRecord};
 use crate::metrics::MetricsCollector;
 use crate::pipeline::plugin::DnsPlugin;
 use crate::pipeline::engine::PipelineEngine;
+use crate::pipeline::rule_files::RuleFileManager;
 
 #[derive(RustEmbed)]
 #[folder = "../frontend/dist"]
@@ -26,6 +28,7 @@ pub struct AppState {
     pub db: Arc<Database>,
     pub metrics: Arc<MetricsCollector>,
     pub config: Arc<AppConfig>,
+    pub rule_manager: Arc<RuleFileManager>,
     pub start_time: std::time::Instant,
 }
 
@@ -37,12 +40,22 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/querylog/export", get(export_query_logs_csv))
         .route("/api/v1/querylog/clear", post(clear_query_logs))
         .route("/api/v1/pipeline", get(get_pipeline))
+        .route("/api/v1/pipeline/toggle", post(toggle_pipeline_stage))
         .route("/api/v1/rules", get(get_rules).post(add_rule))
         .route("/api/v1/rules/{id}", delete(delete_rule))
         .route("/api/v1/rules/{id}/refresh", post(refresh_rule))
+        .route("/api/v1/rules/{id}/toggle", post(toggle_rule))
+        .route("/api/v1/rules/{id}/content", get(get_rule_content).put(update_rule_content))
         .route("/api/v1/rules/test", post(test_rule))
+        .route("/api/v1/rules/quick-add", post(quick_add_rule))
         .route("/api/v1/upstreams", get(get_upstreams))
         .route("/api/v1/upstreams/test", post(test_upstreams))
+        .route("/api/v1/upstreams/add", post(add_upstream))
+        .route("/api/v1/upstreams/remove", post(remove_upstream))
+        .route("/api/v1/routing/rules", get(get_routing_rules))
+        .route("/api/v1/routing/rules/update", post(update_routing_rules))
+        .route("/api/v1/routing/rules/{file_name}/content", get(get_routing_rule_content).put(update_routing_rule_content))
+        .route("/api/v1/config/raw", get(get_raw_config).put(update_raw_config))
         .route("/api/v1/rewrites", get(get_rewrites).post(add_rewrite))
         .route("/api/v1/rewrites/{id}", delete(delete_rewrite))
         .route("/api/v1/cache/flush", post(flush_cache))
@@ -93,7 +106,7 @@ async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
         web_port: state.config.web.port,
         cache_entries: state.engine.cache.size(),
         adblock_rules_count: state.engine.adblock.rule_count(),
-        anti_pollution: state.engine.anti_pollution_enabled,
+        anti_pollution: state.engine.anti_pollution_enabled.load(Ordering::Relaxed),
     })
 }
 
@@ -210,7 +223,7 @@ async fn get_pipeline(State(state): State<AppState>) -> Json<Vec<PipelineNode>> 
             name: "Qtype 65 阻断",
             stage: "filter",
             description: "拦截苹果/Chrome HTTPS RR (Qtype 65) 避免绕过分流",
-            enabled: true,
+            enabled: state.engine.qtype_65_enabled.load(Ordering::Relaxed),
         },
         PipelineNode {
             id: "rewrite",
@@ -224,14 +237,14 @@ async fn get_pipeline(State(state): State<AppState>) -> Json<Vec<PipelineNode>> 
             name: "AdGuard 规则拦截",
             stage: "filter",
             description: "ABP/Hosts/正则语法毫秒级过滤广告与恶意域名",
-            enabled: true,
+            enabled: state.engine.adblock_enabled.load(Ordering::Relaxed),
         },
         PipelineNode {
             id: "cache",
             name: "SmartDNS 智能缓存",
             stage: "cache",
             description: "Serve-Expired 过期秒返与高频域名静默预取",
-            enabled: true,
+            enabled: state.engine.cache_enabled.load(Ordering::Relaxed),
         },
         PipelineNode {
             id: "router",
@@ -245,16 +258,33 @@ async fn get_pipeline(State(state): State<AppState>) -> Json<Vec<PipelineNode>> 
             name: "防 DNS 污染检测",
             stage: "security",
             description: "国内上游返回非大陆 IP 时丢弃应答并触发回退",
-            enabled: state.engine.anti_pollution_enabled,
+            enabled: state.engine.anti_pollution_enabled.load(Ordering::Relaxed),
         },
         PipelineNode {
             id: "speed_check",
             name: "TCP 80/443 最优 IP 测速",
             stage: "optimize",
             description: "并发建连测速并按最低 RTT 重排序多条 IP 结果",
-            enabled: true,
+            enabled: state.engine.speed_check_enabled.load(Ordering::Relaxed),
         },
     ])
+}
+
+#[derive(Deserialize)]
+struct TogglePipelinePayload {
+    id: String,
+    enabled: bool,
+}
+
+async fn toggle_pipeline_stage(
+    State(state): State<AppState>,
+    Json(payload): Json<TogglePipelinePayload>,
+) -> StatusCode {
+    if state.engine.toggle_stage(&payload.id, payload.enabled) {
+        StatusCode::OK
+    } else {
+        StatusCode::BAD_REQUEST
+    }
 }
 
 async fn get_rules(State(state): State<AppState>) -> Result<Json<Vec<AdblockRuleRecord>>, (StatusCode, String)> {
@@ -437,7 +467,7 @@ async fn get_upstreams(State(state): State<AppState>) -> Json<UpstreamsResponse>
 struct UpstreamTestItem {
     addr: String,
     group: String,
-    latency_ms: Option<u64>,
+    latency_ms: Option<f64>,
     ok: bool,
 }
 
@@ -457,7 +487,10 @@ async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestI
             let mut ok = false;
             let mut rtt = None;
 
-            if let Some(s) = server {
+            if let Some(mut s) = server {
+                if state.config.proxy.enabled && (group_name == "gfw" || group_name == "overseas") {
+                    s.proxy = Some(state.config.proxy.socks5.clone());
+                }
                 let mut req = hickory_proto::op::Message::query();
                 req.add_query(hickory_proto::op::Query::query(
                     hickory_proto::rr::Name::from_ascii("example.com.").unwrap(),
@@ -466,7 +499,7 @@ async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestI
                 if let Ok(bytes) = req.to_vec() {
                     if s.query(&bytes, std::time::Duration::from_millis(1500)).await.is_ok() {
                         ok = true;
-                        rtt = Some(start.elapsed().as_millis() as u64);
+                        rtt = Some((start.elapsed().as_micros() as f64) / 1000.0);
                     }
                 }
             }
@@ -570,4 +603,203 @@ async fn handle_ws_querylog(mut socket: WebSocket, state: AppState) {
             }
         }
     }
+}
+async fn toggle_rule(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    conn.execute(
+        "UPDATE adblock_rules SET enabled = (CASE WHEN enabled = 1 THEN 0 ELSE 1 END) WHERE id = ?1",
+        rusqlite::params![id],
+    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    reload_all_rules(&state).await;
+    Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize)]
+struct QuickAddRulePayload {
+    domain: String,
+    action: String, // "block" or "whitelist"
+}
+
+async fn quick_add_rule(
+    State(state): State<AppState>,
+    Json(payload): Json<QuickAddRulePayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let domain = payload.domain.trim_end_matches('.').to_lowercase();
+    if domain.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Domain empty".to_string()));
+    }
+
+    let line = if payload.action == "whitelist" {
+        format!("@@||{}^\n", domain)
+    } else {
+        format!("||{}^\n", domain)
+    };
+
+    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Find or create "自定义规则" list
+    let existing_custom: Option<String> = conn.query_row(
+        "SELECT id FROM adblock_rules WHERE name = '自定义规则' LIMIT 1",
+        [],
+        |r| r.get(0),
+    ).ok();
+
+    let rule_id = existing_custom.unwrap_or_else(|| {
+        let new_id = Uuid::new_v4().to_string();
+        let _ = conn.execute(
+            "INSERT INTO adblock_rules (id, name, url, enabled, rule_count, updated_at, content)
+             VALUES (?1, '自定义规则', 'custom-local', 1, 0, ?2, '')",
+            rusqlite::params![new_id, Utc::now().to_rfc3339()],
+        );
+        new_id
+    });
+
+    conn.execute(
+        "UPDATE adblock_rules SET content = coalesce(content, '') || ?1, updated_at = ?2, rule_count = rule_count + 1 WHERE id = ?3",
+        rusqlite::params![line, Utc::now().to_rfc3339(), rule_id],
+    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    reload_all_rules(&state).await;
+    Ok(StatusCode::OK)
+}
+#[derive(Deserialize)]
+struct UpstreamActionPayload {
+    group: String,
+    addr: String,
+}
+
+async fn add_upstream(
+    State(state): State<AppState>,
+    Json(payload): Json<UpstreamActionPayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let mut cfg = (*state.config).clone();
+    match payload.group.as_str() {
+        "mainland" => cfg.upstreams.mainland.push(payload.addr),
+        "gfw" => cfg.upstreams.gfw.push(payload.addr),
+        "overseas" => cfg.upstreams.overseas.push(payload.addr),
+        _ => return Err((StatusCode::BAD_REQUEST, "Unknown group".to_string())),
+    }
+    let _ = cfg.save("data/config.yaml");
+    Ok(StatusCode::OK)
+}
+
+async fn remove_upstream(
+    State(state): State<AppState>,
+    Json(payload): Json<UpstreamActionPayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let mut cfg = (*state.config).clone();
+    match payload.group.as_str() {
+        "mainland" => cfg.upstreams.mainland.retain(|s| s != &payload.addr),
+        "gfw" => cfg.upstreams.gfw.retain(|s| s != &payload.addr),
+        "overseas" => cfg.upstreams.overseas.retain(|s| s != &payload.addr),
+        _ => return Err((StatusCode::BAD_REQUEST, "Unknown group".to_string())),
+    }
+    let _ = cfg.save("data/config.yaml");
+    Ok(StatusCode::OK)
+}
+
+async fn get_routing_rules(
+    State(state): State<AppState>,
+) -> Json<Vec<crate::pipeline::rule_files::RuleFileInfo>> {
+    Json(state.rule_manager.list_rules())
+}
+
+async fn update_routing_rules(
+    State(state): State<AppState>,
+) -> Json<Vec<(String, Result<usize, String>)>> {
+    let res = state.rule_manager.update_all().await;
+    Json(res)
+}
+
+#[derive(Serialize)]
+struct RuleContentResponse {
+    id: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateRuleContentPayload {
+    content: String,
+}
+
+async fn get_rule_content(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<RuleContentResponse>, (StatusCode, String)> {
+    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let content: String = conn.query_row(
+        "SELECT coalesce(content, '') FROM adblock_rules WHERE id = ?1",
+        rusqlite::params![id],
+        |r| r.get(0),
+    ).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    Ok(Json(RuleContentResponse { id, content }))
+}
+
+async fn update_rule_content(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(payload): Json<UpdateRuleContentPayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let mut store = crate::pipeline::plugins::adblock::RuleStore::default();
+    store.parse_rules(&payload.content);
+    let count = store.total_count;
+
+    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    conn.execute(
+        "UPDATE adblock_rules SET content = ?1, rule_count = ?2, updated_at = ?3 WHERE id = ?4",
+        rusqlite::params![payload.content, count as i64, Utc::now().to_rfc3339(), id],
+    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    reload_all_rules(&state).await;
+    Ok(StatusCode::OK)
+}
+
+#[derive(Serialize)]
+struct RoutingRuleContentResponse {
+    file_name: String,
+    content: String,
+}
+
+async fn get_routing_rule_content(
+    State(_state): State<AppState>,
+    AxumPath(file_name): AxumPath<String>,
+) -> Result<Json<RoutingRuleContentResponse>, (StatusCode, String)> {
+    let path = std::path::Path::new("data/rules").join(&file_name);
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    Ok(Json(RoutingRuleContentResponse { file_name, content }))
+}
+
+async fn update_routing_rule_content(
+    State(state): State<AppState>,
+    AxumPath(file_name): AxumPath<String>,
+    Json(payload): Json<UpdateRuleContentPayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let path = std::path::Path::new("data/rules").join(&file_name);
+    std::fs::write(&path, &payload.content).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.rule_manager.load_local_rules();
+    Ok(StatusCode::OK)
+}
+
+#[derive(Serialize)]
+struct RawConfigResponse {
+    content: String,
+}
+
+async fn get_raw_config() -> Result<Json<RawConfigResponse>, (StatusCode, String)> {
+    let content = std::fs::read_to_string("data/config.yaml").unwrap_or_default();
+    Ok(Json(RawConfigResponse { content }))
+}
+
+async fn update_raw_config(
+    Json(payload): Json<UpdateRuleContentPayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let _: crate::config::AppConfig = serde_yaml::from_str(&payload.content)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid YAML: {}", e)))?;
+    std::fs::write("data/config.yaml", &payload.content)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(StatusCode::OK)
 }

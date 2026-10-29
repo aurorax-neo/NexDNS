@@ -209,14 +209,10 @@ async fn update_settings(
     State(state): State<AppState>,
     Json(payload): Json<AppConfig>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // 引导 DNS 强校验: 只能是纯 IP，严禁包含域名
+    // 引导 DNS 强校验: 目标主机必须是纯 IP，支持 DoT/DoH/SNI，严禁主机为域名
     for b in &payload.upstreams.bootstrap_dns {
-        let clean = b.split(':').next().unwrap_or(b).trim();
-        if clean.parse::<std::net::IpAddr>().is_err() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("引导 DNS (Bootstrap DNS) 只能是纯 IP 地址，禁止输入域名: {}", b),
-            ));
+        if let Err(e) = validate_bootstrap_addr(b) {
+            return Err((StatusCode::BAD_REQUEST, e));
         }
     }
 
@@ -1209,12 +1205,8 @@ async fn update_bootstrap_dns(
     Json(payload): Json<UpdateBootstrapPayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     for b in &payload.dns_list {
-        let clean = b.split(':').next().unwrap_or(b).trim();
-        if clean.parse::<std::net::IpAddr>().is_err() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("引导 DNS (Bootstrap DNS) 只能是 IP 地址（如 223.5.5.5 或 119.29.29.29），严禁配置域名: {}", b),
-            ));
+        if let Err(e) = validate_bootstrap_addr(b) {
+            return Err((StatusCode::BAD_REQUEST, e));
         }
     }
     {
@@ -1223,6 +1215,30 @@ async fn update_bootstrap_dns(
         let _ = cfg.save(&state.config_path);
     }
     Ok(StatusCode::OK)
+}
+
+fn validate_bootstrap_addr(addr_str: &str) -> Result<(), String> {
+    let raw = addr_str.trim();
+    if raw.is_empty() {
+        return Err("引导 DNS 地址不能为空".to_string());
+    }
+    let base = raw.split('#').next().unwrap_or(raw);
+    let without_scheme = if let Some(idx) = base.find("://") {
+        &base[idx + 3..]
+    } else {
+        base
+    };
+    let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+    let host = if host_port.starts_with('[') {
+        let end = host_port.find(']').unwrap_or(host_port.len());
+        &host_port[1..end]
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+    if host.parse::<std::net::IpAddr>().is_err() {
+        return Err(format!("引导 DNS 主机必须是纯 IP 地址，禁止使用域名: {} (提取的主机名: {})", addr_str, host));
+    }
+    Ok(())
 }
 async fn get_routing_rules(
     State(state): State<AppState>,

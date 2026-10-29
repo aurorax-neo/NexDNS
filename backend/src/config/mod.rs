@@ -218,6 +218,10 @@ pub struct UpstreamsConfig {
 
 fn default_bootstrap_dns() -> Vec<String> {
     vec![
+        "https://223.5.5.5/dns-query#sni=dns.alidns.com".to_string(),
+        "https://1.12.12.12/dns-query#sni=doh.pub".to_string(),
+        "https://8.8.8.8/dns-query#sni=dns.google".to_string(),
+        "https://1.1.1.1/dns-query#sni=cloudflare-dns.com".to_string(),
         "223.5.5.5".to_string(),
         "119.29.29.29".to_string(),
     ]
@@ -353,23 +357,40 @@ impl Default for AppConfig {
             rules_update: RulesUpdateConfig::default(),
             upstreams: UpstreamsConfig {
                 bootstrap_dns: vec![
+                    "https://223.5.5.5/dns-query#sni=dns.alidns.com".to_string(),
+                    "https://1.12.12.12/dns-query#sni=doh.pub".to_string(),
+                    "https://8.8.8.8/dns-query#sni=dns.google".to_string(),
+                    "https://1.1.1.1/dns-query#sni=cloudflare-dns.com".to_string(),
                     "223.5.5.5".to_string(),
                     "119.29.29.29".to_string(),
                 ],
                 mainland: vec![
+                    "https://1.12.12.12/dns-query#sni=doh.pub".to_string(),
+                    "https://120.53.53.53/dns-query#sni=doh.pub".to_string(),
+                    "https://101.226.4.6/dns-query#sni=doh.360.cn".to_string(),
+                    "https://218.30.118.6/dns-query#sni=doh.360.cn".to_string(),
+                    "https://223.5.5.5/dns-query#sni=dns.alidns.com".to_string(),
+                    "https://223.6.6.6/dns-query#sni=dns.alidns.com".to_string(),
                     "udp://223.5.5.5:53".to_string(),
                     "udp://119.29.29.29:53".to_string(),
-                    "https://223.5.5.5/dns-query#sni=dns.alidns.com".to_string(),
-                    "https://101.226.4.6/dns-query#sni=doh.360.cn".to_string(),
                 ],
                 gfw: vec![
                     "https://8.8.8.8/dns-query#sni=dns.google&proxy=default".to_string(),
+                    "https://8.8.4.4/dns-query#sni=dns.google&proxy=default".to_string(),
+                    "https://94.140.14.140/dns-query#sni=dns.adguard.com&proxy=default".to_string(),
+                    "https://94.140.14.141/dns-query#sni=dns.adguard.com&proxy=default".to_string(),
+                    "https://route.aorz.kdns.fr/dns-query#proxy=default".to_string(),
                     "https://cloudflare-dns.com/dns-query#proxy=default".to_string(),
                     "https://1.1.1.1/dns-query#sni=cloudflare-dns.com&proxy=default".to_string(),
                 ],
                 overseas: vec![
                     "https://1.1.1.1/dns-query#sni=cloudflare-dns.com&proxy=default".to_string(),
                     "https://8.8.8.8/dns-query#sni=dns.google&proxy=default".to_string(),
+                    "https://168.95.1.1/dns-query#sni=dns.hinet.net&proxy=default".to_string(),
+                    "https://168.95.192.1/dns-query#sni=dns.hinet.net&proxy=default".to_string(),
+                    "https://77.88.8.8/dns-query#proxy=default".to_string(),
+                    "https://77.88.8.1/dns-query#proxy=default".to_string(),
+                    "https://route.aorz.kdns.fr/dns-query#proxy=default".to_string(),
                 ],
                 timeout_ms: 2000,
             },

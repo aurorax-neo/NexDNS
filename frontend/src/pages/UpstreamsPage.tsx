@@ -68,16 +68,19 @@ export const UpstreamsPage: React.FC = () => {
     }).catch(console.error);
   }, []);
 
-  // 严格纯 IP 格式校验（只能是 IP 地址，不能是域名）
-  const validatePureIp = (val: string): boolean => {
+  // 引导 DNS 校验: 目标主机必须是纯 IP（支持纯 IP、DoT、DoH 及带 SNI 的 DoH）
+  const validateBootstrapAddr = (val: string): boolean => {
     const trimmed = val.trim();
     if (!trimmed) return false;
-    // 包含字母一律拦截（IPv6 十六进制 a-f 除外）
-    if (/[g-zG-Z]/.test(trimmed)) return false;
-    const cleanIp = trimmed.split(':')[0].replace(/^\[|\]$/g, '');
+    const base = trimmed.split('#')[0];
+    const withoutScheme = base.includes('://') ? base.split('://')[1] : base;
+    const hostPort = withoutScheme.split('/')[0];
+    const host = hostPort.startsWith('[')
+      ? hostPort.slice(1, hostPort.indexOf(']'))
+      : hostPort.split(':')[0];
     const ipv4Regex = /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}$/;
     const ipv6Regex = /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^([0-9a-fA-F]{1,4}:)*:[0-9a-fA-F]{1,4}$/;
-    return ipv4Regex.test(cleanIp) || ipv6Regex.test(cleanIp);
+    return ipv4Regex.test(host) || ipv6Regex.test(host);
   };
 
   const handleBootstrapInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -87,8 +90,8 @@ export const UpstreamsPage: React.FC = () => {
       setBootstrapIpError(null);
       return;
     }
-    if (!validatePureIp(val)) {
-      setBootstrapIpError('引导 DNS 只能是 IP 地址（如 223.5.5.5 或 119.29.29.29），严禁配置域名！');
+    if (!validateBootstrapAddr(val)) {
+      setBootstrapIpError('引导 DNS 主机必须是 IP 地址，支持纯 IP、DoT、DoH 或带 #sni= 的 DoH，严禁主机为域名！');
     } else {
       setBootstrapIpError(null);
     }
@@ -96,8 +99,8 @@ export const UpstreamsPage: React.FC = () => {
 
   const handleAddBootstrapIp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validatePureIp(newBootstrapIp)) {
-      setBootstrapIpError('请输入合法的纯 IP 地址，严禁使用域名！');
+    if (!validateBootstrapAddr(newBootstrapIp)) {
+      setBootstrapIpError('引导 DNS 主机必须是 IP 地址，严禁主机为域名！');
       return;
     }
     const cleanIp = newBootstrapIp.trim();
@@ -511,7 +514,7 @@ export const UpstreamsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* 引导 DNS (Bootstrap DNS) 配置卡片: 只能是 IP 地址，严禁配置域名 */}
+      {/* 引导 DNS (Bootstrap DNS) 配置卡片 */}
       <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-neutral-200 dark:border-neutral-800">
           <div>
@@ -519,9 +522,6 @@ export const UpstreamsPage: React.FC = () => {
               <Zap className="w-4 h-4 text-amber-500 align-icon" />
               上游 DoH / DoT 引导解析 DNS (Bootstrap DNS)
             </h4>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-              用于解析上游加密 DNS 服务器的域名。<span className="font-semibold text-rose-600 dark:text-rose-400">仅允许配置纯 IP 地址（IPv4 / IPv6），严禁配置域名</span>。
-            </p>
           </div>
         </div>
 
@@ -548,14 +548,14 @@ export const UpstreamsPage: React.FC = () => {
           ))}
         </div>
 
-        {/* 添加纯 IP 输入表单 */}
+        {/* 添加引导 DNS 表单 */}
         <form onSubmit={handleAddBootstrapIp} className="flex flex-wrap items-start gap-2 pt-1">
           <div className="flex-1 min-w-[260px]">
             <input
               type="text"
               value={newBootstrapIp}
               onChange={handleBootstrapInputChange}
-              placeholder="输入纯 IP 地址，例如: 223.5.5.5 或 119.29.29.29 (禁止输入域名)"
+              placeholder="输入 IP、DoT 或带 SNI 的 DoH，例如: https://223.5.5.5/dns-query#sni=dns.alidns.com"
               className={`w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border ${
                 bootstrapIpError ? 'border-rose-500 focus:border-rose-500' : 'border-neutral-300 dark:border-neutral-700 focus:border-cyan-500'
               } rounded-md text-xs font-mono text-neutral-900 dark:text-neutral-100 focus:outline-none`}
@@ -569,7 +569,7 @@ export const UpstreamsPage: React.FC = () => {
             disabled={!newBootstrapIp.trim() || !!bootstrapIpError}
             className="min-h-[38px] px-4 text-xs font-medium bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200 rounded-md transition-colors disabled:opacity-40 shadow-xs"
           >
-            添加引导 IP
+            添加引导节点
           </button>
         </form>
       </div>
@@ -679,6 +679,95 @@ export const UpstreamsPage: React.FC = () => {
               className="min-h-[36px] px-4 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md shadow-xs"
             >
               确认添加
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* 编辑上游服务器配置 Modal */}
+      <Modal
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        title="编辑上游服务器配置"
+        size="md"
+      >
+        <form onSubmit={handleEditSubmit} className="space-y-4 text-xs">
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              服务器连接地址 (URI)
+            </label>
+            <input
+              type="text"
+              value={editAddr}
+              onChange={(e) => setEditAddr(e.target.value)}
+              placeholder="udp://223.5.5.5:53 或 https://8.8.8.8/dns-query"
+              required
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              归属分组
+            </label>
+            <CustomSelect
+              options={[
+                { value: 'mainland', label: '大陆直连组 (mainland)' },
+                { value: 'gfw', label: '代理过滤组 (gfw)' },
+                { value: 'overseas', label: '海外备用组 (overseas)' },
+              ]}
+              value={editTargetGroup}
+              onChange={setEditTargetGroup}
+              className="w-full"
+            />
+          </div>
+
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              自定义 SNI / TLS 校验主机名 (可选)
+            </label>
+            <input
+              type="text"
+              value={editHostName}
+              onChange={(e) => setEditHostName(e.target.value)}
+              placeholder="例如: dns.google 或 dns.alidns.com"
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              代理路由策略 (Proxy Route)
+            </label>
+            <CustomSelect
+              options={[
+                { value: 'none', label: '直连 (不使用代理)' },
+                { value: 'default', label: '系统默认代理 (推荐)' },
+                ...proxyList.map((p) => ({
+                  value: p.id,
+                  label: `${p.name} (${p.addr})`,
+                })),
+              ]}
+              value={editProxyMode}
+              onChange={setEditProxyMode}
+              className="w-full"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-800">
+            <button
+              type="button"
+              onClick={() => setIsEditModalOpen(false)}
+              className="min-h-[36px] px-4 text-neutral-600 dark:text-neutral-400"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={savingEdit}
+              className="min-h-[36px] px-5 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md shadow-xs disabled:opacity-50"
+            >
+              {savingEdit ? '保存中...' : '确认更新'}
             </button>
           </div>
         </form>

@@ -40,29 +40,29 @@ export const Modal: React.FC<ModalProps> = ({
   }[size];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
       {/* 遮罩不可点击关闭，防止表单输入丢失 */}
       <div className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity" />
 
       <div
-        className={`relative w-full ${widthClass} rounded-lg bg-surface-1 border border-neutral-800 shadow-2xl transition-all duration-200 z-10`}
+        className={`relative w-full max-w-[calc(100vw-24px)] ${widthClass} rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-2xl transition-all duration-200 z-10`}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800">
-          <h3 className="text-base font-medium text-neutral-100">{title}</h3>
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-neutral-200 dark:border-neutral-800">
+          <h3 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">{title}</h3>
           <button
             type="button"
             onClick={onClose}
-            className="min-w-[40px] min-h-[40px] flex items-center justify-center text-neutral-400 hover:text-neutral-100 rounded-md transition-colors"
+            className="min-w-[40px] min-h-[40px] flex items-center justify-center text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 rounded-md transition-colors"
             title="关闭"
           >
             <X className="w-5 h-5 align-icon" />
           </button>
         </div>
 
-        <div className="p-6 max-h-[75vh] overflow-y-auto">{children}</div>
+        <div className="p-4 sm:p-6 max-h-[75vh] overflow-y-auto">{children}</div>
 
         {footer && (
-          <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-neutral-800 bg-surface-2/40 rounded-b-lg">
+          <div className="flex items-center justify-end gap-3 px-4 sm:px-6 py-3.5 sm:py-4 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-surface-2/40 rounded-b-lg">
             {footer}
           </div>
         )}

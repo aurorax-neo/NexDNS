@@ -334,7 +334,7 @@ export const SettingsPage: React.FC = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">DNS 监听端口</label>
                   <input
@@ -365,7 +365,7 @@ export const SettingsPage: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">Web 控制台端口</label>
                   <input
@@ -396,7 +396,7 @@ export const SettingsPage: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">监听模式</label>
                   <CustomSelect
@@ -436,7 +436,7 @@ export const SettingsPage: React.FC = () => {
               </div>
 
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">阻断响应策略 (Blocking Mode)</label>
                   <CustomSelect
@@ -900,7 +900,7 @@ export const SettingsPage: React.FC = () => {
                   className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">新密码</label>
                   <input

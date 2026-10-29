@@ -100,6 +100,18 @@ impl Database {
              CREATE TABLE IF NOT EXISTS system_settings (
                  key TEXT PRIMARY KEY,
                  value TEXT NOT NULL
+             );
+
+             CREATE TABLE IF NOT EXISTS routing_rule_files (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 file_name TEXT NOT NULL UNIQUE,
+                 group_type TEXT NOT NULL,
+                 url TEXT,
+                 enabled INTEGER NOT NULL,
+                 line_count INTEGER NOT NULL,
+                 size_bytes INTEGER NOT NULL,
+                 updated_at TEXT NOT NULL
              );"
         )?;
 

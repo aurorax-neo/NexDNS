@@ -65,18 +65,27 @@ impl RuleFileManager {
                 updated_at TEXT NOT NULL
             );"
         )?;
+        self.ensure_defaults()
+    }
 
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM routing_rule_files", [], |r| r.get(0))?;
-        if count == 0 {
-            let defaults = vec![
-                ("大陆直连主规则 (direct.txt)", "direct.txt", "mainland", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/direct.txt"),
-                ("代理过滤主规则 (proxy.txt)", "proxy.txt", "gfw", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/proxy.txt"),
-                ("局域私有域名 (private.txt)", "private.txt", "private", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/private.txt"),
-                ("中国 IPv4 地址段 (ipv4_china.txt)", "ipv4_china.txt", "china_ip", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/ipv4_china.txt"),
-                ("中国 IPv6 地址段 (ipv6_china.txt)", "ipv6_china.txt", "china_ip", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/ipv6_china.txt"),
-            ];
+    pub fn ensure_defaults(&self) -> rusqlite::Result<()> {
+        let conn = self.get_conn()?;
+        let defaults = vec![
+            ("大陆直连主规则 (direct.txt)", "direct.txt", "mainland", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/direct.txt"),
+            ("代理过滤主规则 (proxy.txt)", "proxy.txt", "gfw", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/proxy.txt"),
+            ("局域私有域名 (private.txt)", "private.txt", "private", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/private.txt"),
+            ("中国 IPv4 地址段 (ipv4_china.txt)", "ipv4_china.txt", "china_ip", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/ipv4_china.txt"),
+            ("中国 IPv6 地址段 (ipv6_china.txt)", "ipv6_china.txt", "china_ip", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/ipv6_china.txt"),
+        ];
 
-            for (name, file_name, group_type, url) in defaults {
+        for (name, file_name, group_type, url) in defaults {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM routing_rule_files WHERE file_name = ?1)",
+                params![file_name],
+                |r| r.get(0),
+            ).unwrap_or(false);
+
+            if !exists {
                 let id = Uuid::new_v4().to_string();
                 let file_path = self.base_dir.join(file_name);
                 let size = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
@@ -85,7 +94,7 @@ impl RuleFileManager {
                     .unwrap_or(0);
 
                 let _ = conn.execute(
-                    "INSERT INTO routing_rule_files (id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at)
+                    "INSERT OR REPLACE INTO routing_rule_files (id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8)",
                     params![id, name, file_name, group_type, url, line_count as i64, size as i64, chrono::Utc::now().to_rfc3339()],
                 );
@@ -95,6 +104,7 @@ impl RuleFileManager {
     }
 
     pub fn list_rules(&self) -> Vec<RuleFileInfo> {
+        let _ = self.ensure_defaults();
         let Ok(conn) = self.get_conn() else {
             return Vec::new();
         };

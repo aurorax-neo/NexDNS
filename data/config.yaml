@@ -3,6 +3,14 @@ dns:
   connect_ip_version: dual
 web:
   port: 3000
+proxy:
+  enabled: true
+  socks5: "socks5://10.96.1.108:7890"
+  list:
+    - id: local_clash
+      name: "本地 Clash/Mihomo 节点"
+      addr: "socks5://10.96.1.108:7890"
+      is_default: true
 cache:
   size: 10000
   serve_expired: true

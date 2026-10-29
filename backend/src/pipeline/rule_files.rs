@@ -163,6 +163,16 @@ impl RuleFileManager {
         Ok(())
     }
 
+    pub fn edit_rule_info(&self, id: &str, name: &str, group_type: &str, url: &str) -> anyhow::Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "UPDATE routing_rule_files SET name = ?1, group_type = ?2, url = ?3 WHERE id = ?4",
+            params![name, group_type, url, id],
+        )?;
+        self.load_local_rules();
+        Ok(())
+    }
+
     pub fn delete_rule_file(&self, id: &str) -> anyhow::Result<()> {
         let conn = self.get_conn()?;
         let file_name: String = conn.query_row(

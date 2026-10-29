@@ -41,6 +41,18 @@ fn test_domain_matcher() {
 }
 
 #[test]
+fn test_domain_matcher_prefixes() {
+    let mut matcher = nexdns::pipeline::plugins::domain_match::DomainMatcher::new("test");
+    matcher.load_from_text("domain:google.com\nfull:youtube.com\nkeyword:facebook");
+
+    assert!(matcher.matches("google.com"));
+    assert!(matcher.matches("www.google.com"));
+    assert!(matcher.matches("youtube.com"));
+    assert!(!matcher.matches("sub.youtube.com"));
+    assert!(matcher.matches("facebook.com"));
+}
+
+#[test]
 fn test_ip_matcher() {
     let mut matcher = nexdns::pipeline::plugins::ip_match::IpMatcher::new("test");
     matcher.load_from_text("192.168.0.0/16\n223.5.5.0/24");
@@ -52,7 +64,7 @@ fn test_ip_matcher() {
 
 #[tokio::test]
 async fn test_cache_serve_expired() {
-    let cache = nexdns::pipeline::plugins::cache::CachePlugin::new(100, true, false);
+    let cache = nexdns::pipeline::plugins::cache::CachePlugin::new(100, true, false, 10, 3600);
     let name = Name::from_str("example.com.").unwrap();
     let mut msg = Message::query();
     let record = Record::from_rdata(name, 10, RData::A(A(Ipv4Addr::new(93, 184, 216, 34))));

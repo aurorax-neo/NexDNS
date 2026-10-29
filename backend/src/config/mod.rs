@@ -74,8 +74,19 @@ impl Default for ProxyConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub port: u16,
+    #[serde(default = "default_listen_mode")]
+    pub listen_mode: String,
+    #[serde(default = "default_listen_mode")]
     pub connect_ip_version: String,
+    #[serde(default = "default_response_mode")]
+    pub response_mode: String,
+    #[serde(default = "default_true")]
+    pub doh_enabled: bool,
+    #[serde(default = "default_doh_path")]
+    pub doh_path: String,
     #[serde(default = "default_block_type")]
     pub block_type: String,
     #[serde(default = "default_block_ttl")]
@@ -85,12 +96,33 @@ pub struct DnsConfig {
 impl Default for DnsConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             port: 53,
+            listen_mode: "dual".to_string(),
             connect_ip_version: "dual".to_string(),
+            response_mode: "dual".to_string(),
+            doh_enabled: true,
+            doh_path: "/dns-query".to_string(),
             block_type: "zero_ip".to_string(),
             block_ttl: 60,
         }
     }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_listen_mode() -> String {
+    "dual".to_string()
+}
+
+fn default_response_mode() -> String {
+    "dual".to_string()
+}
+
+fn default_doh_path() -> String {
+    "/dns-query".to_string()
 }
 
 fn default_block_type() -> String {
@@ -255,12 +287,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            dns: DnsConfig {
-                port: 53,
-                connect_ip_version: "dual".to_string(),
-                block_type: "zero_ip".to_string(),
-                block_ttl: 60,
-            },
+            dns: DnsConfig::default(),
             web: WebConfig { port: 3000 },
             proxy: ProxyConfig::default(),
             cache: CacheConfig {
@@ -289,12 +316,11 @@ impl Default for AppConfig {
                 gfw: vec![
                     "https://8.8.8.8/dns-query#sni=dns.google&proxy=default".to_string(),
                     "https://cloudflare-dns.com/dns-query#proxy=default".to_string(),
-                    "udp://8.8.8.8:53".to_string(),
+                    "https://1.1.1.1/dns-query#sni=cloudflare-dns.com&proxy=default".to_string(),
                 ],
                 overseas: vec![
-                    "udp://1.1.1.1:53".to_string(),
-                    "https://1.1.1.1/dns-query".to_string(),
-                    "udp://8.8.4.4:53".to_string(),
+                    "https://1.1.1.1/dns-query#sni=cloudflare-dns.com&proxy=default".to_string(),
+                    "https://8.8.8.8/dns-query#sni=dns.google&proxy=default".to_string(),
                 ],
                 timeout_ms: 2000,
             },

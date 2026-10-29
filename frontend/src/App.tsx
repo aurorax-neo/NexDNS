@@ -6,6 +6,7 @@ import {
   Shield,
   Server,
   Settings,
+  GitFork,
   Moon,
   Sun,
   Terminal,
@@ -21,6 +22,7 @@ import { QueryLogPage } from './pages/QueryLogPage';
 import { FilteringPage } from './pages/FilteringPage';
 import { RoutingPage } from './pages/RoutingPage';
 import { UpstreamsPage } from './pages/UpstreamsPage';
+import { RewritesPage } from './pages/RewritesPage';
 import { SettingsPage } from './pages/SettingsPage';
 
 export function App() {
@@ -86,7 +88,8 @@ export function App() {
     { id: 'routing', label: '分流规则集', icon: <FileCode className="w-4 h-4 align-icon" /> },
     { id: 'pipeline', label: '流水线拓扑', icon: <SlidersHorizontal className="w-4 h-4 align-icon" /> },
     { id: 'upstreams', label: '上游与测速优选', icon: <Server className="w-4 h-4 align-icon" /> },
-    { id: 'settings', label: '重写与系统设置', icon: <Settings className="w-4 h-4 align-icon" /> },
+    { id: 'rewrites', label: '自定义重写', icon: <GitFork className="w-4 h-4 align-icon" /> },
+    { id: 'settings', label: '系统设置', icon: <Settings className="w-4 h-4 align-icon" /> },
   ];
 
   return (
@@ -189,6 +192,7 @@ export function App() {
         {activeTab === 'filtering' && <FilteringPage />}
         {activeTab === 'routing' && <RoutingPage />}
         {activeTab === 'upstreams' && <UpstreamsPage />}
+        {activeTab === 'rewrites' && <RewritesPage />}
         {activeTab === 'settings' && <SettingsPage />}
       </main>
     </div>

@@ -6,6 +6,8 @@ import {
   Clock,
   ArrowUpRight,
   RefreshCw,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { api, MetricsSnapshot, StatusResponse } from '../lib/api';
 import { ActivityChart } from '../components/ui/ActivityChart';
@@ -18,6 +20,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [domainsPage, setDomainsPage] = useState(1);
+  const [blockedPage, setBlockedPage] = useState(1);
+  const [clientsPage, setClientsPage] = useState(1);
+  const cardPageSize = 5;
 
   const fetchData = async () => {
     try {
@@ -172,119 +178,221 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
       {/* 下方榜单：Top 域名、Top 拦截、Top 客户端 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Top 请求域名 */}
-        <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-          <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
-            <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">高频查询域名</h4>
-            <button
-              type="button"
-              onClick={() => onNavigate('querylog')}
-              className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline font-medium"
-            >
-              查看日志
-            </button>
-          </div>
-          <div className="space-y-3">
-            {metrics?.top_domains && metrics.top_domains.length > 0 ? (
-              metrics.top_domains.map(([domain, count], idx) => {
-                const maxCount = metrics.top_domains[0][1] || 1;
-                const pct = Math.round((count / maxCount) * 100);
-                return (
-                  <div key={domain} className="group">
-                    <div className="flex items-center justify-between text-xs mb-1">
-                      <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate max-w-[190px]">
-                        {idx + 1}. {domain}
-                      </span>
-                      <span className="text-neutral-500 font-mono tabular-nums">{count}</span>
-                    </div>
-                    <div className="w-full bg-neutral-100 dark:bg-surface-3 h-1.5 rounded-full overflow-hidden">
-                      <div
-                        className="bg-cyan-500 h-full rounded-full transition-all duration-300"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
+        {(() => {
+          const list = metrics?.top_domains || [];
+          const totalPages = Math.max(1, Math.ceil(list.length / cardPageSize));
+          const pagedList = list.slice((domainsPage - 1) * cardPageSize, domainsPage * cardPageSize);
+          const baseIdx = (domainsPage - 1) * cardPageSize;
+          const maxCount = list[0] ? list[0][1] : 1;
+
+          return (
+            <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
+                  <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">高频查询域名</h4>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('querylog')}
+                      className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline font-medium mr-1"
+                    >
+                      查看日志
+                    </button>
+                    {totalPages > 1 && (
+                      <div className="flex items-center gap-1 text-xs text-neutral-500 font-mono">
+                        <button
+                          type="button"
+                          disabled={domainsPage <= 1}
+                          onClick={() => setDomainsPage((p) => Math.max(1, p - 1))}
+                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
+                        >
+                          <ChevronLeft className="w-3.5 h-3.5 align-icon" />
+                        </button>
+                        <span className="tabular-nums">{domainsPage}/{totalPages}</span>
+                        <button
+                          type="button"
+                          disabled={domainsPage >= totalPages}
+                          onClick={() => setDomainsPage((p) => Math.min(totalPages, p + 1))}
+                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
+                        >
+                          <ChevronRight className="w-3.5 h-3.5 align-icon" />
+                        </button>
+                      </div>
+                    )}
                   </div>
-                );
-              })
-            ) : (
-              <p className="text-xs text-neutral-400 py-6 text-center">暂无查询统计数据</p>
-            )}
-          </div>
-        </div>
+                </div>
+                <div className="space-y-3">
+                  {pagedList.length > 0 ? (
+                    pagedList.map(([domain, count], idx) => {
+                      const pct = Math.round((count / maxCount) * 100);
+                      return (
+                        <div key={domain} className="group">
+                          <div className="flex items-center justify-between text-xs mb-1">
+                            <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate max-w-[190px]">
+                              {baseIdx + idx + 1}. {domain}
+                            </span>
+                            <span className="text-neutral-500 font-mono tabular-nums">{count}</span>
+                          </div>
+                          <div className="w-full bg-neutral-100 dark:bg-surface-3 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className="bg-cyan-500 h-full rounded-full transition-all duration-300"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p className="text-xs text-neutral-400 py-6 text-center">暂无查询统计数据</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Top 拦截域名 */}
-        <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-          <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
-            <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">高频拦截目标</h4>
-            <button
-              type="button"
-              onClick={() => onNavigate('filtering')}
-              className="text-xs text-rose-600 dark:text-rose-400 hover:underline font-medium"
-            >
-              规则库
-            </button>
-          </div>
-          <div className="space-y-3">
-            {metrics?.top_blocked && metrics.top_blocked.length > 0 ? (
-              metrics.top_blocked.map(([domain, count], idx) => {
-                const maxCount = metrics.top_blocked[0][1] || 1;
-                const pct = Math.round((count / maxCount) * 100);
-                return (
-                  <div key={domain} className="group">
-                    <div className="flex items-center justify-between text-xs mb-1">
-                      <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate max-w-[190px]">
-                        {idx + 1}. {domain}
-                      </span>
-                      <span className="text-neutral-500 font-mono tabular-nums">{count}</span>
-                    </div>
-                    <div className="w-full bg-neutral-100 dark:bg-surface-3 h-1.5 rounded-full overflow-hidden">
-                      <div
-                        className="bg-rose-500 h-full rounded-full transition-all duration-300"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
+        {(() => {
+          const list = metrics?.top_blocked || [];
+          const totalPages = Math.max(1, Math.ceil(list.length / cardPageSize));
+          const pagedList = list.slice((blockedPage - 1) * cardPageSize, blockedPage * cardPageSize);
+          const baseIdx = (blockedPage - 1) * cardPageSize;
+          const maxCount = list[0] ? list[0][1] : 1;
+
+          return (
+            <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
+                  <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">高频拦截目标</h4>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('filtering')}
+                      className="text-xs text-rose-600 dark:text-rose-400 hover:underline font-medium mr-1"
+                    >
+                      规则库
+                    </button>
+                    {totalPages > 1 && (
+                      <div className="flex items-center gap-1 text-xs text-neutral-500 font-mono">
+                        <button
+                          type="button"
+                          disabled={blockedPage <= 1}
+                          onClick={() => setBlockedPage((p) => Math.max(1, p - 1))}
+                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
+                        >
+                          <ChevronLeft className="w-3.5 h-3.5 align-icon" />
+                        </button>
+                        <span className="tabular-nums">{blockedPage}/{totalPages}</span>
+                        <button
+                          type="button"
+                          disabled={blockedPage >= totalPages}
+                          onClick={() => setBlockedPage((p) => Math.min(totalPages, p + 1))}
+                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
+                        >
+                          <ChevronRight className="w-3.5 h-3.5 align-icon" />
+                        </button>
+                      </div>
+                    )}
                   </div>
-                );
-              })
-            ) : (
-              <p className="text-xs text-neutral-400 py-6 text-center">当前未命中拦截规则</p>
-            )}
-          </div>
-        </div>
+                </div>
+                <div className="space-y-3">
+                  {pagedList.length > 0 ? (
+                    pagedList.map(([domain, count], idx) => {
+                      const pct = Math.round((count / maxCount) * 100);
+                      return (
+                        <div key={domain} className="group">
+                          <div className="flex items-center justify-between text-xs mb-1">
+                            <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate max-w-[190px]">
+                              {baseIdx + idx + 1}. {domain}
+                            </span>
+                            <span className="text-neutral-500 font-mono tabular-nums">{count}</span>
+                          </div>
+                          <div className="w-full bg-neutral-100 dark:bg-surface-3 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className="bg-rose-500 h-full rounded-full transition-all duration-300"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p className="text-xs text-neutral-400 py-6 text-center">当前未命中拦截规则</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Top 活跃客户端 */}
-        <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-          <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
-            <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">活跃客户端 IP</h4>
-            <span className="text-xs text-neutral-400">内网来源</span>
-          </div>
-          <div className="space-y-3">
-            {metrics?.top_clients && metrics.top_clients.length > 0 ? (
-              metrics.top_clients.map(([client, count], idx) => {
-                const maxCount = metrics.top_clients[0][1] || 1;
-                const pct = Math.round((count / maxCount) * 100);
-                return (
-                  <div key={client} className="group">
-                    <div className="flex items-center justify-between text-xs mb-1">
-                      <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate max-w-[190px]">
-                        {idx + 1}. {client}
-                      </span>
-                      <span className="text-neutral-500 font-mono tabular-nums">{count}</span>
-                    </div>
-                    <div className="w-full bg-neutral-100 dark:bg-surface-3 h-1.5 rounded-full overflow-hidden">
-                      <div
-                        className="bg-emerald-500 h-full rounded-full transition-all duration-300"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
+        {(() => {
+          const list = metrics?.top_clients || [];
+          const totalPages = Math.max(1, Math.ceil(list.length / cardPageSize));
+          const pagedList = list.slice((clientsPage - 1) * cardPageSize, clientsPage * cardPageSize);
+          const baseIdx = (clientsPage - 1) * cardPageSize;
+          const maxCount = list[0] ? list[0][1] : 1;
+
+          return (
+            <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
+                  <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">活跃客户端 IP</h4>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-neutral-400 mr-1">内网来源</span>
+                    {totalPages > 1 && (
+                      <div className="flex items-center gap-1 text-xs text-neutral-500 font-mono">
+                        <button
+                          type="button"
+                          disabled={clientsPage <= 1}
+                          onClick={() => setClientsPage((p) => Math.max(1, p - 1))}
+                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
+                        >
+                          <ChevronLeft className="w-3.5 h-3.5 align-icon" />
+                        </button>
+                        <span className="tabular-nums">{clientsPage}/{totalPages}</span>
+                        <button
+                          type="button"
+                          disabled={clientsPage >= totalPages}
+                          onClick={() => setClientsPage((p) => Math.min(totalPages, p + 1))}
+                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
+                        >
+                          <ChevronRight className="w-3.5 h-3.5 align-icon" />
+                        </button>
+                      </div>
+                    )}
                   </div>
-                );
-              })
-            ) : (
-              <p className="text-xs text-neutral-400 py-6 text-center">暂无客户端记录</p>
-            )}
-          </div>
+                </div>
+                <div className="space-y-3">
+                  {pagedList.length > 0 ? (
+                    pagedList.map(([client, count], idx) => {
+                      const pct = Math.round((count / maxCount) * 100);
+                      return (
+                        <div key={client} className="group">
+                          <div className="flex items-center justify-between text-xs mb-1">
+                            <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate max-w-[190px]">
+                              {baseIdx + idx + 1}. {client}
+                            </span>
+                            <span className="text-neutral-500 font-mono tabular-nums">{count}</span>
+                          </div>
+                          <div className="w-full bg-neutral-100 dark:bg-surface-3 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className="bg-emerald-500 h-full rounded-full transition-all duration-300"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p className="text-xs text-neutral-400 py-6 text-center">暂无客户端记录</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         </div>
       </div>
-    </div>
   );
 };

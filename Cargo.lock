@@ -1048,6 +1048,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "data-encoding",
  "futures-util",
  "hickory-proto",
  "ipnet",

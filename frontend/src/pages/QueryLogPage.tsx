@@ -13,6 +13,8 @@ import {
   Check,
   User,
   ExternalLink,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { api, QueryLogItem } from '../lib/api';
 import { Drawer } from '../components/ui/Drawer';
@@ -28,6 +30,9 @@ export const QueryLogPage: React.FC = () => {
   const [selectedLog, setSelectedLog] = useState<QueryLogItem | null>(null);
   const [isClearAlertOpen, setIsClearAlertOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(0);
   const [actionSnackbar, setActionSnackbar] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -35,12 +40,13 @@ export const QueryLogPage: React.FC = () => {
   const fetchLogs = async () => {
     try {
       const res = await api.getQueryLogs({
-        page: 1,
-        page_size: 50,
+        page,
+        page_size: pageSize,
         search: search || undefined,
         status: statusFilter,
       });
       setLogs(res.items);
+      setTotal(res.total);
     } catch (e) {
       console.error('Failed to load logs', e);
     } finally {
@@ -50,7 +56,12 @@ export const QueryLogPage: React.FC = () => {
 
   useEffect(() => {
     fetchLogs();
-  }, [search, statusFilter]);
+  }, [search, statusFilter, page, pageSize]);
+
+  const handleFilterChange = (val: string) => {
+    setStatusFilter(val);
+    setPage(1);
+  };
 
   // WebSocket live streaming
   useEffect(() => {
@@ -159,7 +170,10 @@ export const QueryLogPage: React.FC = () => {
             <input
               type="text"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
               placeholder="搜索域名..."
               className="w-full min-h-[38px] pl-9 pr-3 text-xs bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700/80 rounded-md text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:border-cyan-500 transition-colors"
             />
@@ -169,7 +183,7 @@ export const QueryLogPage: React.FC = () => {
           <CustomSelect
             options={statusOptions}
             value={statusFilter}
-            onChange={setStatusFilter}
+            onChange={handleFilterChange}
           />
         </div>
 
@@ -260,7 +274,13 @@ export const QueryLogPage: React.FC = () => {
                         )}
                       </td>
                       <td className="py-3 px-4 font-mono text-neutral-700 dark:text-neutral-300 tabular-nums truncate max-w-[180px]">
-                        {log.response_ip || log.rcode}
+                        {log.response_ip ? (
+                          log.response_ip
+                        ) : log.rcode === 'No Error' ? (
+                          <span className="text-neutral-400">无记录 (NODATA)</span>
+                        ) : (
+                          <span className="text-rose-500 font-medium">{log.rcode}</span>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-right font-mono tabular-nums text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
                         {log.duration_ms < 1 ? '< 1 ms' : `${log.duration_ms.toFixed(1)} ms`}
@@ -277,6 +297,53 @@ export const QueryLogPage: React.FC = () => {
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* 分页控制栏 */}
+        <div className="px-4 py-3 border-t border-neutral-200 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-3 text-xs text-neutral-500 dark:text-neutral-400">
+          <div className="flex items-center gap-2 font-mono">
+            <span>共 {total.toLocaleString()} 条日志流水</span>
+            <span className="text-neutral-300 dark:text-neutral-700">|</span>
+            <span>每页</span>
+            <CustomSelect
+              options={[
+                { value: '20', label: '20 条/页' },
+                { value: '50', label: '50 条/页' },
+                { value: '100', label: '100 条/页' },
+              ]}
+              value={String(pageSize)}
+              onChange={(v) => {
+                setPageSize(Number(v));
+                setPage(1);
+              }}
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs tabular-nums">
+              第 {page} / {Math.max(1, Math.ceil(total / pageSize))} 页
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="min-h-[32px] px-2.5 flex items-center justify-center rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-surface-2 text-neutral-700 dark:text-neutral-300 hover:border-neutral-400 disabled:opacity-40 transition-colors"
+                title="上一页"
+              >
+                <ChevronLeft className="w-3.5 h-3.5 align-icon" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(Math.ceil(total / pageSize), p + 1))}
+                disabled={page >= Math.ceil(total / pageSize)}
+                className="min-h-[32px] px-2.5 flex items-center justify-center rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-surface-2 text-neutral-700 dark:text-neutral-300 hover:border-neutral-400 disabled:opacity-40 transition-colors"
+                title="下一页"
+              >
+                <ChevronRight className="w-3.5 h-3.5 align-icon" />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 

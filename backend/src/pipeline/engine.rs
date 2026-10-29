@@ -29,6 +29,7 @@ pub struct PipelineEngine {
     pub cache_enabled: AtomicBool,
     pub anti_pollution_enabled: AtomicBool,
     pub speed_check_enabled: AtomicBool,
+    pub response_mode: Arc<parking_lot::RwLock<String>>,
 }
 
 impl PipelineEngine {
@@ -44,6 +45,7 @@ impl PipelineEngine {
         forward_overseas: Arc<ForwardPlugin>,
         speed_check: Arc<SpeedCheckPlugin>,
         anti_pollution_enabled: bool,
+        response_mode: String,
     ) -> Self {
         Self {
             qtype_drop,
@@ -61,6 +63,7 @@ impl PipelineEngine {
             cache_enabled: AtomicBool::new(true),
             anti_pollution_enabled: AtomicBool::new(anti_pollution_enabled),
             speed_check_enabled: AtomicBool::new(true),
+            response_mode: Arc::new(parking_lot::RwLock::new(response_mode)),
         }
     }
 
@@ -112,6 +115,11 @@ impl PipelineEngine {
                 }
                 RData::AAAA(aaaa) => {
                     let ip = std::net::IpAddr::V6(aaaa.0);
+                    if aaaa.0 == std::net::Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 1)
+                        || aaaa.0 == std::net::Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 2)
+                    {
+                        return false;
+                    }
                     if self.ip_registry.contains("ipv6_china", &ip) {
                         return true;
                     }
@@ -230,6 +238,28 @@ impl PipelineEngine {
                     if resp.metadata.response_code == ResponseCode::NoError {
                         self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
                     }
+                }
+            }
+
+            // 9. Downstream response filtering (IPv4 / IPv6 / Dual stack)
+            let mode = self.response_mode.read().clone();
+            if let Some(ref mut resp) = ctx.response {
+                match mode.as_str() {
+                    "ipv4" | "ipv4_only" => {
+                        if ctx.qtype == RecordType::AAAA {
+                            resp.answers.clear();
+                        } else {
+                            resp.answers.retain(|ans| !matches!(ans.data, RData::AAAA(_)));
+                        }
+                    }
+                    "ipv6" | "ipv6_only" => {
+                        if ctx.qtype == RecordType::A {
+                            resp.answers.clear();
+                        } else {
+                            resp.answers.retain(|ans| !matches!(ans.data, RData::A(_)));
+                        }
+                    }
+                    _ => {}
                 }
             }
         } else {

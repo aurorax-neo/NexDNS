@@ -123,8 +123,13 @@ export interface ProxyConfig {
 
 export interface AppSettings {
   dns: {
+    enabled: boolean;
     port: number;
-    connect_ip_version: string;
+    listen_mode: string;
+    connect_ip_version?: string;
+    response_mode: string;
+    doh_enabled: boolean;
+    doh_path: string;
     block_type: string;
     block_ttl: number;
   };
@@ -398,12 +403,54 @@ export const api = {
     await fetch(`/api/v1/routing/rules/${id}/refresh`, { method: 'POST' });
   },
 
+  async editRoutingRuleInfo(id: string, payload: { name: string; group_type: string; url: string }): Promise<void> {
+    const res = await fetch(`/api/v1/routing/rules/${id}/edit`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+  },
+
   async addUpstream(group: string, addr: string): Promise<void> {
     await fetch('/api/v1/upstreams/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ group, addr }),
     });
+  },
+
+  async editUpstream(payload: { old_group: string; old_addr: string; new_group: string; new_addr: string }): Promise<void> {
+    const res = await fetch('/api/v1/upstreams/edit', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+  },
+
+  async reorderUpstreams(group: string, addrs: string[]): Promise<void> {
+    const res = await fetch('/api/v1/upstreams/reorder', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ group, addrs }),
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+  },
+
+  async testSingleUpstream(group: string, addr: string): Promise<{ ok: boolean; latency_ms?: number; error?: string }> {
+    const res = await fetch('/api/v1/upstreams/test-single', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ group, addr }),
+    });
+    return res.json();
   },
 
   async removeUpstream(group: string, addr: string): Promise<void> {

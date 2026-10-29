@@ -1,11 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Settings,
   Plus,
   Trash2,
-  RotateCcw,
-  Save,
-  Shield,
   Database,
   Sliders,
   Lock,
@@ -13,8 +9,10 @@ import {
   Zap,
   CheckCircle2,
   XCircle,
+  RefreshCw,
+  Shield,
 } from 'lucide-react';
-import { api, AppSettings, DnsRewriteRecord } from '../lib/api';
+import { api, AppSettings } from '../lib/api';
 import { Modal } from '../components/ui/Modal';
 import { Popconfirm } from '../components/ui/Popconfirm';
 import { Snackbar } from '../components/ui/Snackbar';
@@ -22,16 +20,9 @@ import { Switch } from '../components/ui/Switch';
 import { CustomSelect } from '../components/ui/CustomSelect';
 
 export const SettingsPage: React.FC = () => {
-  const [rewrites, setRewrites] = useState<DnsRewriteRecord[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [savingSettings, setSavingSettings] = useState(false);
-
-  // Modal & Snackbar
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [domain, setDomain] = useState('');
-  const [recordType, setRecordType] = useState('A');
-  const [value, setValue] = useState('');
-  const [flushSuccess, setFlushSuccess] = useState(false);
+  const [initialLoaded, setInitialLoaded] = useState(false);
+  const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
 
   // Password change state
@@ -47,16 +38,12 @@ export const SettingsPage: React.FC = () => {
   const [isAddProxyModalOpen, setIsAddProxyModalOpen] = useState(false);
   const [newProxyName, setNewProxyName] = useState('');
   const [newProxyAddr, setNewProxyAddr] = useState('');
-  const [newProxyIsDefault, setNewProxyIsDefault] = useState(false);
 
   const loadData = async () => {
     try {
-      const [rewritesRes, settingsRes] = await Promise.all([
-        api.getRewrites(),
-        api.getSettings(),
-      ]);
-      setRewrites(rewritesRes);
+      const settingsRes = await api.getSettings();
       setSettings(settingsRes);
+      setTimeout(() => setInitialLoaded(true), 200);
     } catch (e) {
       console.error('Failed to load settings data', e);
     }
@@ -66,18 +53,21 @@ export const SettingsPage: React.FC = () => {
     loadData();
   }, []);
 
-  const handleSaveSettings = async () => {
-    if (!settings) return;
-    setSavingSettings(true);
-    try {
-      await api.updateSettings(settings);
-      setSnackbarMessage('系统配置已保存并在内核中热生效！');
-    } catch (e: any) {
-      alert('保存失败: ' + e.message);
-    } finally {
-      setSavingSettings(false);
-    }
-  };
+  // 修改自动保存机制 (带防抖与视觉反馈)
+  useEffect(() => {
+    if (!initialLoaded || !settings) return;
+    setAutoSaveStatus('saving');
+    const timer = setTimeout(async () => {
+      try {
+        await api.updateSettings(settings);
+        setAutoSaveStatus('saved');
+      } catch (e) {
+        setAutoSaveStatus('idle');
+        console.error('Auto save failed', e);
+      }
+    }, 450);
+    return () => clearTimeout(timer);
+  }, [settings, initialLoaded]);
 
   const handleTestSingleProxy = async (id: string, addr: string) => {
     if (!addr) return;
@@ -137,7 +127,7 @@ export const SettingsPage: React.FC = () => {
     if (!settings || !newProxyName || !newProxyAddr) return;
     const currentList = settings.proxy.list || [];
     const newId = `proxy_${Date.now()}`;
-    const willBeDefault = newProxyIsDefault || currentList.length === 0;
+    const willBeDefault = currentList.length === 0;
 
     const updatedList = currentList.map((p) => ({
       ...p,
@@ -163,8 +153,7 @@ export const SettingsPage: React.FC = () => {
     setIsAddProxyModalOpen(false);
     setNewProxyName('');
     setNewProxyAddr('');
-    setNewProxyIsDefault(false);
-    setSnackbarMessage('已添加新代理节点，请点击右上角“保存系统配置”使配置持久化');
+    setSnackbarMessage('已添加新代理节点');
   };
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -188,79 +177,40 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  const handleAddRewrite = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!domain || !value) return;
-    try {
-      await api.addRewrite({
-        domain,
-        record_type: recordType,
-        value,
-      });
-      setIsAddModalOpen(false);
-      setDomain('');
-      setValue('');
-      const updated = await api.getRewrites();
-      setRewrites(updated);
-      setSnackbarMessage('已添加重写记录');
-    } catch (e) {
-      console.error('Failed to add rewrite', e);
-    }
-  };
-
-  const handleDeleteRewrite = async (id: string) => {
-    try {
-      await api.deleteRewrite(id);
-      const updated = await api.getRewrites();
-      setRewrites(updated);
-      setSnackbarMessage('已删除重写记录');
-    } catch (e) {
-      console.error('Failed to delete rewrite', e);
-    }
-  };
-
-  const handleFlushCache = async () => {
-    try {
-      await api.flushCache();
-      setFlushSuccess(true);
-      setSnackbarMessage('DNS 内存缓存已清空');
-      setTimeout(() => setFlushSuccess(false), 2500);
-    } catch (e) {
-      console.error('Failed to flush cache', e);
-    }
-  };
-
   return (
     <div className="space-y-6 animate-in fade-in-50 duration-200">
       {/* 顶部控制栏 */}
       <div className="flex flex-wrap items-center justify-between gap-4 p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
         <div>
           <h3 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-            <Settings className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
-            系统核心参数精细化控制
+            <Sliders className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
+            系统核心参数设置
           </h3>
           <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-xl">
-            可视化配置 DNS 协议、拦截响应模式、内存缓存策略、分流安全防御及 SOCKS5 代理。
+            可视化配置常规 DNS 与 DoH 监听、缓存时长策略、下游结果过滤、代理节点及管理员凭据。修改自动保存并热生效。
           </p>
         </div>
+
+        {/* 自动保存状态指示器 */}
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleFlushCache}
-            className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-950/60 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 rounded-md transition-colors shadow-xs"
-          >
-            <RotateCcw className="w-3.5 h-3.5 align-icon" />
-            {flushSuccess ? '已清空缓存' : '清空内存缓存'}
-          </button>
-          <button
-            type="button"
-            onClick={handleSaveSettings}
-            disabled={savingSettings || !settings}
-            className="inline-flex items-center gap-1.5 min-h-[38px] px-4 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md transition-colors shadow-xs disabled:opacity-50"
-          >
-            <Save className="w-3.5 h-3.5 align-icon" />
-            {savingSettings ? '保存中...' : '保存全部系统配置'}
-          </button>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 text-xs">
+            {autoSaveStatus === 'saving' ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 text-cyan-500 animate-spin align-icon" />
+                <span className="text-cyan-600 dark:text-cyan-400 font-medium">正在自动保存...</span>
+              </>
+            ) : autoSaveStatus === 'saved' ? (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 align-icon" />
+                <span className="text-neutral-600 dark:text-neutral-300 font-medium">配置已自动保存热生效</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-neutral-400 align-icon" />
+                <span className="text-neutral-500">修改自动保存就绪</span>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -270,9 +220,51 @@ export const SettingsPage: React.FC = () => {
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Sliders className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
-              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">DNS 基础与协议栈</h4>
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">DNS 基础监听与下游服务</h4>
             </div>
             <div className="space-y-3 text-xs">
+              {/* 常规 DNS 53 服务开关 */}
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    常规 DNS 监听服务 (UDP/TCP 53)
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    接收来自局域网设备与操作系统的标准端口 53 查询
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.dns.enabled ?? true}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      dns: { ...settings.dns, enabled: v },
+                    })
+                  }
+                />
+              </div>
+
+              {/* 下游 DoH 服务开关 */}
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    下游 HTTP DoH 服务 (/dns-query)
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    支持下游客户端通过 HTTP 访问 /dns-query 发起加密解析
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.dns.doh_enabled ?? true}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      dns: { ...settings.dns, doh_enabled: v },
+                    })
+                  }
+                />
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">DNS 监听端口</label>
@@ -304,23 +296,43 @@ export const SettingsPage: React.FC = () => {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">IP 协议栈模式</label>
-                <CustomSelect
-                  options={[
-                    { value: 'dual', label: '双栈模式 (IPv4 + IPv6)' },
-                    { value: 'v4', label: '仅 IPv4 (停用 IPv6 优选)' },
-                    { value: 'v6', label: '仅 IPv6' },
-                  ]}
-                  value={settings.dns.connect_ip_version}
-                  onChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      dns: { ...settings.dns, connect_ip_version: v },
-                    })
-                  }
-                  className="w-full"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">监听模式</label>
+                  <CustomSelect
+                    options={[
+                      { value: 'dual', label: 'IPv4 + IPv6' },
+                      { value: 'ipv4', label: 'IPv4' },
+                      { value: 'ipv6', label: 'IPv6' },
+                    ]}
+                    value={settings.dns.listen_mode || settings.dns.connect_ip_version || 'dual'}
+                    onChange={(v) =>
+                      setSettings({
+                        ...settings,
+                        dns: { ...settings.dns, listen_mode: v, connect_ip_version: v },
+                      })
+                    }
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">返回下游解析结果</label>
+                  <CustomSelect
+                    options={[
+                      { value: 'dual', label: 'IPv4 + IPv6' },
+                      { value: 'ipv4_only', label: '仅 IPv4' },
+                      { value: 'ipv6_only', label: '仅 IPv6' },
+                    ]}
+                    value={settings.dns.response_mode || 'dual'}
+                    onChange={(v) =>
+                      setSettings({
+                        ...settings,
+                        dns: { ...settings.dns, response_mode: v },
+                      })
+                    }
+                    className="w-full"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -364,10 +376,10 @@ export const SettingsPage: React.FC = () => {
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Database className="w-4 h-4 text-amber-600 dark:text-amber-400 align-icon" />
-              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">智能内存缓存与预取</h4>
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">智能内存缓存 (SmartCache)</h4>
             </div>
             <div className="space-y-3 text-xs">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">最大缓存条数</label>
                   <input
@@ -383,14 +395,28 @@ export const SettingsPage: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">最小 TTL (Min TTL)</label>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">最小 TTL (秒)</label>
                   <input
                     type="number"
-                    value={settings.cache.min_ttl}
+                    value={settings.cache.min_ttl || 60}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
                         cache: { ...settings.cache, min_ttl: parseInt(e.target.value) || 60 },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">最大 TTL (秒)</label>
+                  <input
+                    type="number"
+                    value={settings.cache.max_ttl || 3600}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        cache: { ...settings.cache, max_ttl: parseInt(e.target.value) || 3600 },
                       })
                     }
                     className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
@@ -512,7 +538,7 @@ export const SettingsPage: React.FC = () => {
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Globe className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
-              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">代理服务与节点列表 (Proxy Nodes)</h4>
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">代理服务与上层默认代理设置</h4>
             </div>
             <div className="space-y-3 text-xs">
               <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
@@ -532,6 +558,24 @@ export const SettingsPage: React.FC = () => {
                       proxy: { ...settings.proxy, enabled: v },
                     })
                   }
+                />
+              </div>
+
+              {/* 上层直接选择全局默认代理 */}
+              <div>
+                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">全局默认代理节点</label>
+                <CustomSelect
+                  options={(settings.proxy.list || []).map((p) => ({
+                    value: p.id,
+                    label: `${p.name} (${p.addr})`,
+                  }))}
+                  value={
+                    (settings.proxy.list || []).find((p) => p.is_default)?.id ||
+                    (settings.proxy.list || [])[0]?.id ||
+                    ''
+                  }
+                  onChange={(id) => handleSetDefaultProxy(id)}
+                  className="w-full"
                 />
               </div>
 
@@ -560,18 +604,10 @@ export const SettingsPage: React.FC = () => {
                         className="p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-3"
                       >
                         <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                          {p.is_default ? (
+                          {p.is_default && (
                             <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-400 border border-cyan-200 dark:border-cyan-800/40 shrink-0">
                               默认代理
                             </span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handleSetDefaultProxy(p.id)}
-                              className="px-2 py-0.5 text-[11px] text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 rounded border border-dashed border-neutral-300 dark:border-neutral-700 shrink-0"
-                            >
-                              设为默认
-                            </button>
                           )}
                           <div className="min-w-0">
                             <div className="font-medium text-neutral-900 dark:text-neutral-100 truncate">
@@ -696,7 +732,7 @@ export const SettingsPage: React.FC = () => {
                   value={oldPassword}
                   onChange={(e) => setOldPassword(e.target.value)}
                   required
-                  placeholder="默认: admin1234"
+                  placeholder="请输入当前密码"
                   className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100"
                 />
               </div>
@@ -749,125 +785,6 @@ export const SettingsPage: React.FC = () => {
         </div>
       )}
 
-      {/* 7. DNS 重写记录列表 */}
-      <div className="rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden mt-6">
-        <div className="px-5 py-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
-          <div>
-            <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">自定义 DNS 重写 (Hosts 映射)</h4>
-            <p className="text-xs text-neutral-500 mt-0.5">优先应答指定的本地 A/AAAA/CNAME 映射记录</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setIsAddModalOpen(true)}
-            className="inline-flex items-center gap-1.5 min-h-[36px] px-3.5 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md shadow-xs"
-          >
-            <Plus className="w-3.5 h-3.5 align-icon" />
-            添加重写记录
-          </button>
-        </div>
-        <div className="divide-y divide-neutral-200 dark:divide-neutral-800/60">
-          {rewrites.length > 0 ? (
-            rewrites.map((r) => (
-              <div
-                key={r.id}
-                className="p-4 flex items-center justify-between hover:bg-neutral-50 dark:hover:bg-surface-2/40 transition-colors"
-              >
-                <div className="flex items-center gap-4">
-                  <span className="px-2 py-0.5 text-xs font-mono font-bold rounded bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-400 border border-cyan-200 dark:border-cyan-800/40">
-                    {r.record_type}
-                  </span>
-                  <div>
-                    <div className="text-sm font-mono font-medium text-neutral-900 dark:text-neutral-100">{r.domain}</div>
-                    <div className="text-xs font-mono text-neutral-500 dark:text-neutral-400 mt-0.5">&rarr; {r.value}</div>
-                  </div>
-                </div>
-
-                <div>
-                  <Popconfirm
-                    title="确认删除该 DNS 重写规则？"
-                    actionText="确认删除"
-                    onConfirm={() => handleDeleteRewrite(r.id)}
-                  >
-                    <button
-                      type="button"
-                      className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-500 dark:text-neutral-400 hover:text-red-500 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2"
-                      title="删除记录"
-                    >
-                      <Trash2 className="w-4 h-4 align-icon" />
-                    </button>
-                  </Popconfirm>
-                </div>
-              </div>
-            ))
-          ) : (
-            <p className="text-xs text-neutral-400 py-10 text-center">暂未配置自定义重写规则</p>
-          )}
-        </div>
-      </div>
-
-      {/* 添加重写 Modal (400px - 小档) */}
-      <Modal
-        isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
-        title="添加自定义 DNS 重写"
-        size="sm"
-      >
-        <form onSubmit={handleAddRewrite} className="space-y-4 text-xs">
-          <div>
-            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">域名</label>
-            <input
-              type="text"
-              value={domain}
-              onChange={(e) => setDomain(e.target.value)}
-              placeholder="例如: nas.home 或 gitlab.local"
-              required
-              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">记录类型</label>
-            <CustomSelect
-              options={[
-                { value: 'A', label: 'A 记录 (IPv4)' },
-                { value: 'AAAA', label: 'AAAA 记录 (IPv6)' },
-                { value: 'CNAME', label: 'CNAME 别名' },
-              ]}
-              value={recordType}
-              onChange={setRecordType}
-              className="w-full"
-            />
-          </div>
-
-          <div>
-            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">目标 IP 或 目标域名</label>
-            <input
-              type="text"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="例如: 192.168.1.100 或 example.com"
-              required
-              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
-            />
-          </div>
-
-          <div className="flex justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-800">
-            <button
-              type="button"
-              onClick={() => setIsAddModalOpen(false)}
-              className="min-h-[38px] px-4 text-neutral-600 dark:text-neutral-400"
-            >
-              取消
-            </button>
-            <button
-              type="submit"
-              className="min-h-[38px] px-5 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md shadow-xs"
-            >
-              保存重写
-            </button>
-          </div>
-        </form>
-      </Modal>
 
       {/* 添加代理节点 Modal */}
       <Modal
@@ -902,17 +819,6 @@ export const SettingsPage: React.FC = () => {
               placeholder="例如: socks5://10.96.1.108:7890 或 127.0.0.1:7890"
               required
               className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-cyan-500"
-            />
-          </div>
-
-          <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
-            <div>
-              <span className="font-medium text-neutral-800 dark:text-neutral-200 block">设为默认代理</span>
-              <span className="text-[11px] text-neutral-500">未指定特定代理的上游节点将默认使用此节点</span>
-            </div>
-            <Switch
-              checked={newProxyIsDefault}
-              onChange={setNewProxyIsDefault}
             />
           </div>
 

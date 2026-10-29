@@ -215,6 +215,8 @@ impl Database {
                         return Some(a.0.to_string());
                     } else if let hickory_proto::rr::RData::AAAA(aaaa) = &ans.data {
                         return Some(aaaa.0.to_string());
+                    } else if let hickory_proto::rr::RData::CNAME(cname) = &ans.data {
+                        return Some(format!("CNAME: {}", cname.to_utf8().trim_end_matches('.')));
                     }
                 }
             }

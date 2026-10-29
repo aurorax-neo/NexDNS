@@ -29,6 +29,7 @@ pub struct AppState {
     pub metrics: Arc<MetricsCollector>,
     pub config: Arc<parking_lot::RwLock<AppConfig>>,
     pub config_path: String,
+    pub dns_server_enabled: Arc<parking_lot::RwLock<bool>>,
     pub rule_manager: Arc<RuleFileManager>,
     pub start_time: std::time::Instant,
 }
@@ -63,6 +64,7 @@ impl AppState {
 
 pub fn create_router(state: AppState) -> Router {
     Router::new()
+        .route("/dns-query", get(doh_handler).post(doh_handler))
         .route("/api/v1/auth/login", post(login_handler))
         .route("/api/v1/auth/logout", post(logout_handler))
         .route("/api/v1/auth/me", get(auth_me_handler))
@@ -85,12 +87,16 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/rules/quick-add", post(quick_add_rule))
         .route("/api/v1/upstreams", get(get_upstreams))
         .route("/api/v1/upstreams/test", post(test_upstreams))
+        .route("/api/v1/upstreams/test-single", post(test_single_upstream))
         .route("/api/v1/upstreams/add", post(add_upstream))
+        .route("/api/v1/upstreams/edit", post(edit_upstream))
+        .route("/api/v1/upstreams/reorder", post(reorder_upstreams))
         .route("/api/v1/upstreams/remove", post(remove_upstream))
         .route("/api/v1/routing/rules", get(get_routing_rules))
         .route("/api/v1/routing/rules/update", post(update_routing_rules))
         .route("/api/v1/routing/rules/add", post(add_routing_rule))
         .route("/api/v1/routing/rules/{id}", delete(delete_routing_rule))
+        .route("/api/v1/routing/rules/{id}/edit", post(edit_routing_rule))
         .route("/api/v1/routing/rules/{id}/toggle", post(toggle_routing_rule))
         .route("/api/v1/routing/rules/{id}/refresh", post(refresh_routing_rule))
         .route("/api/v1/routing/rules/{file_name}/content", get(get_routing_rule_content).put(update_routing_rule_content))
@@ -206,12 +212,95 @@ async fn update_settings(
     state.engine.anti_pollution_enabled.store(payload.anti_pollution, Ordering::SeqCst);
     state.engine.qtype_65_enabled.store(payload.routing.qtype_65_reject, Ordering::SeqCst);
     state.engine.speed_check_enabled.store(payload.speed_check.enabled, Ordering::SeqCst);
+    state.engine.cache.min_ttl.store(payload.cache.min_ttl, Ordering::SeqCst);
+    state.engine.cache.max_ttl.store(payload.cache.max_ttl, Ordering::SeqCst);
+    *state.engine.response_mode.write() = payload.dns.response_mode.clone();
+    *state.dns_server_enabled.write() = payload.dns.enabled;
 
     *state.config.write() = payload.clone();
     payload.save(&state.config_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state.reload_engine_upstreams();
 
     Ok(StatusCode::OK)
+}
+
+async fn doh_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    let doh_enabled = state.config.read().dns.doh_enabled;
+
+    if !doh_enabled {
+        return (
+            StatusCode::FORBIDDEN,
+            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "DoH service is disabled",
+        ).into_response();
+    }
+
+    let req_bytes = if !body.is_empty() {
+        body.to_vec()
+    } else if let Some(dns_b64) = params.get("dns") {
+        use data_encoding::BASE64URL_NOPAD;
+        match BASE64URL_NOPAD.decode(dns_b64.as_bytes()) {
+            Ok(b) => b,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    "Invalid base64url dns parameter",
+                ).into_response();
+            }
+        }
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "Missing DNS request body or ?dns parameter",
+        ).into_response();
+    };
+
+    let Ok(msg) = hickory_proto::op::Message::from_vec(&req_bytes) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "Invalid DNS wire format",
+        ).into_response();
+    };
+
+    let client_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+        .unwrap_or_else(|| std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+
+    let mut ctx = crate::pipeline::context::QueryContext::new(client_ip, msg);
+    state.engine.process(&mut ctx).await;
+
+    state.db.record_query(&ctx);
+    state.metrics.record(&ctx);
+
+    if let Some(resp) = ctx.response {
+        if let Ok(bytes) = resp.to_vec() {
+            let mut resp_headers = axum::http::HeaderMap::new();
+            resp_headers.insert(axum::http::header::CONTENT_TYPE, "application/dns-message".parse().unwrap());
+            resp_headers.insert(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".parse().unwrap());
+            return (
+                StatusCode::OK,
+                resp_headers,
+                bytes,
+            ).into_response();
+        }
+    }
+
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "Failed to generate DNS response".as_bytes().to_vec(),
+    ).into_response()
 }
 
 #[derive(Deserialize)]
@@ -929,6 +1018,123 @@ async fn add_upstream(
     Ok(StatusCode::OK)
 }
 
+#[derive(Deserialize)]
+struct SingleUpstreamTestPayload {
+    group: String,
+    addr: String,
+}
+
+#[derive(Serialize)]
+struct SingleUpstreamTestResponse {
+    ok: bool,
+    latency_ms: Option<f64>,
+    error: Option<String>,
+}
+
+async fn test_single_upstream(
+    State(state): State<AppState>,
+    Json(payload): Json<SingleUpstreamTestPayload>,
+) -> Json<SingleUpstreamTestResponse> {
+    let start = std::time::Instant::now();
+    let server = crate::pipeline::plugins::upstream::UpstreamServer::parse(&payload.group, &payload.addr);
+    let proxy_cfg = state.config.read().proxy.clone();
+
+    if let Some(mut s) = server {
+        let proxy_mode = s.proxy.clone().unwrap_or_else(|| {
+            if payload.group == "mainland" { "none".to_string() } else { "default".to_string() }
+        });
+        s.proxy = proxy_cfg.find_proxy_addr(&proxy_mode);
+
+        let mut req = hickory_proto::op::Message::query();
+        req.add_query(hickory_proto::op::Query::query(
+            hickory_proto::rr::Name::from_ascii("example.com.").unwrap(),
+            hickory_proto::rr::RecordType::A,
+        ));
+
+        if let Ok(bytes) = req.to_vec() {
+            match s.query(&bytes, std::time::Duration::from_millis(3500)).await {
+                Ok(_) => {
+                    let rtt = (start.elapsed().as_micros() as f64) / 1000.0;
+                    return Json(SingleUpstreamTestResponse {
+                        ok: true,
+                        latency_ms: Some(rtt),
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    return Json(SingleUpstreamTestResponse {
+                        ok: false,
+                        latency_ms: None,
+                        error: Some(e),
+                    });
+                }
+            }
+        }
+    }
+
+    Json(SingleUpstreamTestResponse {
+        ok: false,
+        latency_ms: None,
+        error: Some("解析或连接上游失败".to_string()),
+    })
+}
+
+#[derive(Deserialize)]
+struct EditUpstreamPayload {
+    old_group: String,
+    old_addr: String,
+    new_group: String,
+    new_addr: String,
+}
+
+async fn edit_upstream(
+    State(state): State<AppState>,
+    Json(payload): Json<EditUpstreamPayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    {
+        let mut cfg = state.config.write();
+        match payload.old_group.as_str() {
+            "mainland" => cfg.upstreams.mainland.retain(|s| s != &payload.old_addr),
+            "gfw" => cfg.upstreams.gfw.retain(|s| s != &payload.old_addr),
+            "overseas" => cfg.upstreams.overseas.retain(|s| s != &payload.old_addr),
+            _ => return Err((StatusCode::BAD_REQUEST, "Unknown old group".to_string())),
+        }
+        match payload.new_group.as_str() {
+            "mainland" => cfg.upstreams.mainland.push(payload.new_addr),
+            "gfw" => cfg.upstreams.gfw.push(payload.new_addr),
+            "overseas" => cfg.upstreams.overseas.push(payload.new_addr),
+            _ => return Err((StatusCode::BAD_REQUEST, "Unknown new group".to_string())),
+        }
+        let _ = cfg.save(&state.config_path);
+    }
+    state.reload_engine_upstreams();
+    Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize)]
+struct ReorderUpstreamsPayload {
+    group: String,
+    addrs: Vec<String>,
+}
+
+async fn reorder_upstreams(
+    State(state): State<AppState>,
+    Json(payload): Json<ReorderUpstreamsPayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    {
+        let mut cfg = state.config.write();
+        match payload.group.as_str() {
+            "mainland" => cfg.upstreams.mainland = payload.addrs,
+            "gfw" => cfg.upstreams.gfw = payload.addrs,
+            "overseas" => cfg.upstreams.overseas = payload.addrs,
+            _ => return Err((StatusCode::BAD_REQUEST, "Unknown group".to_string())),
+        }
+        let _ = cfg.save(&state.config_path);
+    }
+    state.reload_engine_upstreams();
+    Ok(StatusCode::OK)
+}
+
 async fn remove_upstream(
     State(state): State<AppState>,
     Json(payload): Json<UpstreamActionPayload>,
@@ -1082,6 +1288,23 @@ async fn add_routing_rule(
     ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(StatusCode::CREATED)
+}
+
+#[derive(Deserialize)]
+struct EditRoutingRulePayload {
+    name: String,
+    group_type: String,
+    url: String,
+}
+
+async fn edit_routing_rule(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(payload): Json<EditRoutingRulePayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state.rule_manager.edit_rule_info(&id, &payload.name, &payload.group_type, &payload.url)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(StatusCode::OK)
 }
 
 async fn delete_routing_rule(

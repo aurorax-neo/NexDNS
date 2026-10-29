@@ -21,9 +21,8 @@ upstreams:
   gfw:
   - https://8.8.8.8/dns-query#sni=dns.google&proxy=default
   - https://cloudflare-dns.com/dns-query#proxy=default
-  - udp://8.8.8.8:53
+  - https://1.1.1.1/dns-query#sni=cloudflare-dns.com&proxy=default
   overseas:
-  - udp://1.1.1.1:53
-  - https://1.1.1.1/dns-query
-  - udp://8.8.4.4:53
+  - https://1.1.1.1/dns-query#sni=cloudflare-dns.com&proxy=default
+  - https://8.8.8.8/dns-query#sni=dns.google&proxy=default
   timeout_ms: 2000

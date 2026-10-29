@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use async_trait::async_trait;
@@ -21,15 +22,19 @@ pub struct CachePlugin {
     max_size: usize,
     serve_expired: bool,
     prefetch: bool,
+    pub min_ttl: AtomicU32,
+    pub max_ttl: AtomicU32,
 }
 
 impl CachePlugin {
-    pub fn new(max_size: usize, serve_expired: bool, prefetch: bool) -> Self {
+    pub fn new(max_size: usize, serve_expired: bool, prefetch: bool, min_ttl: u32, max_ttl: u32) -> Self {
         Self {
             entries: Arc::new(RwLock::new(HashMap::with_capacity(max_size))),
             max_size,
             serve_expired,
             prefetch,
+            min_ttl: AtomicU32::new(min_ttl),
+            max_ttl: AtomicU32::new(max_ttl),
         }
     }
 
@@ -58,10 +63,20 @@ impl CachePlugin {
     }
 
     pub fn insert(&self, qname: &str, qtype: RecordType, message: Message) {
-        let mut min_ttl_secs = 300u32;
-        for ans in &message.answers {
-            min_ttl_secs = min_ttl_secs.min(ans.ttl.max(10));
+        let min_limit = self.min_ttl.load(Ordering::Relaxed).max(1);
+        let max_limit = self.max_ttl.load(Ordering::Relaxed).max(min_limit);
+
+        let mut record_ttl = 300u32;
+        if !message.answers.is_empty() {
+            let mut found = u32::MAX;
+            for ans in &message.answers {
+                found = found.min(ans.ttl);
+            }
+            if found != u32::MAX {
+                record_ttl = found;
+            }
         }
+        let effective_ttl = record_ttl.clamp(min_limit, max_limit);
 
         let mut w = self.entries.write();
         if w.len() >= self.max_size {
@@ -78,7 +93,7 @@ impl CachePlugin {
             CacheEntry {
                 message,
                 created_at: Instant::now(),
-                ttl: Duration::from_secs(min_ttl_secs as u64),
+                ttl: Duration::from_secs(effective_ttl as u64),
                 hits: 0,
             },
         );

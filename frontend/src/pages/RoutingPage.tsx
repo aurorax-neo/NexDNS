@@ -5,6 +5,7 @@ import {
   Search,
   Save,
   Edit3,
+  Settings2,
   Plus,
   Trash2,
   Eye,
@@ -20,6 +21,7 @@ import { Popconfirm } from '../components/ui/Popconfirm';
 export const RoutingPage: React.FC = () => {
   const [ruleFiles, setRuleFiles] = useState<RuleFileInfo[]>([]);
   const [updatingAll, setUpdatingAll] = useState(false);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<string>('all');
 
   // Drawer view/edit state
@@ -37,6 +39,14 @@ export const RoutingPage: React.FC = () => {
   const [addUrl, setAddUrl] = useState('');
   const [addContent, setAddContent] = useState('');
   const [addingRule, setAddingRule] = useState(false);
+
+  // Edit rule info modal state
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingRule, setEditingRule] = useState<RuleFileInfo | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editGroup, setEditGroup] = useState('mainland');
+  const [editUrl, setEditUrl] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const fetchRules = async () => {
     try {
@@ -60,7 +70,7 @@ export const RoutingPage: React.FC = () => {
     } catch (e) {
       console.error('Failed to update routing rules', e);
     } finally {
-      setUpdatingAll(false);
+      setTimeout(() => setUpdatingAll(false), 600);
     }
   };
 
@@ -77,12 +87,44 @@ export const RoutingPage: React.FC = () => {
   };
 
   const handleRefreshSingle = async (id: string) => {
+    setRefreshingId(id);
     try {
       await api.refreshRoutingRule(id);
       await fetchRules();
       setSnackbarMessage('规则文件已从在线源拉取最新版本！');
     } catch (e) {
       console.error('Failed to refresh rule file', e);
+    } finally {
+      setTimeout(() => setRefreshingId(null), 600);
+    }
+  };
+
+  const handleOpenEditModal = (file: RuleFileInfo) => {
+    setEditingRule(file);
+    setEditName(file.name);
+    setEditGroup(file.group_type);
+    setEditUrl(file.url || '');
+    setIsEditModalOpen(true);
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingRule || !editName.trim()) return;
+    setSavingEdit(true);
+    try {
+      await api.editRoutingRuleInfo(editingRule.id, {
+        name: editName.trim(),
+        group_type: editGroup,
+        url: editUrl.trim(),
+      });
+      setIsEditModalOpen(false);
+      setEditingRule(null);
+      await fetchRules();
+      setSnackbarMessage('已成功更新规则集详细信息并热重载！');
+    } catch (e) {
+      console.error('Failed to edit routing rule info', e);
+    } finally {
+      setSavingEdit(false);
     }
   };
 
@@ -297,6 +339,17 @@ export const RoutingPage: React.FC = () => {
                   ariaLabel={`切换 ${rf.name}`}
                 />
 
+                {/* 编辑详细信息 */}
+                <button
+                  type="button"
+                  onClick={() => handleOpenEditModal(rf)}
+                  className="min-h-[36px] px-3 flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2 transition-colors"
+                  title="编辑规则集信息"
+                >
+                  <Settings2 className="w-3.5 h-3.5 align-icon" />
+                  编辑信息
+                </button>
+
                 {/* 查看与编辑 */}
                 <button
                   type="button"
@@ -312,10 +365,11 @@ export const RoutingPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => handleRefreshSingle(rf.id)}
+                    disabled={refreshingId === rf.id}
                     className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2 transition-colors"
                     title="在线刷新"
                   >
-                    <RefreshCw className="w-4 h-4 align-icon" />
+                    <RefreshCw className={`w-4 h-4 align-icon ${refreshingId === rf.id ? 'animate-spin text-cyan-500' : ''}`} />
                   </button>
                 )}
 
@@ -435,6 +489,90 @@ export const RoutingPage: React.FC = () => {
               className="min-h-[36px] px-5 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md shadow-xs disabled:opacity-50"
             >
               {addingRule ? '正在添加...' : '确认添加'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* 编辑规则集详细信息 Modal */}
+      <Modal
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        title="编辑分流规则集详细信息"
+        size="md"
+      >
+        <form onSubmit={handleEditSubmit} className="space-y-4 text-xs">
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              规则集名称
+            </label>
+            <input
+              type="text"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              placeholder="规则集显示名称"
+              required
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+                归属分流组
+              </label>
+              <CustomSelect
+                options={[
+                  { value: 'mainland', label: '大陆直连组 (mainland)' },
+                  { value: 'gfw', label: '代理过滤组 (gfw)' },
+                  { value: 'private', label: '私网局域网 (private)' },
+                  { value: 'china_ip', label: '中国 IP 库 (china_ip)' },
+                ]}
+                value={editGroup}
+                onChange={setEditGroup}
+                className="w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+                存储文件名 (只读)
+              </label>
+              <input
+                type="text"
+                value={editingRule?.file_name || ''}
+                disabled
+                className="w-full min-h-[38px] px-3 bg-neutral-100 dark:bg-surface-3/50 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-500 font-mono cursor-not-allowed"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              在线更新订阅 URL
+            </label>
+            <input
+              type="url"
+              value={editUrl}
+              onChange={(e) => setEditUrl(e.target.value)}
+              placeholder="https://raw.githubusercontent.com/.../rules.txt"
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-800">
+            <button
+              type="button"
+              onClick={() => setIsEditModalOpen(false)}
+              className="min-h-[36px] px-4 text-neutral-600 dark:text-neutral-400"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={savingEdit}
+              className="min-h-[36px] px-5 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md shadow-xs disabled:opacity-50"
+            >
+              {savingEdit ? '正在保存...' : '保存修改'}
             </button>
           </div>
         </form>

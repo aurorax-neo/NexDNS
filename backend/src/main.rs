@@ -140,6 +140,8 @@ async fn main() -> anyhow::Result<()> {
         config.cache.size,
         config.cache.serve_expired,
         config.cache.prefetch,
+        config.cache.min_ttl,
+        config.cache.max_ttl,
     ));
 
     // 5. Plugins: Domain Registry (Routing lists)
@@ -252,10 +254,19 @@ async fn main() -> anyhow::Result<()> {
         forward_overseas,
         speed_check,
         config.anti_pollution,
+        config.dns.response_mode.clone(),
     ));
 
+    let dns_server_enabled = Arc::new(parking_lot::RwLock::new(config.dns.enabled));
+
     // 10. Start DNS Server
-    let dns_server = DnsServer::new(config.dns.port, engine.clone(), db.clone(), metrics.clone());
+    let dns_server = DnsServer::new(
+        config.dns.port,
+        engine.clone(),
+        db.clone(),
+        metrics.clone(),
+        dns_server_enabled.clone(),
+    );
     dns_server.start().await?;
 
     // 11. Start Axum Web Server
@@ -265,6 +276,7 @@ async fn main() -> anyhow::Result<()> {
         metrics,
         config: Arc::new(parking_lot::RwLock::new((*config).clone())),
         config_path: cli.config.to_string_lossy().to_string(),
+        dns_server_enabled,
         rule_manager,
         start_time: std::time::Instant::now(),
     };

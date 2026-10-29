@@ -12,6 +12,7 @@ pub struct DnsServer {
     engine: Arc<PipelineEngine>,
     db: Arc<Database>,
     metrics: Arc<MetricsCollector>,
+    pub dns_enabled: Arc<parking_lot::RwLock<bool>>,
 }
 
 impl DnsServer {
@@ -20,12 +21,14 @@ impl DnsServer {
         engine: Arc<PipelineEngine>,
         db: Arc<Database>,
         metrics: Arc<MetricsCollector>,
+        dns_enabled: Arc<parking_lot::RwLock<bool>>,
     ) -> Self {
         Self {
             port,
             engine,
             db,
             metrics,
+            dns_enabled,
         }
     }
 
@@ -55,12 +58,16 @@ impl DnsServer {
         let engine_clone = self.engine.clone();
         let db_clone = self.db.clone();
         let metrics_clone = self.metrics.clone();
+        let enabled_udp = self.dns_enabled.clone();
 
         tokio::spawn(async move {
             let mut buf = vec![0u8; 4096];
             loop {
                 match udp_clone.recv_from(&mut buf).await {
                     Ok((len, src)) => {
+                        if !*enabled_udp.read() {
+                            continue;
+                        }
                         let req_bytes = buf[..len].to_vec();
                         let socket = udp_clone.clone();
                         let engine = engine_clone.clone();
@@ -93,11 +100,15 @@ impl DnsServer {
         let engine_tcp = self.engine.clone();
         let db_tcp = self.db.clone();
         let metrics_tcp = self.metrics.clone();
+        let enabled_tcp = self.dns_enabled.clone();
 
         tokio::spawn(async move {
             loop {
                 match tcp_listener.accept().await {
                     Ok((mut stream, src)) => {
+                        if !*enabled_tcp.read() {
+                            continue;
+                        }
                         let engine = engine_tcp.clone();
                         let db = db_tcp.clone();
                         let metrics = metrics_tcp.clone();

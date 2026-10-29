@@ -21,9 +21,12 @@ impl IpMatcher {
 
     pub fn load_from_text(&mut self, text: &str) {
         for line in text.lines() {
-            let trimmed = line.trim();
+            let mut trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("cidr:") {
+                trimmed = rest.trim();
             }
             if let Ok(net) = IpNet::from_str(trimmed) {
                 self.subnets.push(net);

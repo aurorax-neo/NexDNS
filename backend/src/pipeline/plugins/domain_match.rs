@@ -7,6 +7,7 @@ pub struct DomainMatcher {
     pub name: String,
     pub exact: HashSet<String>,
     pub suffix: HashSet<String>,
+    pub keywords: Vec<String>,
 }
 
 impl DomainMatcher {
@@ -15,6 +16,7 @@ impl DomainMatcher {
             name: name.to_string(),
             exact: HashSet::new(),
             suffix: HashSet::new(),
+            keywords: Vec::new(),
         }
     }
 
@@ -24,31 +26,50 @@ impl DomainMatcher {
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
-            let domain = trimmed.trim_end_matches('.').to_lowercase();
-            if let Some(rest) = domain.strip_prefix("+.") {
-                self.suffix.insert(rest.to_string());
-            } else if let Some(rest) = domain.strip_prefix('.') {
-                self.suffix.insert(rest.to_string());
+            let lower = trimmed.to_lowercase();
+            if let Some(rest) = lower.strip_prefix("full:") {
+                let clean = rest.trim_end_matches('.').to_string();
+                self.exact.insert(clean);
+            } else if let Some(rest) = lower.strip_prefix("domain:") {
+                let clean = rest.trim_end_matches('.').to_string();
+                self.suffix.insert(clean.clone());
+                self.exact.insert(clean);
+            } else if let Some(rest) = lower.strip_prefix("keyword:") {
+                let clean = rest.trim_end_matches('.').to_string();
+                self.keywords.push(clean);
             } else {
-                self.exact.insert(domain.clone());
-                self.suffix.insert(domain);
+                let mut d = lower.as_str();
+                if let Some(rest) = d.strip_prefix("+.") {
+                    d = rest;
+                } else if let Some(rest) = d.strip_prefix('.') {
+                    d = rest;
+                }
+                let clean = d.trim_end_matches('.').to_string();
+                self.suffix.insert(clean.clone());
+                self.exact.insert(clean);
             }
         }
     }
 
     pub fn matches(&self, qname: &str) -> bool {
-        let lower = qname.to_lowercase();
-        if self.exact.contains(&lower) {
+        let clean = qname.trim_end_matches('.').to_lowercase();
+        if self.exact.contains(&clean) {
             return true;
         }
 
-        let mut sub = lower.as_str();
+        let mut sub = clean.as_str();
         if self.suffix.contains(sub) {
             return true;
         }
         while let Some(idx) = sub.find('.') {
             sub = &sub[idx + 1..];
             if self.suffix.contains(sub) {
+                return true;
+            }
+        }
+
+        for kw in &self.keywords {
+            if clean.contains(kw) {
                 return true;
             }
         }

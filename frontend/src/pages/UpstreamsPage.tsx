@@ -9,6 +9,9 @@ import {
   Shield,
   Plus,
   Trash2,
+  Play,
+  Edit3,
+  GripVertical,
 } from 'lucide-react';
 import { api, UpstreamTestItem, UpstreamsResponse, ProxyItem } from '../lib/api';
 import { Modal } from '../components/ui/Modal';
@@ -26,6 +29,24 @@ export const UpstreamsPage: React.FC = () => {
   const [newAddr, setNewAddr] = useState('');
   const [newHostName, setNewHostName] = useState('');
   const [newProxyMode, setNewProxyMode] = useState('default');
+
+  // Single test state
+  const [testingSingleAddr, setTestingSingleAddr] = useState<string | null>(null);
+
+  // Edit upstream state
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingOldGroup, setEditingOldGroup] = useState<string>('mainland');
+  const [editingOldAddr, setEditingOldAddr] = useState<string>('');
+  const [editTargetGroup, setEditTargetGroup] = useState<string>('mainland');
+  const [editAddr, setEditAddr] = useState<string>('');
+  const [editHostName, setEditHostName] = useState<string>('');
+  const [editProxyMode, setEditProxyMode] = useState<string>('default');
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // Drag and drop state
+  const [draggedGroup, setDraggedGroup] = useState<string | null>(null);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -46,6 +67,114 @@ export const UpstreamsPage: React.FC = () => {
       console.error('Failed to test upstreams', e);
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleTestSingle = async (group: string, addr: string) => {
+    setTestingSingleAddr(addr);
+    try {
+      const res = await api.testSingleUpstream(group, addr);
+      setTestResults((prev) => {
+        const existing = prev.filter((r) => r.addr !== addr);
+        return [...existing, { addr, group, latency_ms: res.latency_ms, ok: res.ok }];
+      });
+      if (res.ok) {
+        setSnackbarMessage(`单节点测速成功！时延: ${res.latency_ms?.toFixed(1)} ms`);
+      } else {
+        setSnackbarMessage(`节点连接失败: ${res.error || '不可达'}`);
+      }
+    } catch (e: any) {
+      setSnackbarMessage(`测试请求失败: ${e.message}`);
+    } finally {
+      setTestingSingleAddr(null);
+    }
+  };
+
+  const handleOpenEditModal = (group: string, rawAddr: string) => {
+    const { uri, hostName, proxy } = parseUpstreamEntry(rawAddr);
+    setEditingOldGroup(group);
+    setEditingOldAddr(rawAddr);
+    setEditTargetGroup(group);
+    setEditAddr(uri);
+    setEditHostName(hostName || '');
+    setEditProxyMode(proxy || 'default');
+    setIsEditModalOpen(true);
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editAddr.trim()) return;
+    setSavingEdit(true);
+    try {
+      let finalAddr = editAddr.trim();
+      const params: string[] = [];
+      if (editHostName.trim()) {
+        params.push(`sni=${editHostName.trim()}`);
+      }
+      if (editProxyMode !== 'default') {
+        if (editProxyMode !== 'none' || editTargetGroup !== 'mainland') {
+          params.push(`proxy=${editProxyMode}`);
+        }
+      } else if (editTargetGroup !== 'mainland') {
+        params.push('proxy=default');
+      }
+      if (params.length > 0) {
+        finalAddr += `#${params.join('&')}`;
+      }
+
+      await api.editUpstream({
+        old_group: editingOldGroup,
+        old_addr: editingOldAddr,
+        new_group: editTargetGroup,
+        new_addr: finalAddr,
+      });
+      setIsEditModalOpen(false);
+      const updated = await api.getUpstreams();
+      setUpstreams(updated);
+      setSnackbarMessage('上游节点信息已成功修改并热重载生效！');
+    } catch (e: any) {
+      console.error('Failed to edit upstream', e);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleDragStart = (e: React.DragEvent, groupKey: string, index: number) => {
+    setDraggedGroup(groupKey);
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', `${groupKey}:${index}`);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = async (groupKey: 'mainland' | 'gfw' | 'overseas', targetIndex: number) => {
+    if (draggedGroup !== groupKey || draggedIndex === null || draggedIndex === targetIndex || !upstreams) {
+      setDraggedGroup(null);
+      setDraggedIndex(null);
+      return;
+    }
+
+    const currentList = [...upstreams[groupKey]];
+    const [moved] = currentList.splice(draggedIndex, 1);
+    currentList.splice(targetIndex, 0, moved);
+
+    const updatedUpstreams = {
+      ...upstreams,
+      [groupKey]: currentList,
+    };
+    setUpstreams(updatedUpstreams);
+    setDraggedGroup(null);
+    setDraggedIndex(null);
+
+    try {
+      await api.reorderUpstreams(groupKey, currentList);
+      setSnackbarMessage(`已更新 ${groupKey} 组节点优先级排序！`);
+    } catch (e) {
+      console.error('Failed to reorder upstreams', e);
     }
   };
 

@@ -1,0 +1,28 @@
+dns:
+  port: 53
+  connect_ip_version: dual
+web:
+  port: 3000
+cache:
+  size: 10000
+  serve_expired: true
+  prefetch: true
+speed_check:
+  enabled: true
+  timeout_ms: 400
+  cache_mins: 5
+anti_pollution: true
+upstreams:
+  mainland:
+  - udp://223.5.5.5:53
+  - udp://119.29.29.29:53
+  - https://dns.alidns.com/dns-query
+  gfw:
+  - https://dns.google/dns-query
+  - https://cloudflare-dns.com/dns-query
+  - udp://8.8.8.8:53
+  overseas:
+  - udp://1.1.1.1:53
+  - https://1.1.1.1/dns-query
+  - udp://8.8.4.4:53
+  timeout_ms: 2000

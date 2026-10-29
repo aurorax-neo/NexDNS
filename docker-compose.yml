@@ -1,0 +1,16 @@
+services:
+  nexdns:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nexdns:latest
+    container_name: nexdns-test
+    restart: unless-stopped
+    ports:
+      - "1053:53/udp"
+      - "1053:53/tcp"
+      - "13000:3000/tcp"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai

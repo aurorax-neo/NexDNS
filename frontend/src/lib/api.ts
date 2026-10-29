@@ -129,6 +129,7 @@ export interface AppSettings {
     connect_ip_version?: string;
     response_mode: string;
     doh_enabled: boolean;
+    doh_port: number;
     doh_path: string;
     block_type: string;
     block_ttl: number;

@@ -281,6 +281,23 @@ export const SettingsPage: React.FC = () => {
                   />
                 </div>
                 <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">DoH 独立监听端口</label>
+                  <input
+                    type="number"
+                    value={settings.dns.doh_port || 8053}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        dns: { ...settings.dns, doh_port: parseInt(e.target.value) || 8053 },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">Web 控制台端口</label>
                   <input
                     type="number"
@@ -289,6 +306,20 @@ export const SettingsPage: React.FC = () => {
                       setSettings({
                         ...settings,
                         web: { ...settings.web, port: parseInt(e.target.value) || 3000 },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">DoH 请求路径</label>
+                  <input
+                    type="text"
+                    value={settings.dns.doh_path || '/dns-query'}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        dns: { ...settings.dns, doh_path: e.target.value || '/dns-query' },
                       })
                     }
                     className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
@@ -334,6 +365,12 @@ export const SettingsPage: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {settings.dns.doh_enabled && (
+                <div className="p-2.5 rounded bg-cyan-50 dark:bg-cyan-950/40 border border-cyan-200 dark:border-cyan-800/40 text-[11px] text-cyan-800 dark:text-cyan-300 font-mono">
+                  DoH 下游服务地址: <span className="font-bold underline">http://&lt;服务器IP&gt;:{settings.dns.doh_port || 8053}{settings.dns.doh_path || '/dns-query'}</span> (同时支持控制台端口 {settings.web.port})
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>

@@ -284,6 +284,21 @@ async fn main() -> anyhow::Result<()> {
     let app = create_router(app_state)
         .layer(CorsLayer::permissive());
 
+    // Optional independent DoH HTTP listener
+    if config.dns.doh_enabled && config.dns.doh_port > 0 && config.dns.doh_port != config.web.port {
+        let doh_port = config.dns.doh_port;
+        let doh_router = app.clone();
+        tokio::spawn(async move {
+            let doh_addr: SocketAddr = format!("0.0.0.0:{}", doh_port).parse().unwrap();
+            if let Ok(listener) = tokio::net::TcpListener::bind(doh_addr).await {
+                tracing::info!("DoH 独立服务监听在 http://{}/dns-query", doh_addr);
+                let _ = axum::serve(listener, doh_router.into_make_service_with_connect_info::<SocketAddr>()).await;
+            } else {
+                tracing::warn!("无法绑定 DoH 独立端口: {}", doh_port);
+            }
+        });
+    }
+
     let web_addr: SocketAddr = format!("0.0.0.0:{}", config.web.port).parse()?;
     tracing::info!("Web 控制台 API 服务运行在 http://{}", web_addr);
 

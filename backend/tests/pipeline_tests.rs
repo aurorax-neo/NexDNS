@@ -140,3 +140,13 @@ fn test_proxy_config_lookup() {
     assert_eq!(cfg.find_proxy_addr("p2").as_deref(), Some("socks5://10.96.1.108:1080"));
     assert_eq!(cfg.find_proxy_addr("socks5://127.0.0.1:9050").as_deref(), Some("socks5://127.0.0.1:9050"));
 }
+#[test]
+fn test_reqwest_socks_scheme() {
+    let p1 = reqwest::Proxy::all("socks5h://127.0.0.1:7890");
+    println!("socks5h result: {:?}", p1.is_ok());
+    assert!(p1.is_ok());
+
+    let p2 = reqwest::Proxy::all("socks5://127.0.0.1:7890");
+    println!("socks5 result: {:?}", p2.is_ok());
+    assert!(p2.is_ok());
+}

@@ -224,7 +224,7 @@ async fn update_settings(
     Ok(StatusCode::OK)
 }
 
-async fn doh_handler(
+pub async fn doh_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,

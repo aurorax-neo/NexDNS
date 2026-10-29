@@ -85,6 +85,8 @@ pub struct DnsConfig {
     pub response_mode: String,
     #[serde(default = "default_true")]
     pub doh_enabled: bool,
+    #[serde(default = "default_doh_port")]
+    pub doh_port: u16,
     #[serde(default = "default_doh_path")]
     pub doh_path: String,
     #[serde(default = "default_block_type")]
@@ -102,11 +104,16 @@ impl Default for DnsConfig {
             connect_ip_version: "dual".to_string(),
             response_mode: "dual".to_string(),
             doh_enabled: true,
+            doh_port: 8053,
             doh_path: "/dns-query".to_string(),
             block_type: "zero_ip".to_string(),
             block_ttl: 60,
         }
     }
+}
+
+fn default_doh_port() -> u16 {
+    8053
 }
 
 fn default_true() -> bool {

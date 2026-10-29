@@ -458,6 +458,16 @@ async fn get_query_logs(
     State(state): State<AppState>,
     Query(params): Query<QueryLogParams>,
 ) -> Result<Json<QueryLogResponse>, (StatusCode, String)> {
+    let logging_enabled = state.config.read().logging.enabled;
+    if !logging_enabled {
+        return Ok(Json(QueryLogResponse {
+            items: vec![],
+            total: 0,
+            page: 1,
+            page_size: params.page_size.unwrap_or(30),
+        }));
+    }
+
     let page = params.page.unwrap_or(1).max(1);
     let page_size = params.page_size.unwrap_or(30).clamp(1, 100);
     let offset = (page - 1) * page_size;
@@ -632,9 +642,13 @@ async fn add_rule(
     let id = Uuid::new_v4().to_string();
     let mut rule_content = payload.content.unwrap_or_default();
 
-    // If URL provided and content empty, try fetch
+    // If URL provided and content empty, try fetch with 6s timeout, fail storage as empty file
     if rule_content.is_empty() && payload.url.starts_with("http") {
-        if let Ok(resp) = reqwest::get(&payload.url).await {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(6))
+            .build()
+            .unwrap_or_default();
+        if let Ok(resp) = client.get(&payload.url).send().await {
             if let Ok(text) = resp.text().await {
                 rule_content = text;
             }
@@ -645,9 +659,19 @@ async fn add_rule(
     store.parse_rules(&rule_content);
     let count = store.total_count;
 
+    // 智能规则源重名处理: 若已有同名规则源，自动附加序号避免混淆
+    let mut safe_name = payload.name.trim().to_string();
+    if let Ok(existing_rules) = state.db.get_rules() {
+        let mut idx = 1;
+        while existing_rules.iter().any(|r| r.name == safe_name) {
+            safe_name = format!("{} ({})", payload.name.trim(), idx);
+            idx += 1;
+        }
+    }
+
     let record = AdblockRuleRecord {
         id,
-        name: payload.name,
+        name: safe_name,
         url: payload.url,
         enabled: true,
         rule_count: count,
@@ -687,17 +711,26 @@ async fn refresh_rule(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let Some(mut r) = rules.into_iter().find(|item| item.id == id) else {
-        return Err((StatusCode::NOT_FOUND, "Rule not found".to_string()));
+        return Err((StatusCode::NOT_FOUND, "未找到指定的规则源".to_string()));
     };
 
-    if r.url.starts_with("http") {
-        let resp = reqwest::get(&r.url)
-            .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    if r.url.is_empty() || !r.url.starts_with("http") {
+        return Err((StatusCode::BAD_REQUEST, "该规则源未配置在线订阅 URL，无法进行在线刷新".to_string()));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let resp = client.get(&r.url)
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("拉取在线订阅失败: {}", e)))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
 
         let mut store = crate::pipeline::plugins::adblock::RuleStore::default();
         store.parse_rules(&text);
@@ -710,12 +743,11 @@ async fn refresh_rule(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
         reload_all_rules(&state).await;
-    }
 
     Ok(StatusCode::OK)
 }
 
-async fn reload_all_rules(state: &AppState) {
+pub async fn reload_all_rules(state: &AppState) {
     if let Ok(rules) = state.db.get_rules() {
         let mut combined = String::new();
         let conn = match state.db.get_conn() {
@@ -1272,7 +1304,11 @@ async fn add_routing_rule(
     let mut content_str = payload.content.unwrap_or_default();
 
     if content_str.is_empty() && url_str.starts_with("http") {
-        if let Ok(resp) = reqwest::get(&url_str).await {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(6))
+            .build()
+            .unwrap_or_default();
+        if let Ok(resp) = client.get(&url_str).send().await {
             if let Ok(text) = resp.text().await {
                 content_str = text;
             }
@@ -1311,6 +1347,13 @@ async fn delete_routing_rule(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    let rules = state.rule_manager.list_rules();
+    if let Some(r) = rules.iter().find(|item| item.id == id) {
+        const CORE_FILES: &[&str] = &["direct.txt", "proxy.txt", "private.txt", "ipv4_china.txt", "ipv6_china.txt"];
+        if CORE_FILES.contains(&r.file_name.as_str()) {
+            return Err((StatusCode::FORBIDDEN, "系统核心分流规则文件禁止删除".to_string()));
+        }
+    }
     state.rule_manager.delete_rule_file(&id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(StatusCode::OK)
@@ -1331,13 +1374,15 @@ async fn refresh_routing_rule(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let rules = state.rule_manager.list_rules();
     let Some(r) = rules.into_iter().find(|item| item.id == id) else {
-        return Err((StatusCode::NOT_FOUND, "Rule file not found".to_string()));
+        return Err((StatusCode::NOT_FOUND, "未找到指定的规则文件".to_string()));
     };
 
-    if !r.url.is_empty() && r.url.starts_with("http") {
-        state.rule_manager.update_rule_file(&r.file_name, &r.url).await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    if r.url.is_empty() || !r.url.starts_with("http") {
+        return Err((StatusCode::BAD_REQUEST, "该规则文件未配置在线订阅 URL，无法进行在线刷新".to_string()));
     }
+
+    state.rule_manager.update_rule_file(&r.file_name, &r.url).await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("拉取在线规则失败: {}", e)))?;
 
     Ok(StatusCode::OK)
 }

@@ -257,9 +257,9 @@ async fn main() -> anyhow::Result<()> {
         config.dns.response_mode.clone(),
     ));
 
+    // 10. Start DNS Server (Controlled by independent enabled switch)
     let dns_server_enabled = Arc::new(parking_lot::RwLock::new(config.dns.enabled));
 
-    // 10. Start DNS Server
     let dns_server = DnsServer::new(
         config.dns.port,
         engine.clone(),
@@ -269,17 +269,64 @@ async fn main() -> anyhow::Result<()> {
     );
     dns_server.start().await?;
 
+    let shared_config = Arc::new(parking_lot::RwLock::new((*config).clone()));
+
     // 11. Start Axum Web Server
     let app_state = AppState {
         engine,
         db,
         metrics,
-        config: Arc::new(parking_lot::RwLock::new((*config).clone())),
+        config: shared_config.clone(),
         config_path: cli.config.to_string_lossy().to_string(),
         dns_server_enabled,
         rule_manager,
         start_time: std::time::Instant::now(),
     };
+
+    // 12. 后台异步规则文件自动更新调度器 (不阻塞程序启动，10秒后首次检测)
+    let auto_update_state = app_state.clone();
+
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        loop {
+            let (enabled, interval_mins) = {
+                let c = auto_update_state.config.read();
+                (c.rules_update.auto_update, c.rules_update.interval_mins.max(1))
+            };
+
+            if enabled {
+                tracing::info!("后台调度: 开始自动更新在线规则文件 (间隔: {} min)...", interval_mins);
+                // 1. 更新拦截规则库中配置了在线 URL 的项
+                if let Ok(rules) = auto_update_state.db.get_rules() {
+                    for r in rules {
+                        if r.enabled && r.url.starts_with("http") {
+                            let client = reqwest::Client::builder()
+                                .timeout(std::time::Duration::from_secs(15))
+                                .build();
+                            if let Ok(client) = client {
+                                if let Ok(resp) = client.get(&r.url).send().await {
+                                    if let Ok(text) = resp.text().await {
+                                        let mut store = crate::pipeline::plugins::adblock::RuleStore::default();
+                                        store.parse_rules(&text);
+                                        let mut updated = r.clone();
+                                        updated.rule_count = store.total_count;
+                                        updated.updated_at = chrono::Utc::now().to_rfc3339();
+                                        let _ = auto_update_state.db.save_rule(&updated, &text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    crate::api::reload_all_rules(&auto_update_state).await;
+                }
+
+                // 2. 更新分流规则集中配置了在线 URL 的项
+                auto_update_state.rule_manager.update_all().await;
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(interval_mins * 60)).await;
+        }
+    });
 
     let app = create_router(app_state)
         .layer(CorsLayer::permissive());

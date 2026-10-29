@@ -161,6 +161,10 @@ export interface AppSettings {
     enabled: boolean;
     retention_days: number;
   };
+  rules_update?: {
+    auto_update: boolean;
+    interval_mins: number;
+  };
   upstreams: {
     mainland: string[];
     gfw: string[];

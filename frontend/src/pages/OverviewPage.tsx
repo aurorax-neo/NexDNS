@@ -24,6 +24,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
   const [blockedPage, setBlockedPage] = useState(1);
   const [clientsPage, setClientsPage] = useState(1);
   const cardPageSize = 5;
+  const MAX_TOP_LIMIT = 50;
 
   const fetchData = async () => {
     try {
@@ -179,7 +180,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Top 请求域名 */}
         {(() => {
-          const list = metrics?.top_domains || [];
+          const list = (metrics?.top_domains || []).slice(0, MAX_TOP_LIMIT);
           const totalPages = Math.max(1, Math.ceil(list.length / cardPageSize));
           const pagedList = list.slice((domainsPage - 1) * cardPageSize, domainsPage * cardPageSize);
           const baseIdx = (domainsPage - 1) * cardPageSize;
@@ -189,7 +190,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
             <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
-                  <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">高频查询域名</h4>
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">高频查询域名</h4>
+                    <span className="text-[11px] font-normal text-neutral-400 font-mono">前 {Math.min(list.length, MAX_TOP_LIMIT)} 项</span>
+                  </div>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -253,7 +257,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
 
         {/* Top 拦截域名 */}
         {(() => {
-          const list = metrics?.top_blocked || [];
+          const list = (metrics?.top_blocked || []).slice(0, MAX_TOP_LIMIT);
           const totalPages = Math.max(1, Math.ceil(list.length / cardPageSize));
           const pagedList = list.slice((blockedPage - 1) * cardPageSize, blockedPage * cardPageSize);
           const baseIdx = (blockedPage - 1) * cardPageSize;
@@ -263,7 +267,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
             <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
-                  <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">高频拦截目标</h4>
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">高频拦截目标</h4>
+                    <span className="text-[11px] font-normal text-neutral-400 font-mono">前 {Math.min(list.length, MAX_TOP_LIMIT)} 项</span>
+                  </div>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -327,7 +334,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
 
         {/* Top 活跃客户端 */}
         {(() => {
-          const list = metrics?.top_clients || [];
+          const list = (metrics?.top_clients || []).slice(0, MAX_TOP_LIMIT);
           const totalPages = Math.max(1, Math.ceil(list.length / cardPageSize));
           const pagedList = list.slice((clientsPage - 1) * cardPageSize, clientsPage * cardPageSize);
           const baseIdx = (clientsPage - 1) * cardPageSize;
@@ -337,7 +344,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
             <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
-                  <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">活跃客户端 IP</h4>
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">活跃客户端 IP</h4>
+                    <span className="text-[11px] font-normal text-neutral-400 font-mono">前 {Math.min(list.length, MAX_TOP_LIMIT)} 项</span>
+                  </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-neutral-400 mr-1">内网来源</span>
                     {totalPages > 1 && (

@@ -130,10 +130,35 @@ impl RuleFileManager {
         result
     }
 
-    pub fn add_rule_file(&self, name: &str, file_name: &str, group_type: &str, url: &str, content: &str) -> anyhow::Result<()> {
-        let file_path = self.base_dir.join(file_name);
+    pub fn add_rule_file(&self, name: &str, file_name: &str, group_type: &str, url: &str, content: &str) -> anyhow::Result<String> {
+        let conn = self.get_conn()?;
+
+        // 智能文件重名处理: 若磁盘或数据库已存在同名文件，自动分配 safe_file_name 避免冲突覆盖
+        let mut safe_name = name.to_string();
+        let mut safe_file_name = file_name.to_string();
+        let p = std::path::Path::new(file_name);
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(file_name);
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("txt");
+
+        let mut idx = 1;
+        while self.base_dir.join(&safe_file_name).exists() || {
+            let exists_in_db: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM routing_rule_files WHERE file_name = ?1)",
+                params![&safe_file_name],
+                |r| r.get(0),
+            ).unwrap_or(false);
+            exists_in_db
+        } {
+            safe_file_name = format!("{}_{}.{}", stem, idx, ext);
+            safe_name = format!("{} ({})", name, idx);
+            idx += 1;
+        }
+
+        let file_path = self.base_dir.join(&safe_file_name);
         if !content.is_empty() {
             fs::write(&file_path, content)?;
+        } else if !file_path.exists() {
+            fs::write(&file_path, "")?;
         }
 
         let size = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
@@ -141,16 +166,15 @@ impl RuleFileManager {
             .map(|s| s.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count())
             .unwrap_or(0);
 
-        let conn = self.get_conn()?;
         let id = Uuid::new_v4().to_string();
         conn.execute(
             "INSERT OR REPLACE INTO routing_rule_files (id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8)",
-            params![id, name, file_name, group_type, url, line_count as i64, size as i64, chrono::Utc::now().to_rfc3339()],
+            params![id, safe_name, safe_file_name, group_type, url, line_count as i64, size as i64, chrono::Utc::now().to_rfc3339()],
         )?;
 
         self.load_local_rules();
-        Ok(())
+        Ok(safe_file_name)
     }
 
     pub fn toggle_rule_file(&self, id: &str) -> anyhow::Result<()> {

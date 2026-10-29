@@ -150,7 +150,7 @@ impl MetricsCollector {
             let r = self.domain_counts.read();
             let mut list: Vec<(String, u64)> = r.iter().map(|(k, v)| (k.clone(), *v)).collect();
             list.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
-            list.truncate(10);
+            list.truncate(50);
             list
         };
 
@@ -158,7 +158,7 @@ impl MetricsCollector {
             let r = self.blocked_counts.read();
             let mut list: Vec<(String, u64)> = r.iter().map(|(k, v)| (k.clone(), *v)).collect();
             list.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
-            list.truncate(10);
+            list.truncate(50);
             list
         };
 
@@ -166,7 +166,7 @@ impl MetricsCollector {
             let r = self.client_counts.read();
             let mut list: Vec<(String, u64)> = r.iter().map(|(k, v)| (k.clone(), *v)).collect();
             list.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
-            list.truncate(10);
+            list.truncate(50);
             list
         };
 

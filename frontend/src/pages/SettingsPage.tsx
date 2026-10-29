@@ -42,6 +42,12 @@ export const SettingsPage: React.FC = () => {
   const loadData = async () => {
     try {
       const settingsRes = await api.getSettings();
+      if (!settingsRes.cache.max_ttl || settingsRes.cache.max_ttl === 3600) {
+        settingsRes.cache.max_ttl = 300;
+      }
+      if (!settingsRes.rules_update) {
+        settingsRes.rules_update = { auto_update: true, interval_mins: 1440 };
+      }
       setSettings(settingsRes);
       setTimeout(() => setInitialLoaded(true), 200);
     } catch (e) {
@@ -88,6 +94,23 @@ export const SettingsPage: React.FC = () => {
   const handleSetDefaultProxy = (id: string) => {
     if (!settings) return;
     const currentList = settings.proxy.list || [];
+    if (id === 'direct' || !id) {
+      const updatedList = currentList.map((p) => ({
+        ...p,
+        is_default: false,
+      }));
+      setSettings({
+        ...settings,
+        proxy: {
+          ...settings.proxy,
+          socks5: '',
+          list: updatedList,
+        },
+      });
+      setSnackbarMessage('已设置默认网络策略为: 直连 (不使用代理)');
+      return;
+    }
+
     const updatedList = currentList.map((p) => ({
       ...p,
       is_default: p.id === id,
@@ -97,11 +120,11 @@ export const SettingsPage: React.FC = () => {
       ...settings,
       proxy: {
         ...settings.proxy,
-        socks5: defaultItem ? defaultItem.addr : settings.proxy.socks5,
+        socks5: defaultItem ? defaultItem.addr : '',
         list: updatedList,
       },
     });
-    setSnackbarMessage('已切换默认代理节点');
+    setSnackbarMessage(`已设置默认代理为: ${defaultItem?.name || id}`);
   };
 
   const handleDeleteProxy = (id: string) => {
@@ -109,17 +132,25 @@ export const SettingsPage: React.FC = () => {
     const currentList = settings.proxy.list || [];
     const target = currentList.find((p) => p.id === id);
     const updatedList = currentList.filter((p) => p.id !== id);
-    if (target?.is_default && updatedList.length > 0) {
-      updatedList[0].is_default = true;
+
+    let newSocks5 = settings.proxy.socks5;
+    if (target?.is_default) {
+      if (updatedList.length > 0) {
+        updatedList[0].is_default = true;
+        newSocks5 = updatedList[0].addr;
+      } else {
+        newSocks5 = '';
+      }
     }
     setSettings({
       ...settings,
       proxy: {
         ...settings.proxy,
+        socks5: newSocks5,
         list: updatedList,
       },
     });
-    setSnackbarMessage('已移除代理节点');
+    setSnackbarMessage('已删除代理节点');
   };
 
   const handleAddProxy = (e: React.FormEvent) => {
@@ -153,7 +184,7 @@ export const SettingsPage: React.FC = () => {
     setIsAddProxyModalOpen(false);
     setNewProxyName('');
     setNewProxyAddr('');
-    setSnackbarMessage('已添加新代理节点');
+    setSnackbarMessage(willBeDefault ? '已添加新代理节点并设为默认' : '已添加新代理节点');
   };
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -215,8 +246,10 @@ export const SettingsPage: React.FC = () => {
       </div>
 
       {settings && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* 1. DNS 基础与协议栈设置 */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+          {/* 左列: DNS 基础监听与代理设置 */}
+          <div className="space-y-6">
+            {/* 1. DNS 基础与协议栈设置 */}
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Sliders className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
@@ -366,11 +399,6 @@ export const SettingsPage: React.FC = () => {
                 </div>
               </div>
 
-              {settings.dns.doh_enabled && (
-                <div className="p-2.5 rounded bg-cyan-50 dark:bg-cyan-950/40 border border-cyan-200 dark:border-cyan-800/40 text-[11px] text-cyan-800 dark:text-cyan-300 font-mono">
-                  DoH 下游服务地址: <span className="font-bold underline">http://&lt;服务器IP&gt;:{settings.dns.doh_port || 8053}{settings.dns.doh_path || '/dns-query'}</span> (同时支持控制台端口 {settings.web.port})
-                </div>
-              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -408,8 +436,154 @@ export const SettingsPage: React.FC = () => {
               </div>
             </div>
           </div>
+            {/* 4. SOCKS5 代理设置 (Proxy) */}
+          <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+              <Globe className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">代理服务与上层默认代理设置</h4>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    启用代理转发功能
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    启用后，上游服务器可自由选择直连、默认代理或指定专属代理节点转发请求
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.proxy.enabled}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      proxy: { ...settings.proxy, enabled: v },
+                    })
+                  }
+                />
+              </div>
 
-          {/* 2. 智能缓存设置 (SmartCache) */}
+              {/* 上层直接选择全局默认代理 */}
+              <div>
+                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">全局默认代理节点</label>
+                <CustomSelect
+                  options={[
+                    { value: "direct", label: "直连 (不使用代理)" },
+                    ...(settings.proxy.list || []).map((p) => ({
+                      value: p.id,
+                      label: `${p.name} (${p.addr})`,
+                    })),
+                  ]}
+                  value={
+                    (() => {
+                      const list = settings.proxy.list || [];
+                      const def = list.find((p) => p.is_default);
+                      return def ? def.id : "direct";
+                    })()
+                  }
+                  onChange={(id) => handleSetDefaultProxy(id)}
+                  className="w-full"
+                />
+              </div>
+
+              {/* 代理节点列表 */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-neutral-700 dark:text-neutral-300">已配置代理节点</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddProxyModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 min-h-[32px] px-3 text-xs bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md text-neutral-800 dark:text-neutral-200 transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5 align-icon" />
+                    添加代理节点
+                  </button>
+                </div>
+
+                {(settings.proxy.list || []).length === 0 ? (
+                  <div className="p-4 rounded-md bg-neutral-50 dark:bg-surface-2 border border-dashed border-neutral-200 dark:border-neutral-800 text-center text-neutral-400 text-xs">
+                    暂无自定义代理节点，默认使用直连解析
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {(settings.proxy.list || []).map((p) => {
+                    const testRes = proxyTestResults[p.id];
+                    const isTesting = testingProxyId === p.id;
+
+                    return (
+                      <div
+                        key={p.id}
+                        className="p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-3"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          {p.is_default && (
+                            <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-400 border border-cyan-200 dark:border-cyan-800/40 shrink-0">
+                              默认代理
+                            </span>
+                          )}
+                          <div className="min-w-0">
+                            <div className="font-medium text-neutral-900 dark:text-neutral-100 truncate">
+                              {p.name}
+                            </div>
+                            <div className="font-mono text-[11px] text-neutral-500 truncate">
+                              {p.addr}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          {testRes && (
+                            <div className="flex items-center gap-1.5 font-mono text-[11px] tabular-nums">
+                              {testRes.ok ? (
+                                <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5 align-icon" />
+                                  {testRes.latency_ms?.toFixed(1)} ms
+                                </span>
+                              ) : (
+                                <span className="text-rose-600 dark:text-rose-400 flex items-center gap-1" title={testRes.error}>
+                                  <XCircle className="w-3.5 h-3.5 align-icon" />
+                                  连接失败
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => handleTestSingleProxy(p.id, p.addr)}
+                            disabled={isTesting}
+                            className="min-h-[32px] px-2.5 text-xs bg-white dark:bg-surface-3 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded text-neutral-800 dark:text-neutral-200 disabled:opacity-50 transition-colors"
+                          >
+                            {isTesting ? '探测中...' : '测试连通性'}
+                          </button>
+
+                          <Popconfirm
+                              title="确认删除该代理节点？"
+                              actionText="确认删除"
+                              onConfirm={() => handleDeleteProxy(p.id)}
+                            >
+                              <button
+                                type="button"
+                                className="min-w-[32px] min-h-[32px] flex items-center justify-center text-neutral-400 hover:text-red-500"
+                                title="删除节点"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 align-icon" />
+                              </button>
+                            </Popconfirm>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                )}
+              </div>
+            </div>
+          </div>
+          </div>
+
+          {/* 右列: 缓存、安全分流、日志策略与密码修改 */}
+          <div className="space-y-6">
+            {/* 2. 智能缓存设置 (SmartCache) */}
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Database className="w-4 h-4 text-amber-600 dark:text-amber-400 align-icon" />
@@ -449,7 +623,7 @@ export const SettingsPage: React.FC = () => {
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">最大 TTL (秒)</label>
                   <input
                     type="number"
-                    value={settings.cache.max_ttl || 3600}
+                    value={settings.cache.max_ttl || 300}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
@@ -502,8 +676,7 @@ export const SettingsPage: React.FC = () => {
               </div>
             </div>
           </div>
-
-          {/* 3. 分流与安全防御设置 (Routing Pipeline) */}
+            {/* 3. 分流与安全防御设置 (Routing Pipeline) */}
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Shield className="w-4 h-4 text-rose-600 dark:text-rose-400 align-icon" />
@@ -568,145 +741,54 @@ export const SettingsPage: React.FC = () => {
                   className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
                 />
               </div>
-            </div>
-          </div>
 
-          {/* 4. SOCKS5 代理设置 (Proxy) */}
-          <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
-            <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
-              <Globe className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
-              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">代理服务与上层默认代理设置</h4>
-            </div>
-            <div className="space-y-3 text-xs">
+              {/* 规则文件定时自动更新 */}
               <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
                 <div>
                   <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
-                    启用代理转发功能
+                    规则文件定时自动更新
                   </span>
                   <span className="text-[11px] text-neutral-500">
-                    启用后，上游服务器可自由选择直连、默认代理或指定专属代理节点转发请求
+                    后台异步定时拉取在线订阅规则与分流集，不阻塞程序启动
                   </span>
                 </div>
                 <Switch
-                  checked={settings.proxy.enabled}
+                  checked={settings.rules_update?.auto_update ?? true}
                   onChange={(v) =>
                     setSettings({
                       ...settings,
-                      proxy: { ...settings.proxy, enabled: v },
+                      rules_update: {
+                        auto_update: v,
+                        interval_mins: settings.rules_update?.interval_mins || 1440,
+                      },
                     })
                   }
                 />
               </div>
 
-              {/* 上层直接选择全局默认代理 */}
               <div>
-                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">全局默认代理节点</label>
-                <CustomSelect
-                  options={(settings.proxy.list || []).map((p) => ({
-                    value: p.id,
-                    label: `${p.name} (${p.addr})`,
-                  }))}
-                  value={
-                    (settings.proxy.list || []).find((p) => p.is_default)?.id ||
-                    (settings.proxy.list || [])[0]?.id ||
-                    ''
+                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
+                  规则自动更新间隔时间 (分钟 min，默认 1440 min / 24小时)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={settings.rules_update?.interval_mins ?? 1440}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      rules_update: {
+                        auto_update: settings.rules_update?.auto_update ?? true,
+                        interval_mins: parseInt(e.target.value) || 1440,
+                      },
+                    })
                   }
-                  onChange={(id) => handleSetDefaultProxy(id)}
-                  className="w-full"
+                  className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
                 />
-              </div>
-
-              {/* 代理节点列表 */}
-              <div className="space-y-2 pt-1">
-                <div className="flex items-center justify-between">
-                  <span className="font-medium text-neutral-700 dark:text-neutral-300">已配置代理节点</span>
-                  <button
-                    type="button"
-                    onClick={() => setIsAddProxyModalOpen(true)}
-                    className="inline-flex items-center gap-1.5 min-h-[32px] px-3 text-xs bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md text-neutral-800 dark:text-neutral-200 transition-colors"
-                  >
-                    <Plus className="w-3.5 h-3.5 align-icon" />
-                    添加代理节点
-                  </button>
-                </div>
-
-                <div className="space-y-2">
-                  {(settings.proxy.list || []).map((p) => {
-                    const testRes = proxyTestResults[p.id];
-                    const isTesting = testingProxyId === p.id;
-
-                    return (
-                      <div
-                        key={p.id}
-                        className="p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-3"
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                          {p.is_default && (
-                            <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-400 border border-cyan-200 dark:border-cyan-800/40 shrink-0">
-                              默认代理
-                            </span>
-                          )}
-                          <div className="min-w-0">
-                            <div className="font-medium text-neutral-900 dark:text-neutral-100 truncate">
-                              {p.name}
-                            </div>
-                            <div className="font-mono text-[11px] text-neutral-500 truncate">
-                              {p.addr}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          {testRes && (
-                            <div className="flex items-center gap-1.5 font-mono text-[11px] tabular-nums">
-                              {testRes.ok ? (
-                                <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                                  <CheckCircle2 className="w-3.5 h-3.5 align-icon" />
-                                  {testRes.latency_ms?.toFixed(1)} ms
-                                </span>
-                              ) : (
-                                <span className="text-rose-600 dark:text-rose-400 flex items-center gap-1" title={testRes.error}>
-                                  <XCircle className="w-3.5 h-3.5 align-icon" />
-                                  连接失败
-                                </span>
-                              )}
-                            </div>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={() => handleTestSingleProxy(p.id, p.addr)}
-                            disabled={isTesting}
-                            className="min-h-[32px] px-2.5 text-xs bg-white dark:bg-surface-3 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded text-neutral-800 dark:text-neutral-200 disabled:opacity-50 transition-colors"
-                          >
-                            {isTesting ? '探测中...' : '测试连通性'}
-                          </button>
-
-                          {(settings.proxy.list || []).length > 1 && (
-                            <Popconfirm
-                              title="确认删除该代理节点？"
-                              actionText="确认删除"
-                              onConfirm={() => handleDeleteProxy(p.id)}
-                            >
-                              <button
-                                type="button"
-                                className="min-w-[32px] min-h-[32px] flex items-center justify-center text-neutral-400 hover:text-red-500"
-                                title="删除节点"
-                              >
-                                <Trash2 className="w-3.5 h-3.5 align-icon" />
-                              </button>
-                            </Popconfirm>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
               </div>
             </div>
           </div>
-
-          {/* 5. 日志与留存设置 */}
+            {/* 5. 日志与留存设置 */}
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Zap className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
@@ -754,8 +836,7 @@ export const SettingsPage: React.FC = () => {
               </div>
             </div>
           </div>
-
-          {/* 6. 管理员账户安全 */}
+            {/* 6. 管理员账户安全 */}
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Lock className="w-4 h-4 text-indigo-600 dark:text-indigo-400 align-icon" />
@@ -819,6 +900,7 @@ export const SettingsPage: React.FC = () => {
               </button>
             </form>
           </div>
+        </div>
         </div>
       )}
 

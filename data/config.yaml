@@ -7,6 +7,8 @@ cache:
   size: 10000
   serve_expired: true
   prefetch: true
+  min_ttl: 60
+  max_ttl: 300
 speed_check:
   enabled: true
   timeout_ms: 400

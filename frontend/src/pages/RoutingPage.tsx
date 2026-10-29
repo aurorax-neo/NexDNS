@@ -361,20 +361,28 @@ export const RoutingPage: React.FC = () => {
                   查看内容
                 </button>
 
-                {rf.url && rf.url.startsWith('http') && (
+                {/* 在线刷新按钮: 有 URL 则可点，无 URL 禁用置灰 */}
+                <button
+                  type="button"
+                  onClick={() => handleRefreshSingle(rf.id)}
+                  disabled={!rf.url || !rf.url.startsWith('http') || refreshingId === rf.id}
+                  className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2 transition-colors"
+                  title={rf.url && rf.url.startsWith('http') ? '拉取在线最新版本' : '未配置在线订阅 URL，不可在线刷新'}
+                >
+                  <RefreshCw className={`w-4 h-4 align-icon ${refreshingId === rf.id ? 'animate-spin text-cyan-500' : ''}`} />
+                </button>
+
+                {/* 删除规则文件: 核心文件禁用置灰，自定义文件可删除 */}
+                {['direct.txt', 'proxy.txt', 'private.txt', 'ipv4_china.txt', 'ipv6_china.txt'].includes(rf.file_name) ? (
                   <button
                     type="button"
-                    onClick={() => handleRefreshSingle(rf.id)}
-                    disabled={refreshingId === rf.id}
-                    className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2 transition-colors"
-                    title="在线刷新"
+                    disabled
+                    className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-300 dark:text-neutral-700 cursor-not-allowed rounded border border-neutral-200 dark:border-neutral-800/40 bg-neutral-100 dark:bg-surface-3/30"
+                    title="系统核心规则文件禁止删除"
                   >
-                    <RefreshCw className={`w-4 h-4 align-icon ${refreshingId === rf.id ? 'animate-spin text-cyan-500' : ''}`} />
+                    <Trash2 className="w-4 h-4 align-icon" />
                   </button>
-                )}
-
-                {/* 允许删除自定义规则文件 */}
-                {rf.file_name !== 'direct.txt' && rf.file_name !== 'proxy.txt' && rf.file_name !== 'private.txt' && (
+                ) : (
                   <Popconfirm
                     title="确认删除该规则文件？"
                     actionText="确认删除"
@@ -382,7 +390,7 @@ export const RoutingPage: React.FC = () => {
                   >
                     <button
                       type="button"
-                      className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-500 hover:text-red-500 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2"
+                      className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-500 hover:text-red-500 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2 transition-colors"
                       title="删除规则文件"
                     >
                       <Trash2 className="w-4 h-4 align-icon" />
@@ -446,6 +454,11 @@ export const RoutingPage: React.FC = () => {
                 required
                 className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-cyan-500"
               />
+              {addFileName && ruleFiles.some((f) => f.file_name.toLowerCase() === (addFileName.endsWith('.txt') ? addFileName : `${addFileName}.txt`).toLowerCase()) && (
+                <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                  检测到同名规则文件，保存时将自动重命名并独立保存，不会覆盖现有文件
+                </p>
+              )}
             </div>
           </div>
 

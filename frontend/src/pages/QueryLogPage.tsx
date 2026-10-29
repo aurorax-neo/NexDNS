@@ -22,8 +22,14 @@ import { AlertDialog } from '../components/ui/AlertDialog';
 import { CustomSelect } from '../components/ui/CustomSelect';
 import { Snackbar } from '../components/ui/Snackbar';
 
-export const QueryLogPage: React.FC = () => {
+export interface QueryLogPageProps {
+  onNavigate?: (tab: string) => void;
+}
+
+export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   const [logs, setLogs] = useState<QueryLogItem[]>([]);
+  const [loggingEnabled, setLoggingEnabled] = useState<boolean>(true);
+  const [loadingSettings, setLoadingSettings] = useState<boolean>(true);
   const [isLive, setIsLive] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -36,8 +42,18 @@ export const QueryLogPage: React.FC = () => {
   const [actionSnackbar, setActionSnackbar] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
+  useEffect(() => {
+    api.getSettings().then((s) => {
+      setLoggingEnabled(s.logging.enabled);
+      setLoadingSettings(false);
+    }).catch(() => {
+      setLoadingSettings(false);
+    });
+  }, []);
+
   // Load initial logs
   const fetchLogs = async () => {
+    if (!loggingEnabled) return;
     try {
       const res = await api.getQueryLogs({
         page,
@@ -55,8 +71,9 @@ export const QueryLogPage: React.FC = () => {
   };
 
   useEffect(() => {
+    if (!loggingEnabled) return;
     fetchLogs();
-  }, [search, statusFilter, page, pageSize]);
+  }, [search, statusFilter, page, pageSize, loggingEnabled]);
 
   const handleFilterChange = (val: string) => {
     setStatusFilter(val);
@@ -65,7 +82,7 @@ export const QueryLogPage: React.FC = () => {
 
   // WebSocket live streaming
   useEffect(() => {
-    if (!isLive) {
+    if (!isLive || !loggingEnabled) {
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -81,7 +98,10 @@ export const QueryLogPage: React.FC = () => {
     ws.onmessage = (event) => {
       try {
         const item: QueryLogItem = JSON.parse(event.data);
-        setLogs((prev) => [item, ...prev.slice(0, 199)]);
+        if (page === 1 && !search && statusFilter === 'all') {
+          setLogs((prev) => [item, ...prev.slice(0, pageSize - 1)]);
+          setTotal((prev) => prev + 1);
+        }
       } catch (e) {
         console.error('Failed to parse WS log', e);
       }
@@ -91,7 +111,7 @@ export const QueryLogPage: React.FC = () => {
       ws.close();
       wsRef.current = null;
     };
-  }, [isLive]);
+  }, [isLive, loggingEnabled, page, pageSize, search, statusFilter]);
 
   const handleClearLogs = async () => {
     try {
@@ -154,10 +174,37 @@ export const QueryLogPage: React.FC = () => {
   const statusOptions = [
     { value: 'all', label: '全部状态' },
     { value: 'allowed', label: '正常放行' },
-    { value: 'blocked', label: '已拦截 (Adblock)' },
+    { value: 'blocked', label: '已拦截' },
     { value: 'cached', label: '命中缓存' },
     { value: 'rewritten', label: '本地重写' },
   ];
+
+  if (!loggingEnabled && !loadingSettings) {
+    return (
+      <div className="p-12 text-center rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-5 max-w-lg mx-auto my-16 animate-in fade-in-50">
+        <div className="w-14 h-14 mx-auto rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+          <ShieldAlert className="w-7 h-7 align-icon" />
+        </div>
+        <div className="space-y-2">
+          <h3 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">
+            DNS 查询日志记录已关闭
+          </h3>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400 leading-relaxed">
+            系统已在配置中停用日志留存功能，当前不会留存或展示任何 DNS 请求报文。如需监控实时流量与解析诊断，请前往系统设置开启【记录 DNS 查询日志】。
+          </p>
+        </div>
+        {onNavigate && (
+          <button
+            type="button"
+            onClick={() => onNavigate('settings')}
+            className="inline-flex items-center gap-1.5 min-h-[38px] px-5 text-xs font-medium rounded-md bg-cyan-600 hover:bg-cyan-500 text-white shadow-xs transition-colors"
+          >
+            前往系统设置开启
+          </button>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4 animate-in fade-in-50 duration-200">

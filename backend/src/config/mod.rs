@@ -169,7 +169,7 @@ impl Default for CacheConfig {
             serve_expired: true,
             prefetch: true,
             min_ttl: 60,
-            max_ttl: 3600,
+            max_ttl: 300,
         }
     }
 }
@@ -179,7 +179,7 @@ fn default_min_ttl() -> u32 {
 }
 
 fn default_max_ttl() -> u32 {
-    3600
+    300
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,6 +270,31 @@ impl Default for LoggingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RulesUpdateConfig {
+    #[serde(default = "default_rules_auto_update")]
+    pub auto_update: bool,
+    #[serde(default = "default_rules_update_interval_mins")]
+    pub interval_mins: u64,
+}
+
+fn default_rules_auto_update() -> bool {
+    true
+}
+
+fn default_rules_update_interval_mins() -> u64 {
+    1440
+}
+
+impl Default for RulesUpdateConfig {
+    fn default() -> Self {
+        Self {
+            auto_update: true,
+            interval_mins: 1440,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub dns: DnsConfig,
@@ -288,6 +313,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub logging: LoggingConfig,
     #[serde(default)]
+    pub rules_update: RulesUpdateConfig,
+    #[serde(default)]
     pub upstreams: UpstreamsConfig,
 }
 
@@ -302,7 +329,7 @@ impl Default for AppConfig {
                 serve_expired: true,
                 prefetch: true,
                 min_ttl: 60,
-                max_ttl: 3600,
+                max_ttl: 300,
             },
             speed_check: SpeedCheckConfig {
                 enabled: true,
@@ -313,6 +340,7 @@ impl Default for AppConfig {
             anti_pollution: true,
             routing: RoutingConfig::default(),
             logging: LoggingConfig::default(),
+            rules_update: RulesUpdateConfig::default(),
             upstreams: UpstreamsConfig {
                 mainland: vec![
                     "udp://223.5.5.5:53".to_string(),

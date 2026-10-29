@@ -111,8 +111,8 @@ impl Database {
         let db_path_clone = path_str.clone();
         let ws_tx_clone = ws_broadcast_tx.clone();
 
-        // Background batch writer thread
-        std::thread::spawn(move || {
+        // Background async batch writer task with periodic 150ms flush
+        tokio::spawn(async move {
             let mut conn = match Connection::open(&db_path_clone) {
                 Ok(c) => c,
                 Err(e) => {
@@ -121,21 +121,24 @@ impl Database {
                 }
             };
 
-            let mut batch = Vec::with_capacity(100);
-            let mut last_flush = std::time::Instant::now();
+            let mut batch = Vec::with_capacity(50);
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(150));
 
             loop {
-                // Read from rx with timeout
-                match log_rx.blocking_recv() {
-                    Some(item) => {
+                tokio::select! {
+                    Some(item) = log_rx.recv() => {
                         let _ = ws_tx_clone.send(item.clone());
                         batch.push(item);
-                        if batch.len() >= 100 || last_flush.elapsed() >= Duration::from_millis(500) {
+                        if batch.len() >= 10 {
                             Self::flush_batch(&mut conn, &mut batch);
-                            last_flush = std::time::Instant::now();
                         }
                     }
-                    None => {
+                    _ = ticker.tick() => {
+                        if !batch.is_empty() {
+                            Self::flush_batch(&mut conn, &mut batch);
+                        }
+                    }
+                    else => {
                         if !batch.is_empty() {
                             Self::flush_batch(&mut conn, &mut batch);
                         }

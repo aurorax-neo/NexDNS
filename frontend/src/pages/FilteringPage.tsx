@@ -304,14 +304,14 @@ export const FilteringPage: React.FC = () => {
                     onChange={() => handleToggleRule(rule.id, rule.enabled)}
                     ariaLabel={`切换 ${rule.name}`}
                   />
+                  {/* 查看规则内容: 纯图标按钮无文字 */}
                   <button
                     type="button"
                     onClick={() => handleOpenContentDrawer(rule)}
-                    className="min-h-[36px] px-3.5 flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2 transition-colors"
+                    className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2 transition-colors"
                     title="查看与编辑规则内容"
                   >
-                    <Eye className="w-3.5 h-3.5 align-icon" />
-                    查看内容
+                    <Eye className="w-4 h-4 align-icon" />
                   </button>
                   <button
                     type="button"

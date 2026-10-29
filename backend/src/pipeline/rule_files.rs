@@ -103,16 +103,49 @@ impl RuleFileManager {
         Ok(())
     }
 
+    pub fn get_disk_fallback_rules(&self) -> Vec<RuleFileInfo> {
+        let defaults = vec![
+            ("大陆直连主规则 (direct.txt)", "direct.txt", "mainland", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/direct.txt"),
+            ("代理过滤主规则 (proxy.txt)", "proxy.txt", "gfw", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/proxy.txt"),
+            ("局域私有域名 (private.txt)", "private.txt", "private", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/private.txt"),
+            ("中国 IPv4 地址段 (ipv4_china.txt)", "ipv4_china.txt", "china_ip", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/ipv4_china.txt"),
+            ("中国 IPv6 地址段 (ipv6_china.txt)", "ipv6_china.txt", "china_ip", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/ipv6_china.txt"),
+        ];
+
+        let mut res = Vec::new();
+        for (name, file_name, group_type, url) in defaults {
+            let file_path = self.base_dir.join(file_name);
+            let size = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+            let line_count = fs::read_to_string(&file_path)
+                .map(|s| s.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count())
+                .unwrap_or(0);
+
+            res.push(RuleFileInfo {
+                id: format!("builtin_{}", file_name.replace('.', "_")),
+                name: name.to_string(),
+                file_name: file_name.to_string(),
+                group_type: group_type.to_string(),
+                url: url.to_string(),
+                enabled: true,
+                count: line_count,
+                size_bytes: size,
+                updated_at: chrono::Utc::now().to_rfc3339(),
+            });
+        }
+        res
+    }
+
     pub fn list_rules(&self) -> Vec<RuleFileInfo> {
         let _ = self.ensure_defaults();
-        let Ok(conn) = self.get_conn() else {
-            return Vec::new();
+        let conn = match self.get_conn() {
+            Ok(c) => c,
+            Err(_) => return self.get_disk_fallback_rules(),
         };
         let mut stmt = match conn.prepare(
             "SELECT id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at FROM routing_rule_files ORDER BY group_type ASC, name ASC"
         ) {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(_) => return self.get_disk_fallback_rules(),
         };
 
         let rows = stmt.query_map([], |r| {
@@ -136,6 +169,9 @@ impl RuleFileManager {
                     result.push(rf);
                 }
             }
+        }
+        if result.is_empty() {
+            return self.get_disk_fallback_rules();
         }
         result
     }

@@ -339,26 +339,24 @@ export const RoutingPage: React.FC = () => {
                   ariaLabel={`切换 ${rf.name}`}
                 />
 
-                {/* 编辑详细信息 */}
+                {/* 编辑详细信息: 纯图标按钮无文字 */}
                 <button
                   type="button"
                   onClick={() => handleOpenEditModal(rf)}
-                  className="min-h-[36px] px-3 flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2 transition-colors"
+                  className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2 transition-colors"
                   title="编辑规则集信息"
                 >
-                  <Settings2 className="w-3.5 h-3.5 align-icon" />
-                  编辑信息
+                  <Settings2 className="w-4 h-4 align-icon" />
                 </button>
 
-                {/* 查看与编辑 */}
+                {/* 查看规则内容: 纯图标按钮无文字 */}
                 <button
                   type="button"
                   onClick={() => handleOpenFile(rf)}
-                  className="min-h-[36px] px-3.5 flex items-center gap-1.5 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2 transition-colors"
-                  title="查看与编辑规则"
+                  className="min-w-[36px] min-h-[36px] flex items-center justify-center text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100 rounded border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-surface-2 transition-colors"
+                  title="查看与编辑规则内容"
                 >
-                  <Eye className="w-3.5 h-3.5 align-icon" />
-                  查看内容
+                  <Eye className="w-4 h-4 align-icon" />
                 </button>
 
                 {/* 在线刷新按钮: 有 URL 则可点，无 URL 禁用置灰 */}

@@ -11,6 +11,7 @@ import {
   XCircle,
   RefreshCw,
   Shield,
+  Edit3,
 } from 'lucide-react';
 import { api, AppSettings } from '../lib/api';
 import { Modal } from '../components/ui/Modal';
@@ -38,6 +39,11 @@ export const SettingsPage: React.FC = () => {
   const [isAddProxyModalOpen, setIsAddProxyModalOpen] = useState(false);
   const [newProxyName, setNewProxyName] = useState('');
   const [newProxyAddr, setNewProxyAddr] = useState('');
+  // Edit proxy modal state
+  const [isEditProxyModalOpen, setIsEditProxyModalOpen] = useState(false);
+  const [editingProxyId, setEditingProxyId] = useState<string>('');
+  const [editProxyName, setEditProxyName] = useState<string>('');
+  const [editProxyAddr, setEditProxyAddr] = useState<string>('');
 
   const loadData = async () => {
     try {
@@ -185,6 +191,36 @@ export const SettingsPage: React.FC = () => {
     setNewProxyName('');
     setNewProxyAddr('');
     setSnackbarMessage(willBeDefault ? '已添加新代理节点并设为默认' : '已添加新代理节点');
+  };
+
+  const handleOpenEditProxyModal = (p: any) => {
+    setEditingProxyId(p.id);
+    setEditProxyName(p.name);
+    setEditProxyAddr(p.addr);
+    setIsEditProxyModalOpen(true);
+  };
+
+  const handleSaveEditProxy = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!settings || !editProxyName.trim() || !editProxyAddr.trim()) return;
+    const currentList = settings.proxy.list || [];
+    const updatedList = currentList.map((p) => {
+      if (p.id === editingProxyId) {
+        return { ...p, name: editProxyName.trim(), addr: editProxyAddr.trim() };
+      }
+      return p;
+    });
+    const defaultItem = updatedList.find((p) => p.is_default);
+    setSettings({
+      ...settings,
+      proxy: {
+        ...settings.proxy,
+        socks5: defaultItem ? defaultItem.addr : '',
+        list: updatedList,
+      },
+    });
+    setIsEditProxyModalOpen(false);
+    setSnackbarMessage(`已更新代理节点 [${editProxyName.trim()}] 配置并自动生效`);
   };
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -555,6 +591,16 @@ export const SettingsPage: React.FC = () => {
                             className="min-h-[32px] px-2.5 text-xs bg-white dark:bg-surface-3 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded text-neutral-800 dark:text-neutral-200 disabled:opacity-50 transition-colors"
                           >
                             {isTesting ? '探测中...' : '测试连通性'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditProxyModal(p)}
+                            className="min-h-[32px] px-2.5 text-xs bg-white dark:bg-surface-3 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded text-neutral-800 dark:text-neutral-200 transition-colors flex items-center gap-1"
+                            title="编辑代理信息"
+                          >
+                            <Edit3 className="w-3.5 h-3.5 align-icon" />
+                            编辑
                           </button>
 
                           <Popconfirm
@@ -954,6 +1000,60 @@ export const SettingsPage: React.FC = () => {
               className="min-h-[36px] px-5 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md shadow-xs"
             >
               确认添加
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* 编辑代理节点 Modal */}
+      <Modal
+        isOpen={isEditProxyModalOpen}
+        onClose={() => setIsEditProxyModalOpen(false)}
+        title="编辑代理节点"
+        size="sm"
+      >
+        <form onSubmit={handleSaveEditProxy} className="space-y-4 text-xs">
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              节点备注名称
+            </label>
+            <input
+              type="text"
+              value={editProxyName}
+              onChange={(e) => setEditProxyName(e.target.value)}
+              placeholder="例如: 本地 Clash 代理 或 香港高速专线"
+              required
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-neutral-700 dark:text-neutral-300 font-medium mb-1">
+              代理连接地址 (支持 SOCKS5 / HTTP)
+            </label>
+            <input
+              type="text"
+              value={editProxyAddr}
+              onChange={(e) => setEditProxyAddr(e.target.value)}
+              placeholder="例如: socks5://10.96.1.108:7890 或 127.0.0.1:7890"
+              required
+              className="w-full min-h-[38px] px-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-neutral-200 dark:border-neutral-800">
+            <button
+              type="button"
+              onClick={() => setIsEditProxyModalOpen(false)}
+              className="min-h-[36px] px-4 text-neutral-600 dark:text-neutral-400"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              className="min-h-[36px] px-5 bg-cyan-600 hover:bg-cyan-500 text-white font-medium rounded-md shadow-xs"
+            >
+              保存修改
             </button>
           </div>
         </form>

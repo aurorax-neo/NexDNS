@@ -92,6 +92,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/upstreams/edit", post(edit_upstream))
         .route("/api/v1/upstreams/reorder", post(reorder_upstreams))
         .route("/api/v1/upstreams/remove", post(remove_upstream))
+        .route("/api/v1/upstreams/bootstrap", post(update_bootstrap_dns))
         .route("/api/v1/routing/rules", get(get_routing_rules))
         .route("/api/v1/routing/rules/update", post(update_routing_rules))
         .route("/api/v1/routing/rules/add", post(add_routing_rule))
@@ -208,6 +209,17 @@ async fn update_settings(
     State(state): State<AppState>,
     Json(payload): Json<AppConfig>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    // 引导 DNS 强校验: 只能是纯 IP，严禁包含域名
+    for b in &payload.upstreams.bootstrap_dns {
+        let clean = b.split(':').next().unwrap_or(b).trim();
+        if clean.parse::<std::net::IpAddr>().is_err() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("引导 DNS (Bootstrap DNS) 只能是纯 IP 地址，禁止输入域名: {}", b),
+            ));
+        }
+    }
+
     // Hot apply to engine
     state.engine.anti_pollution_enabled.store(payload.anti_pollution, Ordering::SeqCst);
     state.engine.qtype_65_enabled.store(payload.routing.qtype_65_reject, Ordering::SeqCst);
@@ -805,6 +817,7 @@ async fn test_rule(
 
 #[derive(Serialize)]
 struct UpstreamsResponse {
+    bootstrap_dns: Vec<String>,
     mainland: Vec<String>,
     gfw: Vec<String>,
     overseas: Vec<String>,
@@ -813,6 +826,7 @@ struct UpstreamsResponse {
 async fn get_upstreams(State(state): State<AppState>) -> Json<UpstreamsResponse> {
     let cfg = state.config.read();
     Json(UpstreamsResponse {
+        bootstrap_dns: cfg.upstreams.bootstrap_dns.clone(),
         mainland: cfg.upstreams.mainland.clone(),
         gfw: cfg.upstreams.gfw.clone(),
         overseas: cfg.upstreams.overseas.clone(),
@@ -1185,6 +1199,31 @@ async fn remove_upstream(
     Ok(StatusCode::OK)
 }
 
+#[derive(Deserialize)]
+struct UpdateBootstrapPayload {
+    dns_list: Vec<String>,
+}
+
+async fn update_bootstrap_dns(
+    State(state): State<AppState>,
+    Json(payload): Json<UpdateBootstrapPayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    for b in &payload.dns_list {
+        let clean = b.split(':').next().unwrap_or(b).trim();
+        if clean.parse::<std::net::IpAddr>().is_err() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("引导 DNS (Bootstrap DNS) 只能是 IP 地址（如 223.5.5.5 或 119.29.29.29），严禁配置域名: {}", b),
+            ));
+        }
+    }
+    {
+        let mut cfg = state.config.write();
+        cfg.upstreams.bootstrap_dns = payload.dns_list;
+        let _ = cfg.save(&state.config_path);
+    }
+    Ok(StatusCode::OK)
+}
 async fn get_routing_rules(
     State(state): State<AppState>,
 ) -> Json<Vec<crate::pipeline::rule_files::RuleFileInfo>> {

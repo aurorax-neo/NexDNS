@@ -70,6 +70,7 @@ export interface AdblockRuleRecord {
 }
 
 export interface UpstreamsResponse {
+  bootstrap_dns: string[];
   mainland: string[];
   gfw: string[];
   overseas: string[];
@@ -166,6 +167,7 @@ export interface AppSettings {
     interval_mins: number;
   };
   upstreams: {
+    bootstrap_dns?: string[];
     mainland: string[];
     gfw: string[];
     overseas: string[];
@@ -466,6 +468,17 @@ export const api = {
     });
   },
 
+  async updateBootstrapDns(dns_list: string[]): Promise<void> {
+    const res = await fetch('/api/v1/upstreams/bootstrap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dns_list }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || '更新引导 DNS 失败');
+    }
+  },
   async getRuleContent(id: string): Promise<{ id: string; content: string }> {
     const res = await fetch(`/api/v1/rules/${id}/content`);
     return res.json();

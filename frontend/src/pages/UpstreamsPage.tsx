@@ -47,16 +47,90 @@ export const UpstreamsPage: React.FC = () => {
   const [draggedGroup, setDraggedGroup] = useState<string | null>(null);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
+  // Bootstrap DNS state
+  const [bootstrapList, setBootstrapList] = useState<string[]>(['223.5.5.5', '119.29.29.29']);
+  const [newBootstrapIp, setNewBootstrapIp] = useState('');
+  const [bootstrapIpError, setBootstrapIpError] = useState<string | null>(null);
+
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    api.getUpstreams().then(setUpstreams).catch(console.error);
+    api.getUpstreams().then((res) => {
+      setUpstreams(res);
+      if (res.bootstrap_dns && res.bootstrap_dns.length > 0) {
+        setBootstrapList(res.bootstrap_dns);
+      }
+    }).catch(console.error);
     api.getSettings().then((s) => {
       if (s.proxy?.list) {
         setProxyList(s.proxy.list);
       }
     }).catch(console.error);
   }, []);
+
+  // 严格纯 IP 格式校验（只能是 IP 地址，不能是域名）
+  const validatePureIp = (val: string): boolean => {
+    const trimmed = val.trim();
+    if (!trimmed) return false;
+    // 包含字母一律拦截（IPv6 十六进制 a-f 除外）
+    if (/[g-zG-Z]/.test(trimmed)) return false;
+    const cleanIp = trimmed.split(':')[0].replace(/^\[|\]$/g, '');
+    const ipv4Regex = /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}$/;
+    const ipv6Regex = /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^([0-9a-fA-F]{1,4}:)*:[0-9a-fA-F]{1,4}$/;
+    return ipv4Regex.test(cleanIp) || ipv6Regex.test(cleanIp);
+  };
+
+  const handleBootstrapInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setNewBootstrapIp(val);
+    if (!val.trim()) {
+      setBootstrapIpError(null);
+      return;
+    }
+    if (!validatePureIp(val)) {
+      setBootstrapIpError('引导 DNS 只能是 IP 地址（如 223.5.5.5 或 119.29.29.29），严禁配置域名！');
+    } else {
+      setBootstrapIpError(null);
+    }
+  };
+
+  const handleAddBootstrapIp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validatePureIp(newBootstrapIp)) {
+      setBootstrapIpError('请输入合法的纯 IP 地址，严禁使用域名！');
+      return;
+    }
+    const cleanIp = newBootstrapIp.trim();
+    if (bootstrapList.includes(cleanIp)) {
+      setBootstrapIpError('该 IP 地址已在引导 DNS 列表中');
+      return;
+    }
+    const updated = [...bootstrapList, cleanIp];
+    setBootstrapList(updated);
+    setNewBootstrapIp('');
+    setBootstrapIpError(null);
+    try {
+      await api.updateBootstrapDns(updated);
+      setSnackbarMessage(`已添加引导 DNS: ${cleanIp}`);
+    } catch (e: any) {
+      setSnackbarMessage(e.message || '更新引导 DNS 失败');
+    }
+  };
+
+  const handleRemoveBootstrapIp = async (ip: string) => {
+    if (bootstrapList.length <= 1) {
+      setSnackbarMessage('至少需要保留一个引导 DNS 地址');
+      return;
+    }
+    const updated = bootstrapList.filter((item) => item !== ip);
+    setBootstrapList(updated);
+    try {
+      await api.updateBootstrapDns(updated);
+      setSnackbarMessage(`已移除引导 DNS: ${ip}`);
+    } catch (e: any) {
+      setSnackbarMessage(e.message || '更新引导 DNS 失败');
+    }
+  };
 
   const handleBenchmark = async () => {
     setTesting(true);
@@ -360,6 +434,27 @@ export const UpstreamsPage: React.FC = () => {
                     </div>
                   )}
 
+                  {/* 单条测速按钮 */}
+                  <button
+                    type="button"
+                    onClick={() => handleTestSingle(groupKey, addr)}
+                    disabled={testingSingleAddr === addr}
+                    className="text-neutral-400 hover:text-cyan-500 transition-colors disabled:opacity-50"
+                    title="单独测试此节点"
+                  >
+                    <Play className={`w-3.5 h-3.5 align-icon ${testingSingleAddr === addr ? 'animate-spin text-cyan-500' : ''}`} />
+                  </button>
+
+                  {/* 单项编辑按钮 */}
+                  <button
+                    type="button"
+                    onClick={() => handleOpenEditModal(groupKey, addr)}
+                    className="text-neutral-400 hover:text-cyan-500 transition-colors"
+                    title="编辑该上游配置"
+                  >
+                    <Edit3 className="w-3.5 h-3.5 align-icon" />
+                  </button>
+
                   <Popconfirm
                     title="确认移除该上游服务器？"
                     actionText="确认移除"
@@ -414,6 +509,69 @@ export const UpstreamsPage: React.FC = () => {
             {testing ? '正在并发测试...' : '测试上游连通性与时延'}
           </button>
         </div>
+      </div>
+
+      {/* 引导 DNS (Bootstrap DNS) 配置卡片: 只能是 IP 地址，严禁配置域名 */}
+      <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+          <div>
+            <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+              <Zap className="w-4 h-4 text-amber-500 align-icon" />
+              上游 DoH / DoT 引导解析 DNS (Bootstrap DNS)
+            </h4>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
+              用于解析上游加密 DNS 服务器的域名。<span className="font-semibold text-rose-600 dark:text-rose-400">仅允许配置纯 IP 地址（IPv4 / IPv6），严禁配置域名</span>。
+            </p>
+          </div>
+        </div>
+
+        {/* 已配置的纯 IP 引导节点 */}
+        <div className="flex flex-wrap items-center gap-2">
+          {bootstrapList.map((ip) => (
+            <span
+              key={ip}
+              className="inline-flex items-center gap-2 px-3 py-1 text-xs font-mono rounded-md bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 text-neutral-800 dark:text-neutral-200 shadow-2xs"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              {ip}
+              {bootstrapList.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => handleRemoveBootstrapIp(ip)}
+                  className="text-neutral-400 hover:text-rose-500 transition-colors ml-1 font-bold"
+                  title="移除该 IP"
+                >
+                  ×
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+
+        {/* 添加纯 IP 输入表单 */}
+        <form onSubmit={handleAddBootstrapIp} className="flex flex-wrap items-start gap-2 pt-1">
+          <div className="flex-1 min-w-[260px]">
+            <input
+              type="text"
+              value={newBootstrapIp}
+              onChange={handleBootstrapInputChange}
+              placeholder="输入纯 IP 地址，例如: 223.5.5.5 或 119.29.29.29 (禁止输入域名)"
+              className={`w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border ${
+                bootstrapIpError ? 'border-rose-500 focus:border-rose-500' : 'border-neutral-300 dark:border-neutral-700 focus:border-cyan-500'
+              } rounded-md text-xs font-mono text-neutral-900 dark:text-neutral-100 focus:outline-none`}
+            />
+            {bootstrapIpError && (
+              <p className="text-[11px] text-rose-500 mt-1 font-sans">{bootstrapIpError}</p>
+            )}
+          </div>
+          <button
+            type="submit"
+            disabled={!newBootstrapIp.trim() || !!bootstrapIpError}
+            className="min-h-[38px] px-4 text-xs font-medium bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200 rounded-md transition-colors disabled:opacity-40 shadow-xs"
+          >
+            添加引导 IP
+          </button>
+        </form>
       </div>
 
       {/* 三大上游组卡片 */}

@@ -208,15 +208,25 @@ fn default_speed_mode() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpstreamsConfig {
+    #[serde(default = "default_bootstrap_dns")]
+    pub bootstrap_dns: Vec<String>,
     pub mainland: Vec<String>,
     pub gfw: Vec<String>,
     pub overseas: Vec<String>,
     pub timeout_ms: u64,
 }
 
+fn default_bootstrap_dns() -> Vec<String> {
+    vec![
+        "223.5.5.5".to_string(),
+        "119.29.29.29".to_string(),
+    ]
+}
+
 impl Default for UpstreamsConfig {
     fn default() -> Self {
         Self {
+            bootstrap_dns: default_bootstrap_dns(),
             mainland: vec![
                 "udp://223.5.5.5:53".to_string(),
                 "udp://119.29.29.29:53".to_string(),
@@ -342,6 +352,10 @@ impl Default for AppConfig {
             logging: LoggingConfig::default(),
             rules_update: RulesUpdateConfig::default(),
             upstreams: UpstreamsConfig {
+                bootstrap_dns: vec![
+                    "223.5.5.5".to_string(),
+                    "119.29.29.29".to_string(),
+                ],
                 mainland: vec![
                     "udp://223.5.5.5:53".to_string(),
                     "udp://119.29.29.29:53".to_string(),

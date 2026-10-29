@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{Path as AxumPath, Query, State, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
@@ -12,7 +12,7 @@ use uuid::Uuid;
 use rust_embed::RustEmbed;
 
 use crate::config::AppConfig;
-use crate::db::{AdblockRuleRecord, Database, DnsRewriteRecord};
+use crate::db::{auth::AuthManager, AdblockRuleRecord, Database, DnsRewriteRecord};
 use crate::metrics::MetricsCollector;
 use crate::pipeline::plugin::DnsPlugin;
 use crate::pipeline::engine::PipelineEngine;
@@ -34,8 +34,14 @@ pub struct AppState {
 
 pub fn create_router(state: AppState) -> Router {
     Router::new()
+        .route("/api/v1/auth/login", post(login_handler))
+        .route("/api/v1/auth/logout", post(logout_handler))
+        .route("/api/v1/auth/me", get(auth_me_handler))
+        .route("/api/v1/auth/password", post(change_password_handler))
         .route("/api/v1/status", get(get_status))
         .route("/api/v1/metrics", get(get_metrics))
+        .route("/api/v1/settings", get(get_settings).put(update_settings))
+        .route("/api/v1/proxy/test", post(test_proxy))
         .route("/api/v1/querylog", get(get_query_logs))
         .route("/api/v1/querylog/export", get(export_query_logs_csv))
         .route("/api/v1/querylog/clear", post(clear_query_logs))
@@ -62,6 +68,168 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/ws/querylog", get(ws_querylog_handler))
         .fallback(static_handler)
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+struct LoginPayload {
+    username: String,
+    password: String,
+}
+
+#[derive(Serialize)]
+struct LoginResponse {
+    token: String,
+    username: String,
+    expires_at: String,
+}
+
+async fn login_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<LoginPayload>,
+) -> Result<Json<LoginResponse>, (StatusCode, String)> {
+    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    match AuthManager::authenticate(&conn, &payload.username, &payload.password) {
+        Ok(Some((token, expires_at))) => Ok(Json(LoginResponse {
+            token,
+            username: payload.username,
+            expires_at,
+        })),
+        Ok(None) => Err((StatusCode::UNAUTHORIZED, "用户名或密码错误".to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct LogoutPayload {
+    token: String,
+}
+
+async fn logout_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<LogoutPayload>,
+) -> StatusCode {
+    if let Ok(conn) = state.db.get_conn() {
+        let _ = AuthManager::logout(&conn, &payload.token);
+    }
+    StatusCode::OK
+}
+
+#[derive(Serialize)]
+struct AuthMeResponse {
+    username: String,
+    authenticated: bool,
+}
+
+async fn auth_me_handler(
+    State(state): State<AppState>,
+    request: Request,
+) -> Json<AuthMeResponse> {
+    let token = request
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+
+    if let Some(t) = token {
+        if let Ok(conn) = state.db.get_conn() {
+            if let Some(username) = AuthManager::validate_token(&conn, t) {
+                return Json(AuthMeResponse { username, authenticated: true });
+            }
+        }
+    }
+
+    Json(AuthMeResponse {
+        username: String::new(),
+        authenticated: false,
+    })
+}
+
+#[derive(Deserialize)]
+struct ChangePasswordPayload {
+    username: String,
+    old_password: String,
+    new_password: String,
+}
+
+async fn change_password_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<ChangePasswordPayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    AuthManager::change_password(&conn, &payload.username, &payload.old_password, &payload.new_password)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(StatusCode::OK)
+}
+
+async fn get_settings(State(state): State<AppState>) -> Json<AppConfig> {
+    Json((*state.config).clone())
+}
+
+async fn update_settings(
+    State(state): State<AppState>,
+    Json(payload): Json<AppConfig>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    // Hot apply to engine
+    state.engine.anti_pollution_enabled.store(payload.anti_pollution, Ordering::SeqCst);
+    state.engine.qtype_65_enabled.store(payload.routing.qtype_65_reject, Ordering::SeqCst);
+    state.engine.speed_check_enabled.store(payload.speed_check.enabled, Ordering::SeqCst);
+
+    // Save to data/config.yaml
+    payload.save("data/config.yaml").map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize)]
+struct TestProxyPayload {
+    socks5: String,
+}
+
+#[derive(Serialize)]
+struct TestProxyResponse {
+    ok: bool,
+    latency_ms: Option<f64>,
+    error: Option<String>,
+}
+
+async fn test_proxy(
+    Json(payload): Json<TestProxyPayload>,
+) -> Json<TestProxyResponse> {
+    let start = std::time::Instant::now();
+    match reqwest::Proxy::all(&payload.socks5) {
+        Ok(p) => {
+            match reqwest::Client::builder()
+                .proxy(p)
+                .timeout(std::time::Duration::from_millis(2500))
+                .build()
+            {
+                Ok(client) => {
+                    match client.get("https://cloudflare-dns.com/dns-query").send().await {
+                        Ok(_) => Json(TestProxyResponse {
+                            ok: true,
+                            latency_ms: Some(start.elapsed().as_secs_f64() * 1000.0),
+                            error: None,
+                        }),
+                        Err(e) => Json(TestProxyResponse {
+                            ok: false,
+                            latency_ms: None,
+                            error: Some(e.to_string()),
+                        }),
+                    }
+                }
+                Err(e) => Json(TestProxyResponse {
+                    ok: false,
+                    latency_ms: None,
+                    error: Some(e.to_string()),
+                }),
+            }
+        }
+        Err(e) => Json(TestProxyResponse {
+            ok: false,
+            latency_ms: None,
+            error: Some(e.to_string()),
+        }),
+    }
 }
 
 async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {

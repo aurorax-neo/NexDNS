@@ -4,41 +4,110 @@ import {
   Plus,
   Trash2,
   RotateCcw,
-  FileCode,
   Save,
+  Shield,
+  Database,
+  Sliders,
+  Lock,
+  Globe,
+  Zap,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
-import { api, DnsRewriteRecord } from '../lib/api';
+import { api, AppSettings, DnsRewriteRecord } from '../lib/api';
 import { Modal } from '../components/ui/Modal';
-import { Drawer } from '../components/ui/Drawer';
 import { Popconfirm } from '../components/ui/Popconfirm';
 import { Snackbar } from '../components/ui/Snackbar';
+import { Switch } from '../components/ui/Switch';
+import { CustomSelect } from '../components/ui/CustomSelect';
 
 export const SettingsPage: React.FC = () => {
   const [rewrites, setRewrites] = useState<DnsRewriteRecord[]>([]);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [savingSettings, setSavingSettings] = useState(false);
+
+  // Modal & Snackbar
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [domain, setDomain] = useState('');
   const [recordType, setRecordType] = useState('A');
   const [value, setValue] = useState('');
   const [flushSuccess, setFlushSuccess] = useState(false);
-
-  // Raw config editor
-  const [isConfigDrawerOpen, setIsConfigDrawerOpen] = useState(false);
-  const [rawConfig, setRawConfig] = useState('');
-  const [savingConfig, setSavingConfig] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
 
-  const fetchRewrites = async () => {
+  // Password change state
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordMsg, setPasswordMsg] = useState<{ text: string; isError: boolean } | null>(null);
+  const [changingPass, setChangingPass] = useState(false);
+
+  // Proxy test state
+  const [proxyTestResult, setProxyTestResult] = useState<{ ok: boolean; latency_ms?: number; error?: string } | null>(null);
+  const [testingProxy, setTestingProxy] = useState(false);
+
+  const loadData = async () => {
     try {
-      const res = await api.getRewrites();
-      setRewrites(res);
+      const [rewritesRes, settingsRes] = await Promise.all([
+        api.getRewrites(),
+        api.getSettings(),
+      ]);
+      setRewrites(rewritesRes);
+      setSettings(settingsRes);
     } catch (e) {
-      console.error('Failed to load rewrites', e);
+      console.error('Failed to load settings data', e);
     }
   };
 
   useEffect(() => {
-    fetchRewrites();
+    loadData();
   }, []);
+
+  const handleSaveSettings = async () => {
+    if (!settings) return;
+    setSavingSettings(true);
+    try {
+      await api.updateSettings(settings);
+      setSnackbarMessage('系统配置已保存并在内核中热生效！');
+    } catch (e: any) {
+      alert('保存失败: ' + e.message);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const handleTestProxy = async () => {
+    if (!settings?.proxy.socks5) return;
+    setTestingProxy(true);
+    try {
+      const res = await api.testProxy(settings.proxy.socks5);
+      setProxyTestResult(res);
+    } catch (e) {
+      setProxyTestResult({ ok: false, error: '网络测试请求失败' });
+    } finally {
+      setTestingProxy(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword !== confirmPassword) {
+      setPasswordMsg({ text: '两次输入的新密码不一致', isError: true });
+      return;
+    }
+    setChangingPass(true);
+    setPasswordMsg(null);
+    try {
+      await api.changePassword(oldPassword, newPassword);
+      setPasswordMsg({ text: '密码修改成功，请牢记新密码', isError: false });
+      setOldPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err: any) {
+      setPasswordMsg({ text: err.message || '修改密码失败', isError: true });
+    } finally {
+      setChangingPass(false);
+    }
+  };
 
   const handleAddRewrite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,7 +121,8 @@ export const SettingsPage: React.FC = () => {
       setIsAddModalOpen(false);
       setDomain('');
       setValue('');
-      await fetchRewrites();
+      const updated = await api.getRewrites();
+      setRewrites(updated);
       setSnackbarMessage('已添加重写记录');
     } catch (e) {
       console.error('Failed to add rewrite', e);
@@ -62,7 +132,8 @@ export const SettingsPage: React.FC = () => {
   const handleDeleteRewrite = async (id: string) => {
     try {
       await api.deleteRewrite(id);
-      await fetchRewrites();
+      const updated = await api.getRewrites();
+      setRewrites(updated);
       setSnackbarMessage('已删除重写记录');
     } catch (e) {
       console.error('Failed to delete rewrite', e);
@@ -80,51 +151,20 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  const handleOpenConfigDrawer = async () => {
-    try {
-      const res = await api.getRawConfig();
-      setRawConfig(res.content);
-      setIsConfigDrawerOpen(true);
-    } catch (e) {
-      console.error('Failed to load raw config', e);
-    }
-  };
-
-  const handleSaveConfig = async () => {
-    setSavingConfig(true);
-    try {
-      await api.updateRawConfig(rawConfig);
-      setSnackbarMessage('config.yaml 配置文件已保存并应用！');
-      setIsConfigDrawerOpen(false);
-    } catch (e: any) {
-      alert('配置格式错误: ' + e.message);
-    } finally {
-      setSavingConfig(false);
-    }
-  };
-
   return (
     <div className="space-y-6 animate-in fade-in-50 duration-200">
-      {/* 模块说明 */}
+      {/* 顶部控制栏 */}
       <div className="flex flex-wrap items-center justify-between gap-4 p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
         <div>
           <h3 className="text-base font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
             <Settings className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
-            系统设置与自定义 DNS 重写
+            系统核心参数精细化控制
           </h3>
           <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-xl">
-            配置本地自定义域名解析（支持 A、AAAA、CNAME 重写）、内存缓存控制以及 YAML 原生配置文件。
+            可视化配置 DNS 协议、拦截响应模式、内存缓存策略、分流安全防御及 SOCKS5 代理。
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleOpenConfigDrawer}
-            className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 text-xs font-medium text-neutral-800 dark:text-neutral-200 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md transition-colors shadow-xs"
-          >
-            <FileCode className="w-3.5 h-3.5 align-icon" />
-            在线查看/编辑 config.yaml
-          </button>
           <button
             type="button"
             onClick={handleFlushCache}
@@ -135,20 +175,467 @@ export const SettingsPage: React.FC = () => {
           </button>
           <button
             type="button"
-            onClick={() => setIsAddModalOpen(true)}
-            className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md transition-colors shadow-xs"
+            onClick={handleSaveSettings}
+            disabled={savingSettings || !settings}
+            className="inline-flex items-center gap-1.5 min-h-[38px] px-4 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md transition-colors shadow-xs disabled:opacity-50"
           >
-            <Plus className="w-4 h-4 align-icon" />
-            添加重写记录
+            <Save className="w-3.5 h-3.5 align-icon" />
+            {savingSettings ? '保存中...' : '保存全部系统配置'}
           </button>
         </div>
       </div>
 
-      {/* DNS 重写记录列表 */}
-      <div className="rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
+      {settings && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* 1. DNS 基础与协议栈设置 */}
+          <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+              <Sliders className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">DNS 基础与协议栈</h4>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">DNS 监听端口</label>
+                  <input
+                    type="number"
+                    value={settings.dns.port}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        dns: { ...settings.dns, port: parseInt(e.target.value) || 53 },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">Web 控制台端口</label>
+                  <input
+                    type="number"
+                    value={settings.web.port}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        web: { ...settings.web, port: parseInt(e.target.value) || 3000 },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">IP 协议栈模式</label>
+                <CustomSelect
+                  options={[
+                    { value: 'dual', label: '双栈模式 (IPv4 + IPv6)' },
+                    { value: 'v4', label: '仅 IPv4 (停用 IPv6 优选)' },
+                    { value: 'v6', label: '仅 IPv6' },
+                  ]}
+                  value={settings.dns.connect_ip_version}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      dns: { ...settings.dns, connect_ip_version: v },
+                    })
+                  }
+                  className="w-full"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">阻断响应策略 (Blocking Mode)</label>
+                  <CustomSelect
+                    options={[
+                      { value: 'zero_ip', label: 'ZeroIP (0.0.0.0 / ::)' },
+                      { value: 'nxdomain', label: 'NXDOMAIN (域名不存在)' },
+                      { value: 'refused', label: 'REFUSED (拒绝查询)' },
+                    ]}
+                    value={settings.dns.block_type}
+                    onChange={(v) =>
+                      setSettings({
+                        ...settings,
+                        dns: { ...settings.dns, block_type: v },
+                      })
+                    }
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">阻断响应 TTL (秒)</label>
+                  <input
+                    type="number"
+                    value={settings.dns.block_ttl}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        dns: { ...settings.dns, block_ttl: parseInt(e.target.value) || 60 },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 2. 智能缓存设置 (SmartDNS 核心) */}
+          <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+              <Database className="w-4 h-4 text-amber-600 dark:text-amber-400 align-icon" />
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">智能内存缓存与预取</h4>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">最大缓存条数</label>
+                  <input
+                    type="number"
+                    value={settings.cache.size}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        cache: { ...settings.cache, size: parseInt(e.target.value) || 10000 },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">最小 TTL (Min TTL)</label>
+                  <input
+                    type="number"
+                    value={settings.cache.min_ttl}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        cache: { ...settings.cache, min_ttl: parseInt(e.target.value) || 60 },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    Serve-Expired (过期缓存秒返)
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    过期后先以 3s TTL 立即应答，后台静默向真实上游更新
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.cache.serve_expired}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      cache: { ...settings.cache, serve_expired: v },
+                    })
+                  }
+                />
+              </div>
+
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    Prefetch-Domain (高频域名自动预取)
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    在 TTL 剩余低于 20% 时由内核自动发起静默预取
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.cache.prefetch}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      cache: { ...settings.cache, prefetch: v },
+                    })
+                  }
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* 3. 分流与安全防御设置 (MosDNS 核心) */}
+          <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+              <Shield className="w-4 h-4 text-rose-600 dark:text-rose-400 align-icon" />
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">分流与安全防御</h4>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    Qtype 65 (HTTPS/SVCB) 快捷阻断
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    阻止苹果及 Chrome 绕过系统 DNS 分流策略
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.routing.qtype_65_reject}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      routing: { ...settings.routing, qtype_65_reject: v },
+                    })
+                  }
+                />
+              </div>
+
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    严格防 DNS 污染检测
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    大陆组若返回非中国 IP 则直接丢弃并触发 Fallback 回退
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.anti_pollution}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      anti_pollution: v,
+                      routing: { ...settings.routing, anti_pollution: v },
+                    })
+                  }
+                />
+              </div>
+
+              <div>
+                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">Fallback 回退切换超时 (毫秒)</label>
+                <input
+                  type="number"
+                  value={settings.routing.fallback_timeout_ms}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      routing: {
+                        ...settings.routing,
+                        fallback_timeout_ms: parseInt(e.target.value) || 1500,
+                      },
+                    })
+                  }
+                  className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* 4. SOCKS5 代理设置 (Proxy) */}
+          <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+              <Globe className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">SOCKS5 代理服务 (用于境外上游)</h4>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    启用 SOCKS5 代理
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    启用后 GFW 境外组 DoH 加密请求将走代理转发
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.proxy.enabled}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      proxy: { ...settings.proxy, enabled: v },
+                    })
+                  }
+                />
+              </div>
+
+              <div>
+                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">SOCKS5 代理地址</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={settings.proxy.socks5}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        proxy: { ...settings.proxy, socks5: e.target.value },
+                      })
+                    }
+                    placeholder="socks5://10.96.1.108:7890"
+                    className="flex-1 min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleTestProxy}
+                    disabled={testingProxy}
+                    className="min-h-[38px] px-3.5 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md text-neutral-800 dark:text-neutral-200 whitespace-nowrap"
+                  >
+                    {testingProxy ? '测试中...' : '测试代理'}
+                  </button>
+                </div>
+              </div>
+
+              {proxyTestResult && (
+                <div
+                  className={`p-3 rounded-md border flex items-center gap-2 ${
+                    proxyTestResult.ok
+                      ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400'
+                      : 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400'
+                  }`}
+                >
+                  {proxyTestResult.ok ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 align-icon" />
+                  ) : (
+                    <XCircle className="w-4 h-4 shrink-0 align-icon" />
+                  )}
+                  <span>
+                    {proxyTestResult.ok
+                      ? `代理连通正常！握手时延: ${proxyTestResult.latency_ms?.toFixed(1)} ms`
+                      : `代理连接失败: ${proxyTestResult.error || '无法建立握手'}`}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 5. 日志与留存设置 */}
+          <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+              <Zap className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">查询日志与留存策略</h4>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    记录 DNS 查询日志
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    在 SQLite WAL 数据库中异步留存客户端查询流水
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.logging.enabled}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      logging: { ...settings.logging, enabled: v },
+                    })
+                  }
+                />
+              </div>
+
+              <div>
+                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">日志保留天数</label>
+                <CustomSelect
+                  options={[
+                    { value: '1', label: '保留 24 小时' },
+                    { value: '7', label: '保留 7 天 (推荐)' },
+                    { value: '30', label: '保留 30 天' },
+                    { value: '90', label: '保留 90 天' },
+                  ]}
+                  value={settings.logging.retention_days.toString()}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      logging: { ...settings.logging, retention_days: parseInt(v) || 7 },
+                    })
+                  }
+                  className="w-full"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* 6. 管理员账户安全 */}
+          <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+              <Lock className="w-4 h-4 text-indigo-600 dark:text-indigo-400 align-icon" />
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">修改管理员密码</h4>
+            </div>
+            <form onSubmit={handleChangePassword} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">当前原密码</label>
+                <input
+                  type="password"
+                  value={oldPassword}
+                  onChange={(e) => setOldPassword(e.target.value)}
+                  required
+                  placeholder="默认: admin1234"
+                  className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">新密码</label>
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    required
+                    placeholder="至少 6 位"
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">确认新密码</label>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                    placeholder="再次输入"
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100"
+                  />
+                </div>
+              </div>
+
+              {passwordMsg && (
+                <div
+                  className={`p-2.5 rounded-md text-xs ${
+                    passwordMsg.isError
+                      ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800'
+                      : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800'
+                  }`}
+                >
+                  {passwordMsg.text}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={changingPass}
+                className="min-h-[38px] px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-md shadow-xs disabled:opacity-50"
+              >
+                {changingPass ? '修改中...' : '确认更新密码'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 7. DNS 重写记录列表 */}
+      <div className="rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden mt-6">
         <div className="px-5 py-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
-          <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">自定义 DNS 重写表 (Hosts)</h4>
-          <span className="text-xs text-neutral-500 dark:text-neutral-400 font-mono">{rewrites.length} 条记录</span>
+          <div>
+            <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">自定义 DNS 重写 (Hosts 映射)</h4>
+            <p className="text-xs text-neutral-500 mt-0.5">优先应答指定的本地 A/AAAA/CNAME 映射记录</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsAddModalOpen(true)}
+            className="inline-flex items-center gap-1.5 min-h-[36px] px-3.5 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md shadow-xs"
+          >
+            <Plus className="w-3.5 h-3.5 align-icon" />
+            添加重写记录
+          </button>
         </div>
         <div className="divide-y divide-neutral-200 dark:divide-neutral-800/60">
           {rewrites.length > 0 ? (
@@ -189,47 +676,6 @@ export const SettingsPage: React.FC = () => {
           )}
         </div>
       </div>
-
-      {/* config.yaml 原生配置文件查看与编辑 Drawer */}
-      <Drawer
-        isOpen={isConfigDrawerOpen}
-        onClose={() => setIsConfigDrawerOpen(false)}
-        title="原生配置文件 (data/config.yaml)"
-        subtitle="支持直接在线编辑核心配置参数并持久化"
-        width="w-[640px]"
-        footer={
-          <div className="flex items-center justify-between w-full">
-            <span className="text-xs text-neutral-500">保存前会自动验证 YAML 语法</span>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setIsConfigDrawerOpen(false)}
-                className="min-h-[36px] px-4 text-xs text-neutral-600 dark:text-neutral-400"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                disabled={savingConfig}
-                onClick={handleSaveConfig}
-                className="inline-flex items-center gap-1.5 min-h-[36px] px-4 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md shadow-xs disabled:opacity-50"
-              >
-                <Save className="w-3.5 h-3.5 align-icon" />
-                {savingConfig ? '保存中...' : '保存配置文件'}
-              </button>
-            </div>
-          </div>
-        }
-      >
-        <div className="space-y-3">
-          <textarea
-            rows={20}
-            value={rawConfig}
-            onChange={(e) => setRawConfig(e.target.value)}
-            className="w-full p-3 font-mono text-xs bg-neutral-900 text-neutral-100 border border-neutral-800 rounded-md focus:outline-none focus:border-cyan-500 leading-relaxed resize-y"
-          />
-        </div>
-      </Drawer>
 
       {/* 添加重写 Modal (400px - 小档) */}
       <Modal

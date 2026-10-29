@@ -99,7 +99,140 @@ export interface RuleFileInfo {
   url: string;
 }
 
+export interface AuthResponse {
+  token: string;
+  username: string;
+  expires_at: string;
+}
+
+export interface AppSettings {
+  dns: {
+    port: number;
+    connect_ip_version: string;
+    block_type: string;
+    block_ttl: number;
+  };
+  web: {
+    port: number;
+  };
+  proxy: {
+    enabled: boolean;
+    socks5: string;
+  };
+  cache: {
+    size: number;
+    serve_expired: boolean;
+    prefetch: boolean;
+    min_ttl: number;
+    max_ttl: number;
+  };
+  speed_check: {
+    enabled: boolean;
+    timeout_ms: number;
+    cache_mins: number;
+    mode: string;
+  };
+  anti_pollution: boolean;
+  routing: {
+    anti_pollution: boolean;
+    qtype_65_reject: boolean;
+    fallback_timeout_ms: number;
+  };
+  logging: {
+    enabled: boolean;
+    retention_days: number;
+  };
+  upstreams: {
+    mainland: string[];
+    gfw: string[];
+    overseas: string[];
+    timeout_ms: number;
+  };
+}
+
+function getAuthHeaders(): HeadersInit {
+  const token = localStorage.getItem('nexdns_token');
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 export const api = {
+  async login(username: string, password: string): Promise<AuthResponse> {
+    const res = await fetch('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || '登录失败');
+    }
+    return res.json();
+  },
+
+  async logout(): Promise<void> {
+    const token = localStorage.getItem('nexdns_token') || '';
+    await fetch('/api/v1/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    localStorage.removeItem('nexdns_token');
+    localStorage.removeItem('nexdns_user');
+  },
+
+  async getMe(): Promise<{ username: string; authenticated: boolean }> {
+    const res = await fetch('/api/v1/auth/me', {
+      headers: getAuthHeaders(),
+    });
+    return res.json();
+  },
+
+  async changePassword(old_password: string, new_password: string): Promise<void> {
+    const username = localStorage.getItem('nexdns_user') || 'admin';
+    const res = await fetch('/api/v1/auth/password', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ username, old_password, new_password }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || '修改密码失败');
+    }
+  },
+
+  async getSettings(): Promise<AppSettings> {
+    const res = await fetch('/api/v1/settings', {
+      headers: getAuthHeaders(),
+    });
+    return res.json();
+  },
+
+  async updateSettings(settings: AppSettings): Promise<void> {
+    const res = await fetch('/api/v1/settings', {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(settings),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || '保存配置失败');
+    }
+  },
+
+  async testProxy(socks5: string): Promise<{ ok: boolean; latency_ms?: number; error?: string }> {
+    const res = await fetch('/api/v1/proxy/test', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ socks5 }),
+    });
+    return res.json();
+  },
   async getStatus(): Promise<StatusResponse> {
     const res = await fetch('/api/v1/status');
     return res.json();

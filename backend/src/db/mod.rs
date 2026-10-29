@@ -5,6 +5,8 @@ use rusqlite::{params, Connection};
 use tokio::sync::{broadcast, mpsc};
 use crate::pipeline::context::{QueryContext, QueryStatus};
 
+pub mod auth;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QueryLogItem {
     pub id: String,
@@ -100,6 +102,8 @@ impl Database {
                  value TEXT NOT NULL
              );"
         )?;
+
+        auth::AuthManager::init_tables(&conn)?;
 
         let (log_tx, mut log_rx) = mpsc::channel::<QueryLogItem>(10000);
         let (ws_broadcast_tx, _) = broadcast::channel::<QueryLogItem>(1000);

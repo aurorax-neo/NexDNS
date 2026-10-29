@@ -10,7 +10,11 @@ import {
   Sun,
   Terminal,
   FileCode,
+  LogOut,
+  UserCheck,
 } from 'lucide-react';
+import { api } from './lib/api';
+import { LoginPage } from './pages/LoginPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { PipelinePage } from './pages/PipelinePage';
 import { QueryLogPage } from './pages/QueryLogPage';
@@ -20,12 +24,38 @@ import { UpstreamsPage } from './pages/UpstreamsPage';
 import { SettingsPage } from './pages/SettingsPage';
 
 export function App() {
+  const [currentUser, setCurrentUser] = useState<string | null>(() => {
+    return localStorage.getItem('nexdns_user');
+  });
+  const [authChecked, setAuthChecked] = useState(false);
+
   // 持久化 Tab 状态至 URL，避免页面刷新画面抖动
   const [activeTab, setActiveTab] = useState<string>(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get('tab') || 'overview';
   });
   const [isDark, setIsDark] = useState<boolean>(true);
+
+  useEffect(() => {
+    api.getMe().then((res) => {
+      if (res.authenticated) {
+        setCurrentUser(res.username);
+        localStorage.setItem('nexdns_user', res.username);
+      } else {
+        setCurrentUser(null);
+        localStorage.removeItem('nexdns_token');
+        localStorage.removeItem('nexdns_user');
+      }
+      setAuthChecked(true);
+    }).catch(() => {
+      setAuthChecked(true);
+    });
+  }, []);
+
+  const handleLogout = async () => {
+    await api.logout();
+    setCurrentUser(null);
+  };
 
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -40,6 +70,14 @@ export function App() {
       document.documentElement.classList.remove('dark');
     }
   }, [isDark]);
+
+  if (!authChecked) {
+    return <div className="min-h-screen bg-[#f6f6f5] dark:bg-[#0b0b0a]" />;
+  }
+
+  if (!currentUser) {
+    return <LoginPage onLoginSuccess={(u) => setCurrentUser(u)} />;
+  }
 
   const navItems = [
     { id: 'overview', label: '工作台概览', icon: <Activity className="w-4 h-4 align-icon" /> },
@@ -101,6 +139,22 @@ export function App() {
             >
               {isDark ? <Sun className="w-4 h-4 align-icon" /> : <Moon className="w-4 h-4 align-icon" />}
             </button>
+
+            {/* 当前用户与退出登录 */}
+            <div className="flex items-center gap-1 pl-2 border-l border-neutral-200 dark:border-neutral-800">
+              <span className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 text-xs font-mono font-medium rounded bg-neutral-100 dark:bg-surface-2 text-neutral-700 dark:text-neutral-300">
+                <UserCheck className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400 align-icon" />
+                {currentUser}
+              </span>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="min-w-[40px] min-h-[40px] flex items-center justify-center text-neutral-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-md transition-colors"
+                title="退出登录"
+              >
+                <LogOut className="w-4 h-4 align-icon" />
+              </button>
+            </div>
           </div>
         </div>
 

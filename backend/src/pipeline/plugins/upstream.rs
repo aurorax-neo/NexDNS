@@ -26,9 +26,73 @@ pub struct UpstreamServer {
     pub bootstrap_ip: Option<String>,
     pub host_name: Option<String>,
     pub proxy: Option<String>,
+    #[serde(skip)]
+    pub doh_client: Arc<parking_lot::RwLock<Option<reqwest::Client>>>,
 }
 
 impl UpstreamServer {
+    pub fn set_proxy(&mut self, proxy: Option<String>) {
+        self.proxy = proxy;
+        *self.doh_client.write() = None;
+    }
+
+    pub fn get_or_init_doh_client(&self, timeout_duration: Duration) -> Result<reqwest::Client, String> {
+        if let Some(ref c) = *self.doh_client.read() {
+            return Ok(c.clone());
+        }
+
+        let mut w = self.doh_client.write();
+        if let Some(ref c) = *w {
+            return Ok(c.clone());
+        }
+
+        let mut builder = reqwest::Client::builder()
+            .timeout(timeout_duration)
+            .pool_idle_timeout(Some(Duration::from_secs(90)))
+            .pool_max_idle_per_host(8)
+            .tcp_keepalive(Some(Duration::from_secs(60)));
+
+        if let Some(ref p) = self.proxy {
+            if p != "none" && !p.is_empty() {
+                let mut p_addr = p.clone();
+                if !p_addr.contains("://") {
+                    p_addr = format!("socks5h://{}", p_addr);
+                } else if p_addr.starts_with("socks5://") {
+                    p_addr = p_addr.replacen("socks5://", "socks5h://", 1);
+                }
+                match reqwest::Proxy::all(&p_addr) {
+                    Ok(proxy) => {
+                        builder = builder.proxy(proxy);
+                    }
+                    Err(e) => {
+                        return Err(format!("代理配置无效 ({}): {}", p_addr, e));
+                    }
+                }
+            }
+        }
+
+        // Handle -host-name override (e.g. https://101.226.4.6/dns-query -host-name doh.360.cn)
+        if let Some(ref host) = self.host_name {
+            if let Some(rest) = self.addr.strip_prefix("https://") {
+                let (host_port_str, _path) = match rest.find('/') {
+                    Some(idx) => (&rest[..idx], &rest[idx..]),
+                    None => (rest, "/dns-query"),
+                };
+                let (ip_str, port) = match host_port_str.split_once(':') {
+                    Some((ip_part, port_part)) => (ip_part, port_part.parse().unwrap_or(443)),
+                    None => (host_port_str, 443),
+                };
+                if let Ok(ip) = IpAddr::from_str(ip_str) {
+                    builder = builder.resolve(host, SocketAddr::new(ip, port));
+                }
+            }
+        }
+
+        let client = builder.build().map_err(|e| e.to_string())?;
+        *w = Some(client.clone());
+        Ok(client)
+    }
+
     pub fn parse(tag: &str, raw: &str) -> Option<Self> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -111,6 +175,7 @@ impl UpstreamServer {
             bootstrap_ip: None,
             host_name,
             proxy,
+            doh_client: Arc::new(parking_lot::RwLock::new(None)),
         })
     }
 
@@ -217,27 +282,8 @@ impl UpstreamServer {
                 Message::from_vec(&resp_buf).map_err(|e| e.to_string())
             }
             UpstreamProtocol::Doh => {
-                let mut builder = reqwest::Client::builder().timeout(timeout_duration);
-                let mut has_proxy = false;
-                if let Some(ref p) = self.proxy {
-                    if p != "none" && !p.is_empty() {
-                        let mut p_addr = p.clone();
-                        if !p_addr.contains("://") {
-                            p_addr = format!("socks5h://{}", p_addr);
-                        } else if p_addr.starts_with("socks5://") {
-                            p_addr = p_addr.replacen("socks5://", "socks5h://", 1);
-                        }
-                        match reqwest::Proxy::all(&p_addr) {
-                            Ok(proxy) => {
-                                builder = builder.proxy(proxy);
-                                has_proxy = true;
-                            }
-                            Err(e) => {
-                                return Err(format!("代理配置无效 ({}): {}", p_addr, e));
-                            }
-                        }
-                    }
-                }
+                let client = self.get_or_init_doh_client(timeout_duration)?;
+                let has_proxy = self.proxy.as_deref().map(|p| p != "none" && !p.is_empty()).unwrap_or(false);
 
                 let mut final_url = self.addr.clone();
 
@@ -248,31 +294,15 @@ impl UpstreamServer {
                     final_url = final_url
                         .replace("cloudflare-dns.com", "1.1.1.1")
                         .replace("dns.cloudflare.com", "1.1.1.1");
-                }
-
-                // Handle -host-name override (e.g. https://101.226.4.6/dns-query -host-name doh.360.cn)
-                if let Some(ref host) = self.host_name {
+                } else if let Some(ref host) = self.host_name {
                     if let Some(rest) = self.addr.strip_prefix("https://") {
-                        let (host_port_str, path) = match rest.find('/') {
-                            Some(idx) => (&rest[..idx], &rest[idx..]),
-                            None => (rest, "/dns-query"),
+                        let path = match rest.find('/') {
+                            Some(idx) => &rest[idx..],
+                            None => "/dns-query",
                         };
-                        let (ip_str, port) = match host_port_str.split_once(':') {
-                            Some((ip_part, port_part)) => (ip_part, port_part.parse().unwrap_or(443)),
-                            None => (host_port_str, 443),
-                        };
-                        if let Ok(ip) = IpAddr::from_str(ip_str) {
-                            builder = builder.resolve(host, SocketAddr::new(ip, port));
-                            if has_proxy && (ip == IpAddr::from([1, 1, 1, 1]) || ip == IpAddr::from([1, 0, 0, 1])) {
-                                final_url = self.addr.clone();
-                            } else {
-                                final_url = format!("https://{}{}", host, path);
-                            }
-                        }
+                        final_url = format!("https://{}{}", host, path);
                     }
                 }
-
-                let client = builder.build().map_err(|e| e.to_string())?;
 
                 let mut req_builder = client
                     .post(&final_url)

@@ -1,6 +1,5 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 use rusqlite::{params, Connection};
 use tokio::sync::{broadcast, mpsc};
 use crate::pipeline::context::{QueryContext, QueryStatus};
@@ -56,9 +55,11 @@ impl Database {
         }
 
         let conn = Connection::open(&path_str)?;
+        let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;
              PRAGMA cache_size = -64000;
 
              CREATE TABLE IF NOT EXISTS query_logs (
@@ -126,7 +127,11 @@ impl Database {
         // Background async batch writer task with periodic 150ms flush
         tokio::spawn(async move {
             let mut conn = match Connection::open(&db_path_clone) {
-                Ok(c) => c,
+                Ok(c) => {
+                    let _ = c.busy_timeout(std::time::Duration::from_millis(5000));
+                    let _ = c.execute_batch("PRAGMA busy_timeout = 5000;");
+                    c
+                }
                 Err(e) => {
                     tracing::error!("Failed to open DB for background writer: {}", e);
                     return;
@@ -261,7 +266,10 @@ impl Database {
     }
 
     pub fn get_conn(&self) -> rusqlite::Result<Connection> {
-        Connection::open(&self.db_path)
+        let conn = Connection::open(&self.db_path)?;
+        let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
+        let _ = conn.execute_batch("PRAGMA busy_timeout = 5000;");
+        Ok(conn)
     }
 
     pub fn query_logs(

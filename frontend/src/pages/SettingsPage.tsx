@@ -6,6 +6,7 @@ import {
   Sliders,
   Lock,
   Globe,
+  Gauge,
   Zap,
   CheckCircle2,
   XCircle,
@@ -626,6 +627,129 @@ export const SettingsPage: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* 3. 测速与优选策略 (Speed Check) */}
+          <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+              <Gauge className="w-4 h-4 text-emerald-600 dark:text-emerald-400 align-icon" />
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">测速优选与网络健康 (Speed Check)</h4>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    TCP 80/443 非阻塞握手测速
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    针对多条 A/AAAA 应答记录并发测速，将最低 RTT 的最优 IP 置顶返回
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.speed_check.enabled}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      speed_check: { ...settings.speed_check, enabled: v },
+                    })
+                  }
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
+                    探测超时阈值 (毫秒 ms)
+                  </label>
+                  <input
+                    type="number"
+                    value={settings.speed_check.timeout_ms}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        speed_check: {
+                          ...settings.speed_check,
+                          timeout_ms: parseInt(e.target.value) || 400,
+                        },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
+                    测速结果缓存时长 (分钟)
+                  </label>
+                  <input
+                    type="number"
+                    value={settings.speed_check.cache_mins}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        speed_check: {
+                          ...settings.speed_check,
+                          cache_mins: parseInt(e.target.value) || 5,
+                        },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 4. 规则库自动更新策略 (Auto Update) */}
+          <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+              <RefreshCw className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">规则库自动更新调度 (Auto Update)</h4>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    规则文件定时自动更新
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    后台异步定时拉取在线订阅规则与分流集，不阻塞程序启动
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.rules_update?.auto_update ?? true}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      rules_update: {
+                        auto_update: v,
+                        interval_mins: settings.rules_update?.interval_mins || 1440,
+                      },
+                    })
+                  }
+                />
+              </div>
+
+              <div>
+                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
+                  规则自动更新间隔时间 (分钟 min，默认 1440 min / 24小时)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={settings.rules_update?.interval_mins ?? 1440}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      rules_update: {
+                        auto_update: settings.rules_update?.auto_update ?? true,
+                        interval_mins: parseInt(e.target.value) || 1440,
+                      },
+                    })
+                  }
+                  className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                />
+              </div>
+            </div>
+          </div>
           </div>
 
           {/* 右列: 缓存、安全分流、日志策略与密码修改 */}
@@ -786,51 +910,6 @@ export const SettingsPage: React.FC = () => {
                       routing: {
                         ...settings.routing,
                         fallback_timeout_ms: parseInt(e.target.value) || 1500,
-                      },
-                    })
-                  }
-                  className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
-                />
-              </div>
-
-              {/* 规则文件定时自动更新 */}
-              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
-                <div>
-                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
-                    规则文件定时自动更新
-                  </span>
-                  <span className="text-[11px] text-neutral-500">
-                    后台异步定时拉取在线订阅规则与分流集，不阻塞程序启动
-                  </span>
-                </div>
-                <Switch
-                  checked={settings.rules_update?.auto_update ?? true}
-                  onChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      rules_update: {
-                        auto_update: v,
-                        interval_mins: settings.rules_update?.interval_mins || 1440,
-                      },
-                    })
-                  }
-                />
-              </div>
-
-              <div>
-                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
-                  规则自动更新间隔时间 (分钟 min，默认 1440 min / 24小时)
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  value={settings.rules_update?.interval_mins ?? 1440}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      rules_update: {
-                        auto_update: settings.rules_update?.auto_update ?? true,
-                        interval_mins: parseInt(e.target.value) || 1440,
                       },
                     })
                   }

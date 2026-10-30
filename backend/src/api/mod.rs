@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, State, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -30,6 +29,7 @@ pub struct AppState {
     pub config: Arc<parking_lot::RwLock<AppConfig>>,
     pub config_path: String,
     pub dns_server_enabled: Arc<parking_lot::RwLock<bool>>,
+    pub logging_server_enabled: Arc<parking_lot::RwLock<bool>>,
     pub rule_manager: Arc<RuleFileManager>,
     pub start_time: std::time::Instant,
 }
@@ -43,19 +43,19 @@ impl AppState {
         let mainland = cfg.upstreams.mainland.iter().filter_map(|u| {
             let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("mainland", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "none".to_string());
-            s.proxy = proxy.find_proxy_addr(&proxy_mode);
+            s.set_proxy(proxy.find_proxy_addr(&proxy_mode));
             Some(s)
         }).collect();
         let gfw = cfg.upstreams.gfw.iter().filter_map(|u| {
             let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("gfw", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
-            s.proxy = proxy.find_proxy_addr(&proxy_mode);
+            s.set_proxy(proxy.find_proxy_addr(&proxy_mode));
             Some(s)
         }).collect();
         let overseas = cfg.upstreams.overseas.iter().filter_map(|u| {
             let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("overseas", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
-            s.proxy = proxy.find_proxy_addr(&proxy_mode);
+            s.set_proxy(proxy.find_proxy_addr(&proxy_mode));
             Some(s)
         }).collect();
         self.engine.reload_upstreams(mainland, gfw, overseas);
@@ -107,7 +107,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/rewrites", get(get_rewrites).post(add_rewrite))
         .route("/api/v1/rewrites/{id}", delete(delete_rewrite))
         .route("/api/v1/cache/flush", post(flush_cache))
-        .route("/api/v1/ws/querylog", get(ws_querylog_handler))
+        .route("/api/v1/sse/querylog", get(sse_querylog_handler))
         .fallback(static_handler)
         .with_state(state)
 }
@@ -226,6 +226,7 @@ async fn update_settings(
     state.engine.cache.max_ttl.store(payload.cache.max_ttl, Ordering::SeqCst);
     *state.engine.response_mode.write() = payload.dns.response_mode.clone();
     *state.dns_server_enabled.write() = payload.dns.enabled;
+    *state.logging_server_enabled.write() = payload.logging.enabled;
 
     *state.config.write() = payload.clone();
     payload.save(&state.config_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -883,7 +884,7 @@ async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestI
                 let proxy_mode = s.proxy.clone().unwrap_or_else(|| {
                     if group_name == "mainland" || group_name == "bootstrap" { "none".to_string() } else { "default".to_string() }
                 });
-                s.proxy = proxy_cfg.find_proxy_addr(&proxy_mode);
+                s.set_proxy(proxy_cfg.find_proxy_addr(&proxy_mode));
                 let mut req = hickory_proto::op::Message::query();
                 req.add_query(hickory_proto::op::Query::query(
                     hickory_proto::rr::Name::from_ascii("example.com.").unwrap(),
@@ -980,22 +981,25 @@ async fn flush_cache(State(state): State<AppState>) -> StatusCode {
     StatusCode::OK
 }
 
-async fn ws_querylog_handler(
-    ws: WebSocketUpgrade,
+async fn sse_querylog_handler(
     State(state): State<AppState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_ws_querylog(socket, state))
-}
-
-async fn handle_ws_querylog(mut socket: WebSocket, state: AppState) {
-    let mut rx = state.db.subscribe_ws();
-    while let Ok(item) = rx.recv().await {
-        if let Ok(json) = serde_json::to_string(&item) {
-            if socket.send(WsMessage::Text(json.into())).await.is_err() {
-                break;
+) -> axum::response::sse::Sse<impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+    let rx = state.db.subscribe_ws();
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(item) => {
+                    if let Ok(json) = serde_json::to_string(&item) {
+                        return Some((Ok(axum::response::sse::Event::default().data(json)), rx));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
             }
         }
-    }
+    });
+
+    axum::response::sse::Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
 }
 async fn toggle_rule(
     State(state): State<AppState>,
@@ -1113,7 +1117,7 @@ async fn test_single_upstream(
         let proxy_mode = s.proxy.clone().unwrap_or_else(|| {
             if payload.group == "mainland" || payload.group == "bootstrap" { "none".to_string() } else { "default".to_string() }
         });
-        s.proxy = proxy_cfg.find_proxy_addr(&proxy_mode);
+        s.set_proxy(proxy_cfg.find_proxy_addr(&proxy_mode));
 
         let mut req = hickory_proto::op::Message::query();
         req.add_query(hickory_proto::op::Query::query(

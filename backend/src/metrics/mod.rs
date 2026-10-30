@@ -262,7 +262,7 @@ impl MetricsCollector {
 
         // Record hourly bucket
         {
-            let now = Utc::now();
+            let now = chrono::Local::now();
             let hour_key = format!("{:02}:00", now.hour());
             let is_blocked = matches!(ctx.status, QueryStatus::Blocked);
             let mut w = self.hourly_buckets.write();
@@ -341,10 +341,10 @@ impl MetricsCollector {
 
         let hourly_history = {
             let r = self.hourly_buckets.read();
-            let now_hour = Utc::now().hour();
-            let mut res = Vec::new();
+            let now_hour = chrono::Local::now().hour();
+            let mut res = Vec::with_capacity(24);
             for i in 0..24 {
-                let h = (now_hour + 25 - i) % 24;
+                let h = (now_hour + 24 - (23 - i)) % 24;
                 let hour_key = format!("{:02}:00", h);
                 if let Some(&(tot, blk, dur)) = r.get(&hour_key) {
                     let avg = if tot > 0 { (dur as f64 / tot as f64) / 1000.0 } else { 0.0 };
@@ -363,7 +363,6 @@ impl MetricsCollector {
                     });
                 }
             }
-            res.reverse();
             res
         };
 
@@ -380,6 +379,17 @@ impl MetricsCollector {
             top_domains,
             top_blocked,
             top_clients,
+        }
+    }
+
+    pub fn get_hourly_buckets_json(&self) -> String {
+        let r = self.hourly_buckets.read();
+        serde_json::to_string(&*r).unwrap_or_default()
+    }
+
+    pub fn load_hourly_buckets_json(&self, json_str: &str) {
+        if let Ok(map) = serde_json::from_str::<HashMap<String, (u64, u64, u64)>>(json_str) {
+            *self.hourly_buckets.write() = map;
         }
     }
 }

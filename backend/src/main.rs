@@ -191,7 +191,7 @@ async fn main() -> anyhow::Result<()> {
         .filter_map(|u| {
             let mut s = UpstreamServer::parse("mainland", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "none".to_string());
-            s.proxy = config.proxy.find_proxy_addr(&proxy_mode);
+            s.set_proxy(config.proxy.find_proxy_addr(&proxy_mode));
             Some(s)
         })
         .collect();
@@ -202,7 +202,7 @@ async fn main() -> anyhow::Result<()> {
         .filter_map(|u| {
             let mut s = UpstreamServer::parse("gfw", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
-            s.proxy = config.proxy.find_proxy_addr(&proxy_mode);
+            s.set_proxy(config.proxy.find_proxy_addr(&proxy_mode));
             Some(s)
         })
         .collect();
@@ -213,7 +213,7 @@ async fn main() -> anyhow::Result<()> {
         .filter_map(|u| {
             let mut s = UpstreamServer::parse("overseas", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
-            s.proxy = config.proxy.find_proxy_addr(&proxy_mode);
+            s.set_proxy(config.proxy.find_proxy_addr(&proxy_mode));
             Some(s)
         })
         .collect();
@@ -259,10 +259,14 @@ async fn main() -> anyhow::Result<()> {
 
     // 10. Start DNS Server (Controlled by independent enabled switch)
     let dns_server_enabled = Arc::new(parking_lot::RwLock::new(config.dns.enabled));
+    let logging_server_enabled = Arc::new(parking_lot::RwLock::new(config.logging.enabled));
 
     // Load persisted cache stats if available
     if let Some(stats_json) = db.get_system_setting("dns_cache_stats") {
         metrics.cache_stats.load_from_json(&stats_json);
+    }
+    if let Some(hourly_json) = db.get_system_setting("dns_hourly_history") {
+        metrics.load_hourly_buckets_json(&hourly_json);
     }
 
     // 1-minute interval cache stats persistence task (更新频率: 1分钟)
@@ -276,6 +280,10 @@ async fn main() -> anyhow::Result<()> {
             if let Ok(json) = serde_json::to_string(&snap) {
                 let _ = sync_db.set_system_setting("dns_cache_stats", &json);
             }
+            let hourly_json = sync_metrics.get_hourly_buckets_json();
+            if !hourly_json.is_empty() {
+                let _ = sync_db.set_system_setting("dns_hourly_history", &hourly_json);
+            }
         }
     });
 
@@ -285,6 +293,7 @@ async fn main() -> anyhow::Result<()> {
         db.clone(),
         metrics.clone(),
         dns_server_enabled.clone(),
+        logging_server_enabled.clone(),
     );
     dns_server.start().await?;
 
@@ -298,6 +307,7 @@ async fn main() -> anyhow::Result<()> {
         config: shared_config.clone(),
         config_path: cli.config.to_string_lossy().to_string(),
         dns_server_enabled,
+        logging_server_enabled,
         rule_manager,
         start_time: std::time::Instant::now(),
     };

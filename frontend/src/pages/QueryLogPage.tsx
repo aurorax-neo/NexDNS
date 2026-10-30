@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import {
   Search,
   Play,
+  RefreshCw,
   Download,
   Trash2,
   CheckCircle2,
@@ -30,7 +31,8 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   const [logs, setLogs] = useState<QueryLogItem[]>([]);
   const [loggingEnabled, setLoggingEnabled] = useState<boolean>(true);
   const [loadingSettings, setLoadingSettings] = useState<boolean>(true);
-  const [isLive, setIsLive] = useState(true);
+  const [isLive, setIsLive] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedLog, setSelectedLog] = useState<QueryLogItem | null>(null);
@@ -40,7 +42,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   const [pageSize, setPageSize] = useState(50);
   const [total, setTotal] = useState(0);
   const [actionSnackbar, setActionSnackbar] = useState<string | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     api.getSettings().then((s) => {
@@ -80,22 +82,20 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
     setPage(1);
   };
 
-  // WebSocket live streaming
+  // HTTPS SSE (Server-Sent Events) live streaming (默认关闭，用户手动开启后连接)
   useEffect(() => {
     if (!isLive || !loggingEnabled) {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
       }
       return;
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws/querylog`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    const es = new EventSource('/api/v1/sse/querylog');
+    eventSourceRef.current = es;
 
-    ws.onmessage = (event) => {
+    es.onmessage = (event) => {
       try {
         const item: QueryLogItem = JSON.parse(event.data);
         if (page === 1 && !search && statusFilter === 'all') {
@@ -103,13 +103,13 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
           setTotal((prev) => prev + 1);
         }
       } catch (e) {
-        console.error('Failed to parse WS log', e);
+        console.error('Failed to parse SSE log', e);
       }
     };
 
     return () => {
-      ws.close();
-      wsRef.current = null;
+      es.close();
+      eventSourceRef.current = null;
     };
   }, [isLive, loggingEnabled, page, pageSize, search, statusFilter]);
 
@@ -236,6 +236,21 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
 
         {/* 右侧动作按钮集合 */}
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={async () => {
+              setIsRefreshing(true);
+              await fetchLogs();
+              setTimeout(() => setIsRefreshing(false), 500);
+            }}
+            disabled={isRefreshing}
+            className="inline-flex items-center gap-1.5 min-h-[38px] px-3 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors active:scale-95 disabled:opacity-60"
+            title="手动刷新日志"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 align-icon ${isRefreshing ? 'animate-spin text-cyan-600 dark:text-cyan-400' : ''}`} />
+            刷新
+          </button>
+
           <button
             type="button"
             onClick={() => setIsLive(!isLive)}

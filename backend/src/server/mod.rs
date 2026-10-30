@@ -13,6 +13,7 @@ pub struct DnsServer {
     db: Arc<Database>,
     metrics: Arc<MetricsCollector>,
     pub dns_enabled: Arc<parking_lot::RwLock<bool>>,
+    pub logging_enabled: Arc<parking_lot::RwLock<bool>>,
 }
 
 impl DnsServer {
@@ -22,6 +23,7 @@ impl DnsServer {
         db: Arc<Database>,
         metrics: Arc<MetricsCollector>,
         dns_enabled: Arc<parking_lot::RwLock<bool>>,
+        logging_enabled: Arc<parking_lot::RwLock<bool>>,
     ) -> Self {
         Self {
             port,
@@ -29,6 +31,7 @@ impl DnsServer {
             db,
             metrics,
             dns_enabled,
+            logging_enabled,
         }
     }
 
@@ -59,6 +62,7 @@ impl DnsServer {
         let db_clone = self.db.clone();
         let metrics_clone = self.metrics.clone();
         let enabled_udp = self.dns_enabled.clone();
+        let logging_udp = self.logging_enabled.clone();
 
         tokio::spawn(async move {
             let mut buf = vec![0u8; 4096];
@@ -73,6 +77,7 @@ impl DnsServer {
                         let engine = engine_clone.clone();
                         let db = db_clone.clone();
                         let metrics = metrics_clone.clone();
+                        let logging_enabled = logging_udp.clone();
 
                         tokio::spawn(async move {
                             if let Ok(req_msg) = Message::from_vec(&req_bytes) {
@@ -86,7 +91,9 @@ impl DnsServer {
                                 }
 
                                 metrics.record(&ctx);
-                                db.record_query(&ctx);
+                                if *logging_enabled.read() {
+                                    db.record_query(&ctx);
+                                }
                             }
                         });
                     }
@@ -102,6 +109,7 @@ impl DnsServer {
         let db_tcp = self.db.clone();
         let metrics_tcp = self.metrics.clone();
         let enabled_tcp = self.dns_enabled.clone();
+        let logging_tcp = self.logging_enabled.clone();
 
         tokio::spawn(async move {
             loop {
@@ -113,6 +121,7 @@ impl DnsServer {
                         let engine = engine_tcp.clone();
                         let db = db_tcp.clone();
                         let metrics = metrics_tcp.clone();
+                        let logging_enabled = logging_tcp.clone();
 
                         tokio::spawn(async move {
                             let mut len_buf = [0u8; 2];
@@ -138,7 +147,9 @@ impl DnsServer {
                                 }
 
                                 metrics.record(&ctx);
-                                db.record_query(&ctx);
+                                if *logging_enabled.read() {
+                                    db.record_query(&ctx);
+                                }
                             }
                         });
                     }

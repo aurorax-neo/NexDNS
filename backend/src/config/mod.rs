@@ -281,7 +281,7 @@ pub struct LoggingConfig {
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             retention_days: 7,
         }
     }

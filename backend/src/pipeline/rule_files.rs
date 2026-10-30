@@ -47,7 +47,10 @@ impl RuleFileManager {
     }
 
     fn get_conn(&self) -> rusqlite::Result<Connection> {
-        Connection::open(&self.db_path)
+        let conn = Connection::open(&self.db_path)?;
+        let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
+        let _ = conn.execute_batch("PRAGMA busy_timeout = 5000;");
+        Ok(conn)
     }
 
     fn init_db(&self) -> rusqlite::Result<()> {

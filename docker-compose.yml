@@ -4,12 +4,16 @@ services:
       context: .
       dockerfile: Dockerfile
     image: nexdns:latest
-    container_name: nexdns-test
+    container_name: nexdns
     restart: unless-stopped
     ports:
+      - "53:53/udp"
+      - "53:53/tcp"
       - "1053:53/udp"
       - "1053:53/tcp"
+      - "3000:3000/tcp"
       - "13000:3000/tcp"
+      - "8053:8053/tcp"
     volumes:
       - ./data:/app/data
     environment:

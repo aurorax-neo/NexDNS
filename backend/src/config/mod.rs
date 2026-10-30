@@ -34,10 +34,12 @@ fn default_proxy_list() -> Vec<ProxyItem> {
 
 impl ProxyConfig {
     pub fn default_proxy_addr(&self) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
         self.list
             .iter()
             .find(|p| p.is_default)
-            .or_else(|| self.list.first())
             .map(|p| p.addr.clone())
             .or_else(|| self.socks5.clone().filter(|s| !s.is_empty()))
     }
@@ -45,6 +47,9 @@ impl ProxyConfig {
     pub fn find_proxy_addr(&self, id_or_mode: &str) -> Option<String> {
         let mode = id_or_mode.trim();
         if mode == "none" || mode.is_empty() {
+            return None;
+        }
+        if !self.enabled {
             return None;
         }
         if mode == "default" {

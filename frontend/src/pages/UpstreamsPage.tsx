@@ -176,8 +176,41 @@ export const UpstreamsPage: React.FC = () => {
     setEditTargetGroup(group);
     setEditAddr(uri);
     setEditHostName(hostName || '');
-    setEditProxyMode(proxy || 'none');
+    const currentEffective = proxy || (group === 'mainland' || group === 'bootstrap' ? 'none' : 'default');
+    setEditProxyMode(currentEffective);
     setIsEditModalOpen(true);
+  };
+
+  const sanitizeUpstreamUrl = (inputUrl: string, sniInput: string, proxyInput: string, group: string) => {
+    let base = inputUrl.trim();
+    let host = sniInput.trim();
+    let proxy = proxyInput.trim();
+
+    if (base.includes('#')) {
+      const [cleanBase, frag] = base.split('#', 2);
+      base = cleanBase.trim();
+      if (frag.includes('=')) {
+        for (const pair of frag.split('&')) {
+          const [k, v] = pair.split('=', 2);
+          if ((k === 'sni' || k === 'host') && !host) host = v.trim();
+          if (k === 'proxy' && (!proxy || proxy === 'none')) proxy = v.trim();
+        }
+      } else if (frag.trim() && !host) {
+        host = frag.trim();
+      }
+    }
+
+    const params: string[] = [];
+    if (host) {
+      params.push(`sni=${host}`);
+    }
+    if (group !== 'bootstrap') {
+      params.push(`proxy=${proxy || 'none'}`);
+    }
+    if (params.length > 0) {
+      return `${base}#${params.join('&')}`;
+    }
+    return base;
   };
 
   const handleEditSubmit = async (e: React.FormEvent) => {
@@ -189,17 +222,7 @@ export const UpstreamsPage: React.FC = () => {
     }
     setSavingEdit(true);
     try {
-      let finalAddr = editAddr.trim();
-      const params: string[] = [];
-      if (editHostName.trim()) {
-        params.push(`sni=${editHostName.trim()}`);
-      }
-      if (editTargetGroup !== 'bootstrap') {
-        params.push(`proxy=${editProxyMode}`);
-      }
-      if (params.length > 0) {
-        finalAddr += `#${params.join('&')}`;
-      }
+      const finalAddr = sanitizeUpstreamUrl(editAddr, editHostName, editProxyMode, editTargetGroup);
 
       await api.editUpstream({
         old_group: editingOldGroup,
@@ -208,11 +231,13 @@ export const UpstreamsPage: React.FC = () => {
         new_addr: finalAddr,
       });
       setIsEditModalOpen(false);
+      setTestResults((prev) => prev.filter((r) => r.addr !== editingOldAddr));
       const updated = await api.getUpstreams();
       setUpstreams(updated);
       setSnackbarMessage('上游节点信息已成功修改并热重载生效！');
     } catch (e: any) {
       console.error('Failed to edit upstream', e);
+      setSnackbarMessage(e.message || '修改上游失败');
     } finally {
       setSavingEdit(false);
     }
@@ -267,17 +292,7 @@ export const UpstreamsPage: React.FC = () => {
       return;
     }
     try {
-      let finalAddr = newAddr.trim();
-      const params: string[] = [];
-      if (newHostName.trim()) {
-        params.push(`sni=${newHostName.trim()}`);
-      }
-      if (targetGroup !== 'bootstrap') {
-        params.push(`proxy=${newProxyMode}`);
-      }
-      if (params.length > 0) {
-        finalAddr += `#${params.join('&')}`;
-      }
+      const finalAddr = sanitizeUpstreamUrl(newAddr, newHostName, newProxyMode, targetGroup);
       await api.addUpstream(targetGroup, finalAddr);
       setIsAddModalOpen(false);
       setNewAddr('');
@@ -285,7 +300,7 @@ export const UpstreamsPage: React.FC = () => {
       setNewProxyMode('none');
       const updated = await api.getUpstreams();
       setUpstreams(updated);
-      setSnackbarMessage('已添加上游服务器');
+      setSnackbarMessage('已添加上游服务器 (默认直连)');
     } catch (e: any) {
       setSnackbarMessage(e.message || '添加上游失败');
     }
@@ -379,7 +394,7 @@ export const UpstreamsPage: React.FC = () => {
             const { uri, hostName, proxy, proto } = parseUpstreamEntry(addr);
             const isDoh = proto === 'DoH';
             const isTcp = proto === 'TCP';
-            const effectiveProxy = proxy || (groupKey === 'mainland' ? 'none' : 'default');
+            const effectiveProxy = proxy || (groupKey === 'mainland' || groupKey === 'bootstrap' ? 'none' : 'default');
 
             return (
               <div

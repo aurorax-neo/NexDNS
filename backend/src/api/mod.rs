@@ -866,7 +866,7 @@ async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestI
 
             if let Some(mut s) = server {
                 let proxy_mode = s.proxy.clone().unwrap_or_else(|| {
-                    if group_name == "mainland" { "none".to_string() } else { "default".to_string() }
+                    if group_name == "mainland" || group_name == "bootstrap" { "none".to_string() } else { "default".to_string() }
                 });
                 s.proxy = proxy_cfg.find_proxy_addr(&proxy_mode);
                 let mut req = hickory_proto::op::Message::query();
@@ -1153,19 +1153,77 @@ async fn edit_upstream(
     }
     {
         let mut cfg = state.config.write();
-        match payload.old_group.as_str() {
-            "bootstrap" => cfg.upstreams.bootstrap_dns.retain(|s| s != &payload.old_addr),
-            "mainland" => cfg.upstreams.mainland.retain(|s| s != &payload.old_addr),
-            "gfw" => cfg.upstreams.gfw.retain(|s| s != &payload.old_addr),
-            "overseas" => cfg.upstreams.overseas.retain(|s| s != &payload.old_addr),
-            _ => return Err((StatusCode::BAD_REQUEST, "Unknown old group".to_string())),
-        }
-        match payload.new_group.as_str() {
-            "bootstrap" => cfg.upstreams.bootstrap_dns.push(payload.new_addr),
-            "mainland" => cfg.upstreams.mainland.push(payload.new_addr),
-            "gfw" => cfg.upstreams.gfw.push(payload.new_addr),
-            "overseas" => cfg.upstreams.overseas.push(payload.new_addr),
-            _ => return Err((StatusCode::BAD_REQUEST, "Unknown new group".to_string())),
+        let old_target = payload.old_addr.trim();
+        let same_group = payload.old_group == payload.new_group;
+
+        let replaced = match payload.old_group.as_str() {
+            "bootstrap" => {
+                if same_group {
+                    if let Some(pos) = cfg.upstreams.bootstrap_dns.iter().position(|s| s.trim() == old_target) {
+                        cfg.upstreams.bootstrap_dns[pos] = payload.new_addr.clone();
+                        true
+                    } else {
+                        cfg.upstreams.bootstrap_dns.retain(|s| s.trim() != old_target);
+                        false
+                    }
+                } else {
+                    cfg.upstreams.bootstrap_dns.retain(|s| s.trim() != old_target);
+                    false
+                }
+            }
+            "mainland" => {
+                if same_group {
+                    if let Some(pos) = cfg.upstreams.mainland.iter().position(|s| s.trim() == old_target) {
+                        cfg.upstreams.mainland[pos] = payload.new_addr.clone();
+                        true
+                    } else {
+                        cfg.upstreams.mainland.retain(|s| s.trim() != old_target);
+                        false
+                    }
+                } else {
+                    cfg.upstreams.mainland.retain(|s| s.trim() != old_target);
+                    false
+                }
+            }
+            "gfw" => {
+                if same_group {
+                    if let Some(pos) = cfg.upstreams.gfw.iter().position(|s| s.trim() == old_target) {
+                        cfg.upstreams.gfw[pos] = payload.new_addr.clone();
+                        true
+                    } else {
+                        cfg.upstreams.gfw.retain(|s| s.trim() != old_target);
+                        false
+                    }
+                } else {
+                    cfg.upstreams.gfw.retain(|s| s.trim() != old_target);
+                    false
+                }
+            }
+            "overseas" => {
+                if same_group {
+                    if let Some(pos) = cfg.upstreams.overseas.iter().position(|s| s.trim() == old_target) {
+                        cfg.upstreams.overseas[pos] = payload.new_addr.clone();
+                        true
+                    } else {
+                        cfg.upstreams.overseas.retain(|s| s.trim() != old_target);
+                        false
+                    }
+                } else {
+                    cfg.upstreams.overseas.retain(|s| s.trim() != old_target);
+                    false
+                }
+            }
+            _ => return Err((StatusCode::BAD_REQUEST, "未知旧分组".to_string())),
+        };
+
+        if !replaced {
+            match payload.new_group.as_str() {
+                "bootstrap" => cfg.upstreams.bootstrap_dns.push(payload.new_addr),
+                "mainland" => cfg.upstreams.mainland.push(payload.new_addr),
+                "gfw" => cfg.upstreams.gfw.push(payload.new_addr),
+                "overseas" => cfg.upstreams.overseas.push(payload.new_addr),
+                _ => return Err((StatusCode::BAD_REQUEST, "未知新分组".to_string())),
+            }
         }
         let _ = cfg.save(&state.config_path);
     }

@@ -227,14 +227,28 @@ impl UpstreamServer {
                         } else if p_addr.starts_with("socks5://") {
                             p_addr = p_addr.replacen("socks5://", "socks5h://", 1);
                         }
-                        if let Ok(proxy) = reqwest::Proxy::all(&p_addr) {
-                            builder = builder.proxy(proxy);
-                            has_proxy = true;
+                        match reqwest::Proxy::all(&p_addr) {
+                            Ok(proxy) => {
+                                builder = builder.proxy(proxy);
+                                has_proxy = true;
+                            }
+                            Err(e) => {
+                                return Err(format!("代理配置无效 ({}): {}", p_addr, e));
+                            }
                         }
                     }
                 }
 
                 let mut final_url = self.addr.clone();
+
+                // 若使用代理转发，为规避 Clash/Mihomo 中默认硬编码的 DOMAIN,cloudflare-dns.com,DIRECT 规则，
+                // 自动将域名透明转为官方 IP 节点 1.1.1.1 (证书原生支持 1.1.1.1)，确保 100% 走代理成功连通
+                let is_cf_domain = final_url.contains("cloudflare-dns.com") || final_url.contains("dns.cloudflare.com");
+                if has_proxy && is_cf_domain {
+                    final_url = final_url
+                        .replace("cloudflare-dns.com", "1.1.1.1")
+                        .replace("dns.cloudflare.com", "1.1.1.1");
+                }
 
                 // Handle -host-name override (e.g. https://101.226.4.6/dns-query -host-name doh.360.cn)
                 if let Some(ref host) = self.host_name {
@@ -266,7 +280,9 @@ impl UpstreamServer {
                     .body(req_bytes.to_vec());
 
                 if let Some(ref host) = self.host_name {
-                    req_builder = req_builder.header("host", host);
+                    if !(has_proxy && (host == "cloudflare-dns.com" || host == "dns.cloudflare.com")) {
+                        req_builder = req_builder.header("host", host);
+                    }
                 }
 
                 let resp = req_builder
@@ -297,7 +313,14 @@ async fn connect_via_proxy_or_direct(
                 .trim_start_matches("socks5h://")
                 .trim_start_matches("socks5://")
                 .trim_start_matches("http://");
-            if let Ok(proxy_socket) = proxy_clean.parse::<SocketAddr>() {
+            let proxy_socket = if let Ok(sa) = proxy_clean.parse::<SocketAddr>() {
+                sa
+            } else if let Ok(mut addrs) = tokio::net::lookup_host(proxy_clean).await {
+                addrs.next().ok_or_else(|| format!("无法解析代理服务器地址: {}", proxy_clean))?
+            } else {
+                return Err(format!("无效的代理地址: {}", proxy_clean));
+            };
+            {
                 let stream_res = timeout(timeout_duration, TcpStream::connect(proxy_socket)).await;
                 let mut stream = stream_res
                     .map_err(|_| "Connect to SOCKS5 proxy timeout".to_string())?

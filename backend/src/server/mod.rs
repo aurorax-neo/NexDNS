@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
 use hickory_proto::op::Message;
@@ -6,6 +7,21 @@ use crate::db::Database;
 use crate::metrics::MetricsCollector;
 use crate::pipeline::context::QueryContext;
 use crate::pipeline::engine::PipelineEngine;
+
+fn bind_udp_socket(addr: SocketAddr) -> std::io::Result<UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let domain = if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+    let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+    #[cfg(unix)]
+    {
+        let _ = socket.set_reuse_port(true);
+        let _ = socket.set_reuse_address(true);
+    }
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    let std_socket: std::net::UdpSocket = socket.into();
+    UdpSocket::from_std(std_socket)
+}
 
 pub struct DnsServer {
     port: u16,
@@ -36,73 +52,71 @@ impl DnsServer {
     }
 
     pub async fn start(&self) -> anyhow::Result<()> {
-        let udp_addr = format!("0.0.0.0:{}", self.port);
-        let udp_socket = match UdpSocket::bind(&udp_addr).await {
-            Ok(s) => {
-                tracing::info!("DNS UDP server listening on {}", udp_addr);
-                Arc::new(s)
-            }
-            Err(e) => {
-                tracing::warn!("Failed to bind UDP port {}: {}. Attempting fallback port 5353...", self.port, e);
-                let fallback = "0.0.0.0:5353";
-                let s = UdpSocket::bind(fallback).await?;
-                tracing::info!("DNS UDP server listening on fallback {}", fallback);
-                Arc::new(s)
-            }
-        };
+        let udp_addr: SocketAddr = format!("0.0.0.0:{}", self.port).parse()?;
+        let num_workers = std::thread::available_parallelism()
+            .map(|n| n.get().clamp(2, 8))
+            .unwrap_or(4);
 
-        let tcp_port = udp_socket.local_addr()?.port();
-        let tcp_addr = format!("0.0.0.0:{}", tcp_port);
-        let tcp_listener = TcpListener::bind(&tcp_addr).await?;
-        tracing::info!("DNS TCP server listening on {}", tcp_addr);
+        tracing::info!("DNS UDP epoll SO_REUSEPORT 并发监听在 0.0.0.0:{} (启动 {} 个独立内核队列工作线程)", self.port, num_workers);
 
-        // Spawn UDP loop
-        let udp_clone = udp_socket.clone();
-        let engine_clone = self.engine.clone();
-        let db_clone = self.db.clone();
-        let metrics_clone = self.metrics.clone();
-        let enabled_udp = self.dns_enabled.clone();
-        let logging_udp = self.logging_enabled.clone();
+        for worker_id in 0..num_workers {
+            let udp_socket = match bind_udp_socket(udp_addr) {
+                Ok(s) => Arc::new(s),
+                Err(e) => {
+                    tracing::warn!("Worker {} SO_REUSEPORT bind 失败: {}, 回退常规 bind", worker_id, e);
+                    Arc::new(UdpSocket::bind(udp_addr).await?)
+                }
+            };
+            let engine_clone = self.engine.clone();
+            let db_clone = self.db.clone();
+            let metrics_clone = self.metrics.clone();
+            let enabled_udp = self.dns_enabled.clone();
+            let logging_udp = self.logging_enabled.clone();
 
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 4096];
-            loop {
-                match udp_clone.recv_from(&mut buf).await {
-                    Ok((len, src)) => {
-                        if !*enabled_udp.read() {
-                            continue;
-                        }
-                        let req_bytes = buf[..len].to_vec();
-                        let socket = udp_clone.clone();
-                        let engine = engine_clone.clone();
-                        let db = db_clone.clone();
-                        let metrics = metrics_clone.clone();
-                        let logging_enabled = logging_udp.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                loop {
+                    match udp_socket.recv_from(&mut buf).await {
+                        Ok((len, src)) => {
+                            if !*enabled_udp.read() {
+                                continue;
+                            }
+                            let req_bytes = buf[..len].to_vec();
+                            let socket = udp_socket.clone();
+                            let engine = engine_clone.clone();
+                            let db = db_clone.clone();
+                            let metrics = metrics_clone.clone();
+                            let logging_enabled = logging_udp.clone();
 
-                        tokio::spawn(async move {
-                            if let Ok(req_msg) = Message::from_vec(&req_bytes) {
-                                let mut ctx = QueryContext::new(src.ip(), req_msg);
-                                engine.process(&mut ctx).await;
+                            tokio::spawn(async move {
+                                if let Ok(req_msg) = Message::from_vec(&req_bytes) {
+                                    let mut ctx = QueryContext::new(src.ip(), req_msg);
+                                    engine.process(&mut ctx).await;
 
-                                if let Some(ref resp_msg) = ctx.response {
-                                    if let Ok(resp_bytes) = resp_msg.to_vec() {
-                                        let _ = socket.send_to(&resp_bytes, src).await;
+                                    if let Some(ref resp_msg) = ctx.response {
+                                        if let Ok(resp_bytes) = resp_msg.to_vec() {
+                                            let _ = socket.send_to(&resp_bytes, src).await;
+                                        }
+                                    }
+
+                                    metrics.record(&ctx);
+                                    if *logging_enabled.read() {
+                                        db.record_query(&ctx);
                                     }
                                 }
-
-                                metrics.record(&ctx);
-                                if *logging_enabled.read() {
-                                    db.record_query(&ctx);
-                                }
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!("UDP recv error: {}", e);
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!("UDP worker {} recv error: {}", worker_id, e);
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
+
+        let tcp_addr = format!("0.0.0.0:{}", self.port);
+        let tcp_listener = TcpListener::bind(&tcp_addr).await?;
+        tracing::info!("DNS TCP server listening on {}", tcp_addr);
 
         // Spawn TCP loop
         let engine_tcp = self.engine.clone();

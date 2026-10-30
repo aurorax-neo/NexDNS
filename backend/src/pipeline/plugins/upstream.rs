@@ -143,10 +143,7 @@ impl UpstreamServer {
                     format!("{}:53", self.addr).parse().map_err(|e| format!("Invalid TCP addr: {}", e))?
                 };
 
-                let mut stream = timeout(timeout_duration, TcpStream::connect(socket_addr))
-                    .await
-                    .map_err(|_| "TCP connect timeout".to_string())?
-                    .map_err(|e| e.to_string())?;
+                let mut stream = connect_via_proxy_or_direct(socket_addr, self.proxy.as_ref(), timeout_duration).await?;
 
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let len_bytes = (req_bytes.len() as u16).to_be_bytes();
@@ -192,10 +189,7 @@ impl UpstreamServer {
                         .to_owned(),
                 };
 
-                let tcp = timeout(timeout_duration, TcpStream::connect(socket_addr))
-                    .await
-                    .map_err(|_| "DoT TCP connect timeout".to_string())?
-                    .map_err(|e| e.to_string())?;
+                let tcp = connect_via_proxy_or_direct(socket_addr, self.proxy.as_ref(), timeout_duration).await?;
 
                 let mut tls = timeout(timeout_duration, connector.connect(server_name, tcp))
                     .await
@@ -277,6 +271,85 @@ impl UpstreamServer {
             }
         }
     }
+}
+
+async fn connect_via_proxy_or_direct(
+    target_addr: SocketAddr,
+    proxy_opt: Option<&String>,
+    timeout_duration: Duration,
+) -> Result<TcpStream, String> {
+    if let Some(proxy_url) = proxy_opt {
+        let p_trimmed = proxy_url.trim();
+        if p_trimmed != "none" && !p_trimmed.is_empty() {
+            let proxy_clean = p_trimmed
+                .trim_start_matches("socks5h://")
+                .trim_start_matches("socks5://")
+                .trim_start_matches("http://");
+            if let Ok(proxy_socket) = proxy_clean.parse::<SocketAddr>() {
+                let stream_res = timeout(timeout_duration, TcpStream::connect(proxy_socket)).await;
+                let mut stream = stream_res
+                    .map_err(|_| "Connect to SOCKS5 proxy timeout".to_string())?
+                    .map_err(|e| format!("Failed to connect proxy: {}", e))?;
+
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                // SOCKS5 握手 1: NO AUTH (0x05 0x01 0x00)
+                stream.write_all(&[0x05, 0x01, 0x00]).await.map_err(|e| e.to_string())?;
+                let mut handshake_resp = [0u8; 2];
+                stream.read_exact(&mut handshake_resp).await.map_err(|e| e.to_string())?;
+                if handshake_resp[0] != 0x05 || handshake_resp[1] != 0x00 {
+                    return Err("SOCKS5 proxy authentication failed".to_string());
+                }
+
+                // SOCKS5 握手 2: CONNECT command
+                let mut conn_req = vec![0x05, 0x01, 0x00];
+                match target_addr {
+                    SocketAddr::V4(v4) => {
+                        conn_req.push(0x01);
+                        conn_req.extend_from_slice(&v4.ip().octets());
+                        conn_req.extend_from_slice(&v4.port().to_be_bytes());
+                    }
+                    SocketAddr::V6(v6) => {
+                        conn_req.push(0x04);
+                        conn_req.extend_from_slice(&v6.ip().octets());
+                        conn_req.extend_from_slice(&v6.port().to_be_bytes());
+                    }
+                }
+                stream.write_all(&conn_req).await.map_err(|e| e.to_string())?;
+
+                let mut resp_header = [0u8; 4];
+                stream.read_exact(&mut resp_header).await.map_err(|e| e.to_string())?;
+                if resp_header[1] != 0x00 {
+                    return Err(format!("SOCKS5 connect command failed with code: {}", resp_header[1]));
+                }
+                // 跳过绑定的代理应答地址
+                match resp_header[3] {
+                    0x01 => {
+                        let mut b = [0u8; 6];
+                        stream.read_exact(&mut b).await.map_err(|e| e.to_string())?;
+                    }
+                    0x04 => {
+                        let mut b = [0u8; 18];
+                        stream.read_exact(&mut b).await.map_err(|e| e.to_string())?;
+                    }
+                    0x03 => {
+                        let mut len_buf = [0u8; 1];
+                        stream.read_exact(&mut len_buf).await.map_err(|e| e.to_string())?;
+                        let mut b = vec![0u8; len_buf[0] as usize + 2];
+                        stream.read_exact(&mut b).await.map_err(|e| e.to_string())?;
+                    }
+                    _ => {}
+                }
+                return Ok(stream);
+            }
+        }
+    }
+
+    // 直连
+    let stream = timeout(timeout_duration, TcpStream::connect(target_addr))
+        .await
+        .map_err(|_| "TCP connect timeout".to_string())?
+        .map_err(|e| e.to_string())?;
+    Ok(stream)
 }
 
 pub struct UpstreamGroup {

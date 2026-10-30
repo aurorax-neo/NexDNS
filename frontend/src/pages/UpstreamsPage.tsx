@@ -30,7 +30,7 @@ export const UpstreamsPage: React.FC = () => {
   const [targetGroup, setTargetGroup] = useState<UpstreamGroupKey>('mainland');
   const [newAddr, setNewAddr] = useState('');
   const [newHostName, setNewHostName] = useState('');
-  const [newProxyMode, setNewProxyMode] = useState('default');
+  const [newProxyMode, setNewProxyMode] = useState('none');
 
   // Single test state
   const [testingSingleAddr, setTestingSingleAddr] = useState<string | null>(null);
@@ -42,7 +42,7 @@ export const UpstreamsPage: React.FC = () => {
   const [editTargetGroup, setEditTargetGroup] = useState<UpstreamGroupKey>('mainland');
   const [editAddr, setEditAddr] = useState<string>('');
   const [editHostName, setEditHostName] = useState<string>('');
-  const [editProxyMode, setEditProxyMode] = useState<string>('default');
+  const [editProxyMode, setEditProxyMode] = useState<string>('none');
   const [savingEdit, setSavingEdit] = useState(false);
 
   // Drag and drop state
@@ -176,13 +176,17 @@ export const UpstreamsPage: React.FC = () => {
     setEditTargetGroup(group);
     setEditAddr(uri);
     setEditHostName(hostName || '');
-    setEditProxyMode(proxy || 'default');
+    setEditProxyMode(proxy || 'none');
     setIsEditModalOpen(true);
   };
 
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editAddr.trim()) return;
+    if (editTargetGroup === 'bootstrap' && !validateBootstrapAddr(editAddr.trim())) {
+      setSnackbarMessage('引导 DNS 主机必须是 IP 地址，支持纯 IP、DoT、DoH 或带 #sni= 的 DoH，严禁主机为域名！');
+      return;
+    }
     setSavingEdit(true);
     try {
       let finalAddr = editAddr.trim();
@@ -190,12 +194,8 @@ export const UpstreamsPage: React.FC = () => {
       if (editHostName.trim()) {
         params.push(`sni=${editHostName.trim()}`);
       }
-      if (editProxyMode !== 'default') {
-        if (editProxyMode !== 'none' || editTargetGroup !== 'mainland') {
-          params.push(`proxy=${editProxyMode}`);
-        }
-      } else if (editTargetGroup !== 'mainland') {
-        params.push('proxy=default');
+      if (editTargetGroup !== 'bootstrap') {
+        params.push(`proxy=${editProxyMode}`);
       }
       if (params.length > 0) {
         finalAddr += `#${params.join('&')}`;
@@ -273,13 +273,7 @@ export const UpstreamsPage: React.FC = () => {
         params.push(`sni=${newHostName.trim()}`);
       }
       if (targetGroup !== 'bootstrap') {
-        if (newProxyMode !== 'default') {
-          if (newProxyMode !== 'none' || targetGroup !== 'mainland') {
-            params.push(`proxy=${newProxyMode}`);
-          }
-        } else if (targetGroup !== 'mainland') {
-          params.push('proxy=default');
-        }
+        params.push(`proxy=${newProxyMode}`);
       }
       if (params.length > 0) {
         finalAddr += `#${params.join('&')}`;
@@ -288,7 +282,7 @@ export const UpstreamsPage: React.FC = () => {
       setIsAddModalOpen(false);
       setNewAddr('');
       setNewHostName('');
-      setNewProxyMode('default');
+      setNewProxyMode('none');
       const updated = await api.getUpstreams();
       setUpstreams(updated);
       setSnackbarMessage('已添加上游服务器');
@@ -513,7 +507,12 @@ export const UpstreamsPage: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setIsAddModalOpen(true)}
+            onClick={() => {
+              setNewAddr('');
+              setNewHostName('');
+              setNewProxyMode('none');
+              setIsAddModalOpen(true);
+            }}
             className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 text-xs font-medium text-neutral-800 dark:text-neutral-200 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md transition-colors"
           >
             <Plus className="w-3.5 h-3.5 align-icon" />

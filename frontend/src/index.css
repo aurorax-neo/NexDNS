@@ -57,3 +57,12 @@ p {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(150, 150, 150, 0.4);
 }
+
+/* 隐藏水平滚动条 */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

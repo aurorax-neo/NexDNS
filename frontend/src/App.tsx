@@ -111,7 +111,7 @@ export function App() {
           </div>
 
           {/* 中间 Tab 导航栏 */}
-          <nav className="hidden md:flex items-center gap-1 bg-neutral-100 dark:bg-surface-2 p-1 rounded-lg border border-neutral-200 dark:border-neutral-800">
+          <nav className="hidden xl:flex items-center gap-1 bg-neutral-100 dark:bg-surface-2 p-1 rounded-lg border border-neutral-200 dark:border-neutral-800 shrink-0">
             {navItems.map((item) => {
               const isActive = activeTab === item.id;
               return (
@@ -119,7 +119,7 @@ export function App() {
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`min-h-[34px] px-3 text-xs font-medium rounded-md flex items-center gap-1.5 transition-all ${
+                  className={`min-h-[34px] px-3 text-xs font-medium rounded-md flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 ${
                     isActive
                       ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-xs border border-neutral-200 dark:border-neutral-700/60'
                       : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-200/50 dark:hover:bg-surface-3/50'
@@ -161,8 +161,8 @@ export function App() {
           </div>
         </div>
 
-        {/* 移动端横向滚动 Tab */}
-        <div className="md:hidden flex overflow-x-auto px-4 py-2 border-t border-neutral-200 dark:border-neutral-800/60 gap-1 bg-white dark:bg-surface-1">
+        {/* 平板及移动端横向滚动 Tab 栏: 宽 <1280px 时平滑左右滑动，按钮绝不折行变形 */}
+        <div className="xl:hidden flex overflow-x-auto px-3 sm:px-4 py-2 border-t border-neutral-200 dark:border-neutral-800/60 gap-1.5 bg-neutral-50/90 dark:bg-surface-1/95 backdrop-blur-md no-scrollbar">
           {navItems.map((item) => {
             const isActive = activeTab === item.id;
             return (
@@ -170,10 +170,10 @@ export function App() {
                 key={item.id}
                 type="button"
                 onClick={() => setActiveTab(item.id)}
-                className={`whitespace-nowrap px-3 py-1.5 text-xs font-medium rounded-md flex items-center gap-1.5 shrink-0 ${
+                className={`whitespace-nowrap min-h-[36px] px-3.5 text-xs font-medium rounded-md flex items-center gap-1.5 shrink-0 transition-colors ${
                   isActive
-                    ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 border border-neutral-300 dark:border-neutral-700/60'
-                    : 'text-neutral-500 dark:text-neutral-400'
+                    ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-xs border border-neutral-300 dark:border-neutral-700/60'
+                    : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200 hover:bg-neutral-200/50 dark:hover:bg-surface-3/50'
                 }`}
               >
                 {item.icon}

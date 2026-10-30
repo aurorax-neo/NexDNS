@@ -19,13 +19,15 @@ import { Popconfirm } from '../components/ui/Popconfirm';
 import { Snackbar } from '../components/ui/Snackbar';
 import { CustomSelect } from '../components/ui/CustomSelect';
 
+type UpstreamGroupKey = 'bootstrap' | 'mainland' | 'gfw' | 'overseas';
+
 export const UpstreamsPage: React.FC = () => {
   const [upstreams, setUpstreams] = useState<UpstreamsResponse | null>(null);
   const [proxyList, setProxyList] = useState<ProxyItem[]>([]);
   const [testResults, setTestResults] = useState<UpstreamTestItem[]>([]);
   const [testing, setTesting] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [targetGroup, setTargetGroup] = useState<string>('mainland');
+  const [targetGroup, setTargetGroup] = useState<UpstreamGroupKey>('mainland');
   const [newAddr, setNewAddr] = useState('');
   const [newHostName, setNewHostName] = useState('');
   const [newProxyMode, setNewProxyMode] = useState('default');
@@ -35,16 +37,16 @@ export const UpstreamsPage: React.FC = () => {
 
   // Edit upstream state
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [editingOldGroup, setEditingOldGroup] = useState<string>('mainland');
+  const [editingOldGroup, setEditingOldGroup] = useState<UpstreamGroupKey>('mainland');
   const [editingOldAddr, setEditingOldAddr] = useState<string>('');
-  const [editTargetGroup, setEditTargetGroup] = useState<string>('mainland');
+  const [editTargetGroup, setEditTargetGroup] = useState<UpstreamGroupKey>('mainland');
   const [editAddr, setEditAddr] = useState<string>('');
   const [editHostName, setEditHostName] = useState<string>('');
   const [editProxyMode, setEditProxyMode] = useState<string>('default');
   const [savingEdit, setSavingEdit] = useState(false);
 
   // Drag and drop state
-  const [draggedGroup, setDraggedGroup] = useState<string | null>(null);
+  const [draggedGroup, setDraggedGroup] = useState<UpstreamGroupKey | null>(null);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
   // Bootstrap DNS state
@@ -167,7 +169,7 @@ export const UpstreamsPage: React.FC = () => {
     }
   };
 
-  const handleOpenEditModal = (group: string, rawAddr: string) => {
+  const handleOpenEditModal = (group: UpstreamGroupKey, rawAddr: string) => {
     const { uri, hostName, proxy } = parseUpstreamEntry(rawAddr);
     setEditingOldGroup(group);
     setEditingOldAddr(rawAddr);
@@ -216,7 +218,7 @@ export const UpstreamsPage: React.FC = () => {
     }
   };
 
-  const handleDragStart = (e: React.DragEvent, groupKey: string, index: number) => {
+  const handleDragStart = (e: React.DragEvent, groupKey: UpstreamGroupKey, index: number) => {
     setDraggedGroup(groupKey);
     setDraggedIndex(index);
     e.dataTransfer.effectAllowed = 'move';
@@ -228,20 +230,22 @@ export const UpstreamsPage: React.FC = () => {
     e.dataTransfer.dropEffect = 'move';
   };
 
-  const handleDrop = async (groupKey: 'mainland' | 'gfw' | 'overseas', targetIndex: number) => {
+  const handleDrop = async (groupKey: UpstreamGroupKey, targetIndex: number) => {
     if (draggedGroup !== groupKey || draggedIndex === null || draggedIndex === targetIndex || !upstreams) {
       setDraggedGroup(null);
       setDraggedIndex(null);
       return;
     }
 
-    const currentList = [...upstreams[groupKey]];
+    const currentList = groupKey === 'bootstrap'
+      ? [...(upstreams.bootstrap_dns || [])]
+      : [...(upstreams[groupKey] || [])];
     const [moved] = currentList.splice(draggedIndex, 1);
     currentList.splice(targetIndex, 0, moved);
 
     const updatedUpstreams = {
       ...upstreams,
-      [groupKey]: currentList,
+      ...(groupKey === 'bootstrap' ? { bootstrap_dns: currentList } : { [groupKey]: currentList }),
     };
     setUpstreams(updatedUpstreams);
     setDraggedGroup(null);
@@ -258,18 +262,24 @@ export const UpstreamsPage: React.FC = () => {
   const handleAddUpstream = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAddr.trim()) return;
+    if (targetGroup === 'bootstrap' && !validateBootstrapAddr(newAddr.trim())) {
+      setSnackbarMessage('引导 DNS 主机必须是 IP 地址，支持纯 IP、DoT、DoH 或带 #sni= 的 DoH，严禁主机为域名！');
+      return;
+    }
     try {
       let finalAddr = newAddr.trim();
       const params: string[] = [];
       if (newHostName.trim()) {
         params.push(`sni=${newHostName.trim()}`);
       }
-      if (newProxyMode !== 'default') {
-        if (newProxyMode !== 'none' || targetGroup !== 'mainland') {
-          params.push(`proxy=${newProxyMode}`);
+      if (targetGroup !== 'bootstrap') {
+        if (newProxyMode !== 'default') {
+          if (newProxyMode !== 'none' || targetGroup !== 'mainland') {
+            params.push(`proxy=${newProxyMode}`);
+          }
+        } else if (targetGroup !== 'mainland') {
+          params.push('proxy=default');
         }
-      } else if (targetGroup !== 'mainland') {
-        params.push('proxy=default');
       }
       if (params.length > 0) {
         finalAddr += `#${params.join('&')}`;
@@ -282,19 +292,23 @@ export const UpstreamsPage: React.FC = () => {
       const updated = await api.getUpstreams();
       setUpstreams(updated);
       setSnackbarMessage('已添加上游服务器');
-    } catch (e) {
-      console.error('Failed to add upstream', e);
+    } catch (e: any) {
+      setSnackbarMessage(e.message || '添加上游失败');
     }
   };
 
   const handleRemoveUpstream = async (group: string, addr: string) => {
+    if (group === 'bootstrap' && (upstreams?.bootstrap_dns?.length || 0) <= 1) {
+      setSnackbarMessage('引导解析组至少需要保留一个节点');
+      return;
+    }
     try {
       await api.removeUpstream(group, addr);
       const updated = await api.getUpstreams();
       setUpstreams(updated);
       setSnackbarMessage('已删除上游节点');
-    } catch (e) {
-      console.error('Failed to remove upstream', e);
+    } catch (e: any) {
+      setSnackbarMessage(e.message || '删除节点失败');
     }
   };
 
@@ -339,14 +353,17 @@ export const UpstreamsPage: React.FC = () => {
     }
 
     const isDoh = uri.startsWith('https://');
+    const isDot = uri.startsWith('tls://');
     const isTcp = uri.startsWith('tcp://');
-    const proto = isDoh ? 'DoH' : isTcp ? 'TCP' : 'UDP';
+    const proto = isDoh ? 'DoH' : isDot ? 'DoT' : isTcp ? 'TCP' : 'UDP';
 
     return { uri, hostName, proxy, proto };
   };
 
-  const renderGroup = (title: string, groupKey: 'mainland' | 'gfw' | 'overseas', icon: React.ReactNode, desc: string) => {
-    const servers = upstreams ? upstreams[groupKey] : [];
+  const renderGroup = (title: string, groupKey: UpstreamGroupKey, icon: React.ReactNode, desc: string) => {
+    const servers = upstreams
+      ? (groupKey === 'bootstrap' ? upstreams.bootstrap_dns || [] : upstreams[groupKey] || [])
+      : [];
     return (
       <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
         <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800">
@@ -357,7 +374,7 @@ export const UpstreamsPage: React.FC = () => {
               <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">{desc}</p>
             </div>
           </div>
-          <span className="text-xs font-mono text-neutral-600 dark:text-neutral-400 bg-neutral-100 dark:bg-surface-2 px-2 py-0.5 rounded border border-neutral-200 dark:border-neutral-800">
+          <span className="text-xs font-mono text-neutral-600 dark:text-neutral-400 bg-neutral-100 dark:bg-surface-2 px-2.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-800">
             {servers.length} 个节点
           </span>
         </div>
@@ -514,68 +531,14 @@ export const UpstreamsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* 引导 DNS (Bootstrap DNS) 配置卡片 */}
-      <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-neutral-200 dark:border-neutral-800">
-          <div>
-            <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
-              <Zap className="w-4 h-4 text-amber-500 align-icon" />
-              上游 DoH / DoT 引导解析 DNS (Bootstrap DNS)
-            </h4>
-          </div>
-        </div>
-
-        {/* 已配置的纯 IP 引导节点 */}
-        <div className="flex flex-wrap items-center gap-2">
-          {bootstrapList.map((ip) => (
-            <span
-              key={ip}
-              className="inline-flex items-center gap-2 px-3 py-1 text-xs font-mono rounded-md bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 text-neutral-800 dark:text-neutral-200 shadow-2xs"
-            >
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              {ip}
-              {bootstrapList.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => handleRemoveBootstrapIp(ip)}
-                  className="text-neutral-400 hover:text-rose-500 transition-colors ml-1 font-bold"
-                  title="移除该 IP"
-                >
-                  ×
-                </button>
-              )}
-            </span>
-          ))}
-        </div>
-
-        {/* 添加引导 DNS 表单 */}
-        <form onSubmit={handleAddBootstrapIp} className="flex flex-wrap items-start gap-2 pt-1">
-          <div className="flex-1 min-w-[260px]">
-            <input
-              type="text"
-              value={newBootstrapIp}
-              onChange={handleBootstrapInputChange}
-              placeholder="输入 IP、DoT 或带 SNI 的 DoH，例如: https://223.5.5.5/dns-query#sni=dns.alidns.com"
-              className={`w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border ${
-                bootstrapIpError ? 'border-rose-500 focus:border-rose-500' : 'border-neutral-300 dark:border-neutral-700 focus:border-cyan-500'
-              } rounded-md text-xs font-mono text-neutral-900 dark:text-neutral-100 focus:outline-none`}
-            />
-            {bootstrapIpError && (
-              <p className="text-[11px] text-rose-500 mt-1 font-sans">{bootstrapIpError}</p>
-            )}
-          </div>
-          <button
-            type="submit"
-            disabled={!newBootstrapIp.trim() || !!bootstrapIpError}
-            className="min-h-[38px] px-4 text-xs font-medium bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200 rounded-md transition-colors disabled:opacity-40 shadow-xs"
-          >
-            添加引导节点
-          </button>
-        </form>
-      </div>
-
-      {/* 三大上游组卡片 */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* 4 块完全一致的 DNS 上游卡片 (含引导解析组) */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        {renderGroup(
+          '引导解析组 (Bootstrap DNS)',
+          'bootstrap',
+          <Zap className="w-4 h-4 text-amber-500 align-icon" />,
+          '用于解析加密上游域名的基础引导节点，支持 IP 的 DoT/DoH/SNI'
+        )}
         {renderGroup(
           '大陆直连组 (mainland)',
           'mainland',
@@ -610,12 +573,13 @@ export const UpstreamsPage: React.FC = () => {
             </label>
             <CustomSelect
               options={[
+                { value: 'bootstrap', label: '引导解析组 (Bootstrap DNS)' },
                 { value: 'mainland', label: '大陆直连组 (mainland)' },
-                { value: 'gfw', label: 'GFW / 境外代理组 (gfw)' },
+                { value: 'gfw', label: '代理过滤组 (gfw)' },
                 { value: 'overseas', label: '海外备用组 (overseas)' },
               ]}
               value={targetGroup}
-              onChange={setTargetGroup}
+              onChange={(v) => setTargetGroup(v as UpstreamGroupKey)}
               className="w-full"
             />
           </div>
@@ -712,12 +676,13 @@ export const UpstreamsPage: React.FC = () => {
             </label>
             <CustomSelect
               options={[
+                { value: 'bootstrap', label: '引导解析组 (Bootstrap DNS)' },
                 { value: 'mainland', label: '大陆直连组 (mainland)' },
                 { value: 'gfw', label: '代理过滤组 (gfw)' },
                 { value: 'overseas', label: '海外备用组 (overseas)' },
               ]}
               value={editTargetGroup}
-              onChange={setEditTargetGroup}
+              onChange={(v) => setEditTargetGroup(v as UpstreamGroupKey)}
               className="w-full"
             />
           </div>

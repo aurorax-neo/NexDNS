@@ -14,6 +14,7 @@ use crate::pipeline::plugin::{DnsPlugin, PluginResult};
 pub enum UpstreamProtocol {
     Udp,
     Tcp,
+    Dot,
     Doh,
 }
 
@@ -93,6 +94,8 @@ impl UpstreamServer {
 
         let (protocol, clean_addr) = if let Some(rest) = uri.strip_prefix("https://") {
             (UpstreamProtocol::Doh, format!("https://{}", rest))
+        } else if let Some(rest) = uri.strip_prefix("tls://") {
+            (UpstreamProtocol::Dot, rest.to_string())
         } else if let Some(rest) = uri.strip_prefix("tcp://") {
             (UpstreamProtocol::Tcp, rest.to_string())
         } else if let Some(rest) = uri.strip_prefix("udp://") {
@@ -161,6 +164,60 @@ impl UpstreamServer {
                 timeout(timeout_duration, stream.read_exact(&mut resp_buf))
                     .await
                     .map_err(|_| "TCP read body timeout".to_string())?
+                    .map_err(|e| e.to_string())?;
+
+                Message::from_vec(&resp_buf).map_err(|e| e.to_string())
+            }
+            UpstreamProtocol::Dot => {
+                let socket_addr: SocketAddr = if self.addr.contains(':') {
+                    self.addr.parse().map_err(|e| format!("Invalid DoT addr: {}", e))?
+                } else {
+                    format!("{}:853", self.addr).parse().map_err(|e| format!("Invalid DoT addr: {}", e))?
+                };
+
+                let root_store = rustls::RootCertStore {
+                    roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+                };
+                let client_config = rustls::ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth();
+                let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+                let server_name = match &self.host_name {
+                    Some(h) => rustls_pki_types::ServerName::try_from(h.as_str())
+                        .map_err(|e| e.to_string())?
+                        .to_owned(),
+                    None => rustls_pki_types::ServerName::try_from(socket_addr.ip().to_string().as_str())
+                        .map_err(|e| e.to_string())?
+                        .to_owned(),
+                };
+
+                let tcp = timeout(timeout_duration, TcpStream::connect(socket_addr))
+                    .await
+                    .map_err(|_| "DoT TCP connect timeout".to_string())?
+                    .map_err(|e| e.to_string())?;
+
+                let mut tls = timeout(timeout_duration, connector.connect(server_name, tcp))
+                    .await
+                    .map_err(|_| "DoT TLS handshake timeout".to_string())?
+                    .map_err(|e| e.to_string())?;
+
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let len_bytes = (req_bytes.len() as u16).to_be_bytes();
+                tls.write_all(&len_bytes).await.map_err(|e| e.to_string())?;
+                tls.write_all(req_bytes).await.map_err(|e| e.to_string())?;
+
+                let mut resp_len_buf = [0u8; 2];
+                timeout(timeout_duration, tls.read_exact(&mut resp_len_buf))
+                    .await
+                    .map_err(|_| "DoT read len timeout".to_string())?
+                    .map_err(|e| e.to_string())?;
+                let resp_len = u16::from_be_bytes(resp_len_buf) as usize;
+
+                let mut resp_buf = vec![0u8; resp_len];
+                timeout(timeout_duration, tls.read_exact(&mut resp_buf))
+                    .await
+                    .map_err(|_| "DoT read body timeout".to_string())?
                     .map_err(|e| e.to_string())?;
 
                 Message::from_vec(&resp_buf).map_err(|e| e.to_string())

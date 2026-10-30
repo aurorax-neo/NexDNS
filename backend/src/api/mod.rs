@@ -838,13 +838,20 @@ struct UpstreamTestItem {
 }
 
 async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestItem>> {
-    let (mainland, gfw, overseas, proxy_cfg) = {
+    let (bootstrap, mainland, gfw, overseas, proxy_cfg) = {
         let cfg = state.config.read();
-        (cfg.upstreams.mainland.clone(), cfg.upstreams.gfw.clone(), cfg.upstreams.overseas.clone(), cfg.proxy.clone())
+        (
+            cfg.upstreams.bootstrap_dns.clone(),
+            cfg.upstreams.mainland.clone(),
+            cfg.upstreams.gfw.clone(),
+            cfg.upstreams.overseas.clone(),
+            cfg.proxy.clone(),
+        )
     };
     let mut results = Vec::new();
 
     let groups = [
+        ("bootstrap", &bootstrap),
         ("mainland", &mainland),
         ("gfw", &gfw),
         ("overseas", &overseas),
@@ -1046,9 +1053,15 @@ async fn add_upstream(
     State(state): State<AppState>,
     Json(payload): Json<UpstreamActionPayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    if payload.group == "bootstrap" {
+        if let Err(e) = validate_bootstrap_addr(&payload.addr) {
+            return Err((StatusCode::BAD_REQUEST, e));
+        }
+    }
     {
         let mut cfg = state.config.write();
         match payload.group.as_str() {
+            "bootstrap" => cfg.upstreams.bootstrap_dns.push(payload.addr),
             "mainland" => cfg.upstreams.mainland.push(payload.addr),
             "gfw" => cfg.upstreams.gfw.push(payload.addr),
             "overseas" => cfg.upstreams.overseas.push(payload.addr),
@@ -1083,7 +1096,7 @@ async fn test_single_upstream(
 
     if let Some(mut s) = server {
         let proxy_mode = s.proxy.clone().unwrap_or_else(|| {
-            if payload.group == "mainland" { "none".to_string() } else { "default".to_string() }
+            if payload.group == "mainland" || payload.group == "bootstrap" { "none".to_string() } else { "default".to_string() }
         });
         s.proxy = proxy_cfg.find_proxy_addr(&proxy_mode);
 
@@ -1133,15 +1146,22 @@ async fn edit_upstream(
     State(state): State<AppState>,
     Json(payload): Json<EditUpstreamPayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    if payload.new_group == "bootstrap" {
+        if let Err(e) = validate_bootstrap_addr(&payload.new_addr) {
+            return Err((StatusCode::BAD_REQUEST, e));
+        }
+    }
     {
         let mut cfg = state.config.write();
         match payload.old_group.as_str() {
+            "bootstrap" => cfg.upstreams.bootstrap_dns.retain(|s| s != &payload.old_addr),
             "mainland" => cfg.upstreams.mainland.retain(|s| s != &payload.old_addr),
             "gfw" => cfg.upstreams.gfw.retain(|s| s != &payload.old_addr),
             "overseas" => cfg.upstreams.overseas.retain(|s| s != &payload.old_addr),
             _ => return Err((StatusCode::BAD_REQUEST, "Unknown old group".to_string())),
         }
         match payload.new_group.as_str() {
+            "bootstrap" => cfg.upstreams.bootstrap_dns.push(payload.new_addr),
             "mainland" => cfg.upstreams.mainland.push(payload.new_addr),
             "gfw" => cfg.upstreams.gfw.push(payload.new_addr),
             "overseas" => cfg.upstreams.overseas.push(payload.new_addr),
@@ -1166,6 +1186,7 @@ async fn reorder_upstreams(
     {
         let mut cfg = state.config.write();
         match payload.group.as_str() {
+            "bootstrap" => cfg.upstreams.bootstrap_dns = payload.addrs,
             "mainland" => cfg.upstreams.mainland = payload.addrs,
             "gfw" => cfg.upstreams.gfw = payload.addrs,
             "overseas" => cfg.upstreams.overseas = payload.addrs,
@@ -1184,6 +1205,12 @@ async fn remove_upstream(
     {
         let mut cfg = state.config.write();
         match payload.group.as_str() {
+            "bootstrap" => {
+                if cfg.upstreams.bootstrap_dns.len() <= 1 {
+                    return Err((StatusCode::BAD_REQUEST, "引导 DNS 至少需保留一个节点".to_string()));
+                }
+                cfg.upstreams.bootstrap_dns.retain(|s| s != &payload.addr);
+            }
             "mainland" => cfg.upstreams.mainland.retain(|s| s != &payload.addr),
             "gfw" => cfg.upstreams.gfw.retain(|s| s != &payload.addr),
             "overseas" => cfg.upstreams.overseas.retain(|s| s != &payload.addr),

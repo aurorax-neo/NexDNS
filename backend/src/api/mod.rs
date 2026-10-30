@@ -536,7 +536,7 @@ async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
         (c.dns.port, c.web.port)
     };
     Json(StatusResponse {
-        version: "0.1.0",
+        version: "0.1.1",
         uptime_seconds: state.start_time.elapsed().as_secs(),
         dns_port: dns_p,
         web_port: web_p,

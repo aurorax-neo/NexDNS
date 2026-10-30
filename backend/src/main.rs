@@ -28,7 +28,7 @@ use pipeline::rule_files::RuleFileManager;
 use server::DnsServer;
 
 #[derive(Parser, Debug)]
-#[command(name = "nexdns", version = "0.1.0", about = "高性能融合型 DNS 原生服务")]
+#[command(name = "nexdns", version = "0.1.1", about = "高性能融合型 DNS 原生服务")]
 struct Cli {
     #[arg(short, long, default_value = "data/config.yaml")]
     config: PathBuf,

@@ -141,7 +141,7 @@ impl Database {
                     Some(item) = log_rx.recv() => {
                         let _ = ws_tx_clone.send(item.clone());
                         batch.push(item);
-                        if batch.len() >= 10 {
+                        if batch.len() >= 200 {
                             Self::flush_batch(&mut conn, &mut batch);
                         }
                     }
@@ -409,6 +409,24 @@ impl Database {
     pub fn delete_rewrite(&self, id: &str) -> rusqlite::Result<()> {
         let conn = self.get_conn()?;
         conn.execute("DELETE FROM dns_rewrites WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn get_system_setting(&self, key: &str) -> Option<String> {
+        let conn = self.get_conn().ok()?;
+        conn.query_row(
+            "SELECT value FROM system_settings WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        ).ok()
+    }
+
+    pub fn set_system_setting(&self, key: &str, val: &str) -> anyhow::Result<()> {
+        let conn = self.get_conn()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?1, ?2)",
+            params![key, val],
+        )?;
         Ok(())
     }
 }

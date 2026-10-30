@@ -19,6 +19,7 @@ import { Popconfirm } from '../components/ui/Popconfirm';
 import { Snackbar } from '../components/ui/Snackbar';
 import { Switch } from '../components/ui/Switch';
 import { CustomSelect } from '../components/ui/CustomSelect';
+import { DnsCacheStatusTable } from '../components/ui/DnsCacheStatusTable';
 
 export const SettingsPage: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -722,6 +723,10 @@ export const SettingsPage: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* 实时 DNS 缓存状态 (SmartDNS 统计面板) */}
+          <DnsCacheStatusTable />
+
             {/* 3. 分流与安全防御设置 (Routing Pipeline) */}
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">

@@ -30,6 +30,20 @@ export interface MetricsSnapshot {
   top_clients: [string, number][];
 }
 
+export interface CacheStatRow {
+  requests: number;
+  hits: number;
+  misses: number;
+  hit_rate: number;
+}
+
+export interface CacheStatsSnapshot {
+  yesterday: CacheStatRow;
+  today: CacheStatRow;
+  total: CacheStatRow;
+  updated_at: string;
+}
+
 export interface QueryLogItem {
   id: string;
   timestamp: string;
@@ -266,6 +280,17 @@ export const api = {
   async getMetrics(): Promise<MetricsSnapshot> {
     const res = await fetch('/api/v1/metrics');
     return res.json();
+  },
+
+  async getCacheStats(): Promise<CacheStatsSnapshot> {
+    const res = await fetch('/api/v1/metrics/cache-stats');
+    if (!res.ok) throw new Error('Failed to fetch cache stats');
+    return res.json();
+  },
+
+  async clearCacheStats(): Promise<void> {
+    const res = await fetch('/api/v1/metrics/cache-stats/clear', { method: 'POST' });
+    if (!res.ok) throw new Error('Failed to clear cache stats');
   },
 
   async getQueryLogs(params: {

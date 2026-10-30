@@ -260,6 +260,25 @@ async fn main() -> anyhow::Result<()> {
     // 10. Start DNS Server (Controlled by independent enabled switch)
     let dns_server_enabled = Arc::new(parking_lot::RwLock::new(config.dns.enabled));
 
+    // Load persisted cache stats if available
+    if let Some(stats_json) = db.get_system_setting("dns_cache_stats") {
+        metrics.cache_stats.load_from_json(&stats_json);
+    }
+
+    // 1-minute interval cache stats persistence task (更新频率: 1分钟)
+    let sync_metrics = metrics.clone();
+    let sync_db = db.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let snap = sync_metrics.cache_stats.snapshot();
+            if let Ok(json) = serde_json::to_string(&snap) {
+                let _ = sync_db.set_system_setting("dns_cache_stats", &json);
+            }
+        }
+    });
+
     let dns_server = DnsServer::new(
         config.dns.port,
         engine.clone(),

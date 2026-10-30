@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { api, MetricsSnapshot, StatusResponse } from '../lib/api';
 import { ActivityChart } from '../components/ui/ActivityChart';
+import { DnsCacheStatusTable } from '../components/ui/DnsCacheStatusTable';
 
 export interface OverviewPageProps {
   onNavigate: (tab: string) => void;
@@ -163,6 +164,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
           </div>
         </div>
       </div>
+
+      {/* DNS 缓存状态监控面板 (SmartDNS 原生级监控) */}
+      <DnsCacheStatusTable />
 
       {/* 24 小时动态折线图 */}
       <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">

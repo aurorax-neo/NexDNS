@@ -78,14 +78,15 @@ impl DnsServer {
                             if let Ok(req_msg) = Message::from_vec(&req_bytes) {
                                 let mut ctx = QueryContext::new(src.ip(), req_msg);
                                 engine.process(&mut ctx).await;
-                                metrics.record(&ctx);
-                                db.record_query(&ctx);
 
                                 if let Some(ref resp_msg) = ctx.response {
                                     if let Ok(resp_bytes) = resp_msg.to_vec() {
                                         let _ = socket.send_to(&resp_bytes, src).await;
                                     }
                                 }
+
+                                metrics.record(&ctx);
+                                db.record_query(&ctx);
                             }
                         });
                     }
@@ -127,8 +128,6 @@ impl DnsServer {
                             if let Ok(req_msg) = Message::from_vec(&req_buf) {
                                 let mut ctx = QueryContext::new(src.ip(), req_msg);
                                 engine.process(&mut ctx).await;
-                                metrics.record(&ctx);
-                                db.record_query(&ctx);
 
                                 if let Some(ref resp_msg) = ctx.response {
                                     if let Ok(resp_bytes) = resp_msg.to_vec() {
@@ -137,6 +136,9 @@ impl DnsServer {
                                         let _ = stream.write_all(&resp_bytes).await;
                                     }
                                 }
+
+                                metrics.record(&ctx);
+                                db.record_query(&ctx);
                             }
                         });
                     }

@@ -71,6 +71,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/auth/password", post(change_password_handler))
         .route("/api/v1/status", get(get_status))
         .route("/api/v1/metrics", get(get_metrics))
+        .route("/api/v1/metrics/cache-stats", get(get_cache_stats))
+        .route("/api/v1/metrics/cache-stats/clear", post(clear_cache_stats))
         .route("/api/v1/settings", get(get_settings).put(update_settings))
         .route("/api/v1/proxy/test", post(test_proxy))
         .route("/api/v1/querylog", get(get_query_logs))
@@ -443,6 +445,19 @@ async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
 
 async fn get_metrics(State(state): State<AppState>) -> Json<crate::metrics::MetricsSnapshot> {
     Json(state.metrics.snapshot())
+}
+
+async fn get_cache_stats(State(state): State<AppState>) -> Json<crate::metrics::CacheStatsSnapshot> {
+    Json(state.metrics.cache_stats.snapshot())
+}
+
+async fn clear_cache_stats(State(state): State<AppState>) -> StatusCode {
+    state.metrics.cache_stats.clear();
+    let snap = state.metrics.cache_stats.snapshot();
+    if let Ok(json) = serde_json::to_string(&snap) {
+        let _ = state.db.set_system_setting("dns_cache_stats", &json);
+    }
+    StatusCode::OK
 }
 
 #[derive(Deserialize)]

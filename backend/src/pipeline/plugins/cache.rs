@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use async_trait::async_trait;
@@ -14,7 +14,7 @@ pub struct CacheEntry {
     pub message: Message,
     pub created_at: Instant,
     pub ttl: Duration,
-    pub hits: u64,
+    pub hits: Arc<AtomicU64>,
 }
 
 pub struct CachePlugin {
@@ -39,10 +39,10 @@ impl CachePlugin {
     }
 
     pub fn get(&self, qname: &str, qtype: RecordType) -> Option<(Message, bool)> {
-        let mut w = self.entries.write();
+        let r = self.entries.read();
         let key = (qname.to_lowercase(), qtype);
-        if let Some(entry) = w.get_mut(&key) {
-            entry.hits += 1;
+        if let Some(entry) = r.get(&key) {
+            entry.hits.fetch_add(1, Ordering::Relaxed);
             let elapsed = entry.created_at.elapsed();
             if elapsed <= entry.ttl {
                 let mut resp = entry.message.clone();
@@ -94,7 +94,7 @@ impl CachePlugin {
                 message,
                 created_at: Instant::now(),
                 ttl: Duration::from_secs(effective_ttl as u64),
-                hits: 0,
+                hits: Arc::new(AtomicU64::new(0)),
             },
         );
     }

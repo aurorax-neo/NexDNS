@@ -45,7 +45,7 @@ export const Modal: React.FC<ModalProps> = ({
       <div className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity" />
 
       <div
-        className={`relative w-full max-w-[calc(100vw-24px)] ${widthClass} rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-2xl transition-all duration-200 z-10`}
+        className={`relative w-full ${widthClass} rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-2xl transition-all duration-200 z-10`}
       >
         <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 sm:py-4 border-b border-neutral-200 dark:border-neutral-800">
           <h3 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">{title}</h3>

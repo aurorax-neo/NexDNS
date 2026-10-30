@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::time::Instant;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::RecordType;
 use uuid::Uuid;
@@ -18,7 +18,7 @@ pub enum QueryStatus {
 #[derive(Debug, Clone)]
 pub struct QueryContext {
     pub id: Uuid,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<Local>,
     pub client_ip: IpAddr,
     pub client_name: Option<String>,
     pub qname: String,
@@ -51,7 +51,7 @@ impl QueryContext {
 
         Self {
             id: Uuid::new_v4(),
-            timestamp: Utc::now(),
+            timestamp: Local::now(),
             client_ip,
             client_name: None,
             qname,

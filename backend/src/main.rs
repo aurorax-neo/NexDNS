@@ -12,7 +12,7 @@ mod metrics;
 mod pipeline;
 mod server;
 
-use api::{create_router, AppState};
+use api::{create_doh_router, create_web_router, AppState};
 use config::AppConfig;
 use db::Database;
 use metrics::MetricsCollector;
@@ -77,7 +77,10 @@ async fn main() -> anyhow::Result<()> {
     let metrics = MetricsCollector::new();
 
     // 1. Plugins: QtypeDrop
-    let qtype_drop = Arc::new(QtypeDropPlugin::new(65, hickory_proto::op::ResponseCode::NXDomain));
+    // 必须返回 NoError (NODATA)，严禁返回 NXDomain！
+    // 根据 RFC 8020 与 RFC 9460，若对 Qtype 65 返回 NXDomain，浏览器与操作系统解析器会判定整个域名不存在，
+    // 导致客户端缓存 NXDomain 并直接阻断后续常规 A/AAAA 记录的正常解析，引发网站访问瘫痪。
+    let qtype_drop = Arc::new(QtypeDropPlugin::new(65, hickory_proto::op::ResponseCode::NoError));
 
     // 2. Plugins: Rewrite
     let rewrite = Arc::new(RewritePlugin::new());
@@ -109,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
                 url: "built-in".to_string(),
                 enabled: true,
                 rule_count: 11,
-                updated_at: chrono::Utc::now().to_rfc3339(),
+                updated_at: chrono::Local::now().to_rfc3339(),
             };
             let _ = db.save_rule(&seed_rec, default_ad_rules);
             adblock.load_rules_from_text(default_ad_rules);
@@ -118,15 +121,13 @@ async fn main() -> anyhow::Result<()> {
             if let Ok(conn) = db.get_conn() {
                 for r in existing_rules {
                     if r.enabled {
-                        if let Ok(content) = conn.query_row(
+                        if let Ok(Some(c)) = conn.query_row(
                             "SELECT content FROM adblock_rules WHERE id = ?1",
                             rusqlite::params![r.id],
                             |row| row.get::<_, Option<String>>(0),
                         ) {
-                            if let Some(c) = content {
-                                combined.push_str(&c);
-                                combined.push('\n');
-                            }
+                            combined.push_str(&c);
+                            combined.push('\n');
                         }
                     }
                 }
@@ -253,6 +254,8 @@ async fn main() -> anyhow::Result<()> {
         forward_gfw,
         forward_overseas,
         speed_check,
+        config.routing.qtype_65_reject,
+        config.routing.enabled,
         config.anti_pollution,
         config.dns.response_mode.clone(),
     ));
@@ -272,6 +275,7 @@ async fn main() -> anyhow::Result<()> {
     // 1-minute interval cache stats persistence task (更新频率: 1分钟)
     let sync_metrics = metrics.clone();
     let sync_db = db.clone();
+    let cleanup_db = db.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
@@ -298,6 +302,26 @@ async fn main() -> anyhow::Result<()> {
     dns_server.start().await?;
 
     let shared_config = Arc::new(parking_lot::RwLock::new((*config).clone()));
+
+    // 后台日志保留周期自动滚动清理任务 (以 min 为单位控制，默认 60 分钟)
+    let retention_shared_cfg = shared_config.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let (logging_enabled, retention_mins) = {
+                let c = retention_shared_cfg.read();
+                (c.logging.enabled, c.logging.retention_mins)
+            };
+            if logging_enabled && retention_mins > 0 {
+                if let Ok(deleted) = cleanup_db.cleanup_logs_older_than(retention_mins) {
+                    if deleted > 0 {
+                        tracing::info!("后台日志滚动清理: 已清理 {} 条超过 {} 分钟的历史查询日志", deleted, retention_mins);
+                    }
+                }
+            }
+        }
+    });
 
     // 11. Start Axum Web Server
     let app_state = AppState {
@@ -339,7 +363,7 @@ async fn main() -> anyhow::Result<()> {
                                         store.parse_rules(&text);
                                         let mut updated = r.clone();
                                         updated.rule_count = store.total_count;
-                                        updated.updated_at = chrono::Utc::now().to_rfc3339();
+                                        updated.updated_at = chrono::Local::now().to_rfc3339();
                                         let _ = auto_update_state.db.save_rule(&updated, &text);
                                     }
                                 }
@@ -357,17 +381,17 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let app = create_router(app_state)
+    let web_router = create_web_router(app_state.clone())
         .layer(CorsLayer::permissive());
 
-    // Optional independent DoH HTTP listener
+    // DoH 独立解析服务 (与 Web 控制台严格物理端口隔离，禁止共用端口)
     if config.dns.doh_enabled && config.dns.doh_port > 0 && config.dns.doh_port != config.web.port {
         let doh_port = config.dns.doh_port;
-        let doh_router = app.clone();
+        let doh_router = create_doh_router(app_state.clone());
         tokio::spawn(async move {
             let doh_addr: SocketAddr = format!("0.0.0.0:{}", doh_port).parse().unwrap();
             if let Ok(listener) = tokio::net::TcpListener::bind(doh_addr).await {
-                tracing::info!("DoH 独立服务监听在 http://{}/dns-query", doh_addr);
+                tracing::info!("DoH 独立解析服务监听在 http://{}/dns-query (与 Web 控制台严格端口隔离)", doh_addr);
                 let _ = axum::serve(listener, doh_router.into_make_service_with_connect_info::<SocketAddr>()).await;
             } else {
                 tracing::warn!("无法绑定 DoH 独立端口: {}", doh_port);
@@ -376,10 +400,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let web_addr: SocketAddr = format!("0.0.0.0:{}", config.web.port).parse()?;
-    tracing::info!("Web 控制台 API 服务运行在 http://{}", web_addr);
+    tracing::info!("Web 控制台 API 服务运行在 http://{} (仅响应控制台与管理接口)", web_addr);
 
     let listener = tokio::net::TcpListener::bind(web_addr).await?;
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+    axum::serve(listener, web_router.into_make_service_with_connect_info::<SocketAddr>()).await?;
 
     Ok(())
 }

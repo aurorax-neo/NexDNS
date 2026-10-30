@@ -13,6 +13,7 @@ export interface CustomSelectProps {
   onChange: (value: string) => void;
   placeholder?: string;
   className?: string;
+  direction?: 'up' | 'down' | 'auto';
 }
 
 export const CustomSelect: React.FC<CustomSelectProps> = ({
@@ -21,11 +22,27 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
   onChange,
   placeholder = '请选择',
   className = '',
+  direction = 'down',
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [computedDirection, setComputedDirection] = useState<'up' | 'down'>(direction === 'up' ? 'up' : 'down');
   const containerRef = useRef<HTMLDivElement>(null);
 
   const selectedOption = options.find((o) => o.value === value);
+
+  useEffect(() => {
+    if (direction === 'auto' && isOpen && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      if (spaceBelow < 180 && rect.top > 180) {
+        setComputedDirection('up');
+      } else {
+        setComputedDirection('down');
+      }
+    } else if (direction !== 'auto') {
+      setComputedDirection(direction);
+    }
+  }, [isOpen, direction]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -33,10 +50,19 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
         setIsOpen(false);
       }
     };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsOpen(false);
+      }
+    };
     if (isOpen) {
       document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleKeyDown);
     }
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, [isOpen]);
 
   return (
@@ -44,7 +70,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full min-h-[38px] min-w-[130px] px-3 py-1.5 flex items-center justify-between gap-2 text-xs rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700/80 text-neutral-800 dark:text-neutral-200 hover:border-neutral-400 dark:hover:border-neutral-600 focus:outline-none transition-colors shadow-xs"
+        className="w-full min-h-[40px] px-3 py-1.5 flex items-center justify-between gap-2 text-xs rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700/80 text-neutral-800 dark:text-neutral-200 hover:border-neutral-400 dark:hover:border-neutral-600 focus:outline-none transition-colors shadow-xs"
       >
         <div className="flex items-center gap-1.5 truncate">
           {selectedOption?.badge}
@@ -58,7 +84,11 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
       </button>
 
       {isOpen && (
-        <div className="absolute left-0 top-full mt-1.5 z-50 min-w-full max-h-[264px] overflow-y-auto rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 shadow-xl py-1 animate-in fade-in-50 zoom-in-95 duration-100">
+        <div
+          className={`absolute left-0 z-50 min-w-full max-h-[264px] overflow-y-auto rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 shadow-xl py-1 animate-in fade-in-50 zoom-in-95 duration-100 ${
+            computedDirection === 'up' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
+          }`}
+        >
           {options.map((opt) => {
             const isSelected = opt.value === value;
             return (

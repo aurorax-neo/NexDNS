@@ -1,8 +1,12 @@
-# NexDNS: 高性能融合型原生 DNS 服务
+# NexDNS: 高性能自研原生统一单内核 DNS 服务系统
 
-NexDNS 是一个自研原生统一单内核的下一代高性能 DNS 综合解决方案，集成了现代化 UI 工作台看板、多引擎规则安全拦截、毫秒级日志全链路诊断、高度灵活的流水线智能分流、GeoIP 防污染校验、多协议并发上游池与 TCP 端口建连测速优选于单一进程。
+NexDNS 是一款自研原生统一单内核架构的下一代高性能 DNS 综合解决方案。深度融合主流开源 DNS 工具的核心能力：
+- **AdGuard Home 风格**：全兼容 ABP 规则语法（`||domain^`、`@@||`）、Hosts 格式与正则的高并发安全拦截；
+- **MosDNS 风格**：高度灵活的流水线分流调度、GeoSite / CIDR 地址树匹配与双重防 DNS 污染探测；
+- **SmartDNS 风格**：`Serve-Expired` 零等待响应、热点静默预取与基于真实 TCP 80/443 建连时延的最优 IP 测速优选；
+- **现代化独立工作台**：采用 React 19 + Tailwind 构建的高级中性底色管理面板，单二进制内嵌交付。
 
-基于 **Rust 异步高性能单内核 + React 19 现代工作台** 构建，彻底告别传统多容器、多进程套娃（53 -> 4053 -> 5053 -> 6053）所带来的跨进程开销与网络跳数延迟。
+基于 **Rust 异步高性能单内核** 构建，彻底消除传统多容器、多进程套娃（53 -> 4053 -> 5053 -> 6053）带来的跨进程 IPC 开销、内存暴涨与网络跳数延迟。
 
 ---
 
@@ -27,9 +31,15 @@ NexDNS 是一个自研原生统一单内核的下一代高性能 DNS 综合解�
    - 支持 UDP 53、TCP 53 以及加密 DNS over HTTPS (DoH)。
    - **TCP 80/443 建连测速优选**：针对上游返回的多个 IP 记录并发发起非阻塞握手，将最低 RTT 的最快 IP 置顶返回客户端。
    - **智能缓存**：支持 `Serve-Expired`（过期记录秒返 + 后台静默刷新）与高频域名自动预取。
+   - **多协议上游池**：支持按 mainland、gfw、overseas 独立分组并发探测与 SOCKS5 代理无缝集成。
 
-5. **现代专业工作台 (React 19)**：
-   - 严格遵循 `/Users/wunk/code/前端设计规范总结` 规范。
+5. **服务端口物理隔离与原生诊断工具**：
+   - **端口物理隔离**：UDP/TCP 53（标准 DNS 解析）、TCP 8053（RFC 8484 独立 DoH 解析）、TCP 3000（Web 控制台与 API）。
+   - **原生 DNS 查询诊断工具 (Query Tool)**：直接在控制台页面输入任意域名，模拟真实内核流水线解析，直观展示决策链路、应答记录与耗时。
+   - **分钟级日志滚动保留**：支持按分钟（min）控制日志留存（默认 60 分钟），定时清退并强制执行 `PRAGMA wal_checkpoint(TRUNCATE)` 与 `VACUUM`，磁盘空间即时归还系统。
+
+6. **现代专业工作台 (React 19)**：
+   - 严格遵循现代工作台设计规范，适配深浅色模式（中性深色底色，发丝边框）。
    - 表面层级细分（1%~3% 明度差，深色模式字重微调防膨胀）。
    - 数字与时延防抖（`font-variant-numeric: tabular-nums`）。
    - 规范化浮层：Modal（400/520/720px 三档）、Drawer（深度诊断报文）、Popconfirm（行内操作）、AlertDialog（高危清空）、Snackbar（可撤销删除）。
@@ -55,16 +65,55 @@ cargo build --release
 ./target/release/nexdns
 ```
 
-### 2. 开发模式
+### 2. Docker Compose 一键部署 (推荐生产模式)
 
-```bash
-# 终端 1: 启动后端 (指定测试端口 15353 与 API 端口 3000)
-cd backend
-cargo run -- --dns-port 15353 --web-port 3000
+创建 `docker-compose.yml`：
 
-# 终端 2: 启动前端热重载 Vite 服务 (端口 5173，自动反代 /api 至 3000)
-cd frontend
-pnpm dev
+```yaml
+services:
+  nexdns:
+    image: ghcr.io/aurorax-neo/nexdns:latest
+    container_name: nexdns
+    restart: unless-stopped
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "3000:3000/tcp"
+      - "8053:8053/tcp"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
 ```
 
-打开浏览器访问 `http://localhost:5173` 或生产端口 `http://localhost:3000` 即可使用。
+启动服务：
+```bash
+docker compose up -d
+```
+
+打开浏览器访问 `http://<服务器IP>:3000` 即可使用。
+
+---
+
+## 核心 RESTful API 概览
+
+| 方法 | 路由 | 说明 |
+| :--- | :--- | :--- |
+| `POST` | `/api/v1/auth/login` | 管理员登录认证并获取 JWT Token |
+| `GET` | `/api/v1/status` | 运行状态、版本号、缓存条数及端口信息 |
+| `GET` | `/api/v1/metrics` | 吞吐量、QPS、命中率、拦截率与 24h 时序指标 |
+| `GET` | `/api/v1/querylog` | 分页查询日志，支持域名模糊搜、状态过滤 |
+| `POST` | `/api/v1/querylog/clear`| 清空日志流水并强制 VACUUM 释放磁盘物理空间 |
+| `POST` | `/api/v1/tools/query` | 原生全流程 DNS 诊断工具接口 (支持 A/AAAA/CNAME/MX/TXT) |
+| `GET` | `/api/v1/pipeline` | 获取流水线节点状态拓扑 |
+| `POST` | `/api/v1/pipeline/toggle` | 就地启用/停用指定节点（如动态分流调度引擎） |
+| `GET` | `/api/v1/settings` | 读取系统核心配置文件 |
+| `PUT` | `/api/v1/settings` | 热更新系统设置并自动保存与重载生效 |
+| `POST` | `/api/v1/cache/flush` | 清空当前运行时内存 DNS 缓存 |
+| `GET` | `/api/v1/sse/querylog` | 实时查询日志 Server-Sent Events (SSE) 流 |
+
+---
+
+## 许可证
+
+NexDNS 遵循 [MIT License](LICENSE) 开源协议。

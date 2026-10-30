@@ -123,6 +123,26 @@ export interface AuthResponse {
   expires_at: string;
 }
 
+export interface ToolAnswerItem {
+  record_type: string;
+  data: string;
+  ttl: number;
+}
+
+export interface ToolQueryResponse {
+  domain: string;
+  qtype: string;
+  status: string;
+  outcome: string;
+  rcode: string;
+  duration_ms: number;
+  answers_count: number;
+  routing_group?: string | null;
+  matched_rule?: string | null;
+  answers: ToolAnswerItem[];
+  summary: string;
+}
+
 export interface ProxyItem {
   id: string;
   name: string;
@@ -168,13 +188,15 @@ export interface AppSettings {
   };
   anti_pollution: boolean;
   routing: {
+    enabled?: boolean;
     anti_pollution: boolean;
     qtype_65_reject: boolean;
     fallback_timeout_ms: number;
   };
   logging: {
     enabled: boolean;
-    retention_days: number;
+    retention_mins: number;
+    retention_days?: number;
   };
   rules_update?: {
     auto_update: boolean;
@@ -189,15 +211,32 @@ export interface AppSettings {
   };
 }
 
+export async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const token = localStorage.getItem('nexdns_token');
+  const headers = new Headers(init?.headers || {});
+  if (!headers.has('Content-Type') && !(init?.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json');
+  }
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  const res = await fetch(input, { ...init, headers });
+  if (res.status === 401) {
+    const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (!urlStr.includes('/api/v1/auth/login') && !urlStr.includes('/api/v1/auth/me')) {
+      localStorage.removeItem('nexdns_token');
+      localStorage.removeItem('nexdns_user');
+      window.location.reload();
+    }
+  }
+  return res;
+}
+
 function getAuthHeaders(): HeadersInit {
   const token = localStorage.getItem('nexdns_token');
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  return headers;
+  const h: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) h['Authorization'] = `Bearer ${token}`;
+  return h;
 }
 
 export const api = {
@@ -226,7 +265,7 @@ export const api = {
   },
 
   async getMe(): Promise<{ username: string; authenticated: boolean }> {
-    const res = await fetch('/api/v1/auth/me', {
+    const res = await authFetch('/api/v1/auth/me', {
       headers: getAuthHeaders(),
     });
     return res.json();
@@ -234,7 +273,7 @@ export const api = {
 
   async changePassword(old_password: string, new_password: string): Promise<void> {
     const username = localStorage.getItem('nexdns_user') || 'admin';
-    const res = await fetch('/api/v1/auth/password', {
+    const res = await authFetch('/api/v1/auth/password', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({ username, old_password, new_password }),
@@ -246,14 +285,14 @@ export const api = {
   },
 
   async getSettings(): Promise<AppSettings> {
-    const res = await fetch('/api/v1/settings', {
+    const res = await authFetch('/api/v1/settings', {
       headers: getAuthHeaders(),
     });
     return res.json();
   },
 
   async updateSettings(settings: AppSettings): Promise<void> {
-    const res = await fetch('/api/v1/settings', {
+    const res = await authFetch('/api/v1/settings', {
       method: 'PUT',
       headers: getAuthHeaders(),
       body: JSON.stringify(settings),
@@ -265,7 +304,7 @@ export const api = {
   },
 
   async testProxy(socks5: string): Promise<{ ok: boolean; latency_ms?: number; error?: string }> {
-    const res = await fetch('/api/v1/proxy/test', {
+    const res = await authFetch('/api/v1/proxy/test', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({ socks5 }),
@@ -273,23 +312,23 @@ export const api = {
     return res.json();
   },
   async getStatus(): Promise<StatusResponse> {
-    const res = await fetch('/api/v1/status');
+    const res = await authFetch('/api/v1/status');
     return res.json();
   },
 
   async getMetrics(): Promise<MetricsSnapshot> {
-    const res = await fetch('/api/v1/metrics');
+    const res = await authFetch('/api/v1/metrics');
     return res.json();
   },
 
   async getCacheStats(): Promise<CacheStatsSnapshot> {
-    const res = await fetch('/api/v1/metrics/cache-stats');
+    const res = await authFetch('/api/v1/metrics/cache-stats');
     if (!res.ok) throw new Error('Failed to fetch cache stats');
     return res.json();
   },
 
   async clearCacheStats(): Promise<void> {
-    const res = await fetch('/api/v1/metrics/cache-stats/clear', { method: 'POST' });
+    const res = await authFetch('/api/v1/metrics/cache-stats/clear', { method: 'POST' });
     if (!res.ok) throw new Error('Failed to clear cache stats');
   },
 
@@ -306,26 +345,26 @@ export const api = {
     if (params.search) sp.set('search', params.search);
     if (params.status && params.status !== 'all') sp.set('status', params.status);
     if (params.client) sp.set('client', params.client);
-    const res = await fetch(`/api/v1/querylog?${sp.toString()}`);
+    const res = await authFetch(`/api/v1/querylog?${sp.toString()}`);
     return res.json();
   },
 
   async clearQueryLogs(): Promise<void> {
-    await fetch('/api/v1/querylog/clear', { method: 'POST' });
+    await authFetch('/api/v1/querylog/clear', { method: 'POST' });
   },
 
   async getPipeline(): Promise<PipelineNode[]> {
-    const res = await fetch('/api/v1/pipeline');
+    const res = await authFetch('/api/v1/pipeline');
     return res.json();
   },
 
   async getRules(): Promise<AdblockRuleRecord[]> {
-    const res = await fetch('/api/v1/rules');
+    const res = await authFetch('/api/v1/rules');
     return res.json();
   },
 
   async addRule(payload: { name: string; url: string; content?: string }): Promise<void> {
-    await fetch('/api/v1/rules', {
+    await authFetch('/api/v1/rules', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -333,15 +372,15 @@ export const api = {
   },
 
   async deleteRule(id: string): Promise<void> {
-    await fetch(`/api/v1/rules/${id}`, { method: 'DELETE' });
+    await authFetch(`/api/v1/rules/${id}`, { method: 'DELETE' });
   },
 
   async refreshRule(id: string): Promise<void> {
-    await fetch(`/api/v1/rules/${id}/refresh`, { method: 'POST' });
+    await authFetch(`/api/v1/rules/${id}/refresh`, { method: 'POST' });
   },
 
   async testRule(domain: string): Promise<{ domain: string; blocked: boolean; matched_rule?: string }> {
-    const res = await fetch('/api/v1/rules/test', {
+    const res = await authFetch('/api/v1/rules/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ domain }),
@@ -350,22 +389,22 @@ export const api = {
   },
 
   async getUpstreams(): Promise<UpstreamsResponse> {
-    const res = await fetch('/api/v1/upstreams');
+    const res = await authFetch('/api/v1/upstreams');
     return res.json();
   },
 
   async testUpstreams(): Promise<UpstreamTestItem[]> {
-    const res = await fetch('/api/v1/upstreams/test', { method: 'POST' });
+    const res = await authFetch('/api/v1/upstreams/test', { method: 'POST' });
     return res.json();
   },
 
   async getRewrites(): Promise<DnsRewriteRecord[]> {
-    const res = await fetch('/api/v1/rewrites');
+    const res = await authFetch('/api/v1/rewrites');
     return res.json();
   },
 
   async addRewrite(payload: { domain: string; record_type: string; value: string }): Promise<void> {
-    await fetch('/api/v1/rewrites', {
+    await authFetch('/api/v1/rewrites', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -373,26 +412,30 @@ export const api = {
   },
 
   async deleteRewrite(id: string): Promise<void> {
-    await fetch(`/api/v1/rewrites/${id}`, { method: 'DELETE' });
+    await authFetch(`/api/v1/rewrites/${id}`, { method: 'DELETE' });
   },
 
   async flushCache(): Promise<void> {
-    await fetch('/api/v1/cache/flush', { method: 'POST' });
+    await authFetch('/api/v1/cache/flush', { method: 'POST' });
   },
   async togglePipelineStage(id: string, enabled: boolean): Promise<void> {
-    await fetch('/api/v1/pipeline/toggle', {
+    const res = await authFetch('/api/v1/pipeline/toggle', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, enabled }),
     });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || '切换流水线节点状态失败');
+    }
   },
 
   async toggleRule(id: string): Promise<void> {
-    await fetch(`/api/v1/rules/${id}/toggle`, { method: 'POST' });
+    await authFetch(`/api/v1/rules/${id}/toggle`, { method: 'POST' });
   },
 
   async quickAddRule(domain: string, action: 'block' | 'whitelist'): Promise<void> {
-    await fetch('/api/v1/rules/quick-add', {
+    await authFetch('/api/v1/rules/quick-add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ domain, action }),
@@ -400,12 +443,12 @@ export const api = {
   },
 
   async getRoutingRules(): Promise<RuleFileInfo[]> {
-    const res = await fetch('/api/v1/routing/rules');
+    const res = await authFetch('/api/v1/routing/rules');
     return res.json();
   },
 
   async updateRoutingRules(): Promise<[string, { Ok?: number; Err?: string }][]> {
-    const res = await fetch('/api/v1/routing/rules/update', { method: 'POST' });
+    const res = await authFetch('/api/v1/routing/rules/update', { method: 'POST' });
     return res.json();
   },
 
@@ -416,7 +459,7 @@ export const api = {
     url?: string;
     content?: string;
   }): Promise<void> {
-    await fetch('/api/v1/routing/rules/add', {
+    await authFetch('/api/v1/routing/rules/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -424,19 +467,19 @@ export const api = {
   },
 
   async deleteRoutingRule(id: string): Promise<void> {
-    await fetch(`/api/v1/routing/rules/${id}`, { method: 'DELETE' });
+    await authFetch(`/api/v1/routing/rules/${id}`, { method: 'DELETE' });
   },
 
   async toggleRoutingRule(id: string): Promise<void> {
-    await fetch(`/api/v1/routing/rules/${id}/toggle`, { method: 'POST' });
+    await authFetch(`/api/v1/routing/rules/${id}/toggle`, { method: 'POST' });
   },
 
   async refreshRoutingRule(id: string): Promise<void> {
-    await fetch(`/api/v1/routing/rules/${id}/refresh`, { method: 'POST' });
+    await authFetch(`/api/v1/routing/rules/${id}/refresh`, { method: 'POST' });
   },
 
   async editRoutingRuleInfo(id: string, payload: { name: string; group_type: string; url: string }): Promise<void> {
-    const res = await fetch(`/api/v1/routing/rules/${id}/edit`, {
+    const res = await authFetch(`/api/v1/routing/rules/${id}/edit`, {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify(payload),
@@ -447,7 +490,7 @@ export const api = {
   },
 
   async addUpstream(group: string, addr: string): Promise<void> {
-    await fetch('/api/v1/upstreams/add', {
+    await authFetch('/api/v1/upstreams/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ group, addr }),
@@ -455,7 +498,7 @@ export const api = {
   },
 
   async editUpstream(payload: { old_group: string; old_addr: string; new_group: string; new_addr: string }): Promise<void> {
-    const res = await fetch('/api/v1/upstreams/edit', {
+    const res = await authFetch('/api/v1/upstreams/edit', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify(payload),
@@ -466,7 +509,7 @@ export const api = {
   },
 
   async reorderUpstreams(group: string, addrs: string[]): Promise<void> {
-    const res = await fetch('/api/v1/upstreams/reorder', {
+    const res = await authFetch('/api/v1/upstreams/reorder', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({ group, addrs }),
@@ -477,7 +520,7 @@ export const api = {
   },
 
   async testSingleUpstream(group: string, addr: string): Promise<{ ok: boolean; latency_ms?: number; error?: string }> {
-    const res = await fetch('/api/v1/upstreams/test-single', {
+    const res = await authFetch('/api/v1/upstreams/test-single', {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({ group, addr }),
@@ -486,7 +529,7 @@ export const api = {
   },
 
   async removeUpstream(group: string, addr: string): Promise<void> {
-    await fetch('/api/v1/upstreams/remove', {
+    await authFetch('/api/v1/upstreams/remove', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ group, addr }),
@@ -494,7 +537,7 @@ export const api = {
   },
 
   async updateBootstrapDns(dns_list: string[]): Promise<void> {
-    const res = await fetch('/api/v1/upstreams/bootstrap', {
+    const res = await authFetch('/api/v1/upstreams/bootstrap', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ dns_list }),
@@ -505,12 +548,12 @@ export const api = {
     }
   },
   async getRuleContent(id: string): Promise<{ id: string; content: string }> {
-    const res = await fetch(`/api/v1/rules/${id}/content`);
+    const res = await authFetch(`/api/v1/rules/${id}/content`);
     return res.json();
   },
 
   async updateRuleContent(id: string, content: string): Promise<void> {
-    await fetch(`/api/v1/rules/${id}/content`, {
+    await authFetch(`/api/v1/rules/${id}/content`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
@@ -518,12 +561,12 @@ export const api = {
   },
 
   async getRoutingRuleContent(fileName: string): Promise<{ file_name: string; content: string }> {
-    const res = await fetch(`/api/v1/routing/rules/${fileName}/content`);
+    const res = await authFetch(`/api/v1/routing/rules/${fileName}/content`);
     return res.json();
   },
 
   async updateRoutingRuleContent(fileName: string, content: string): Promise<void> {
-    await fetch(`/api/v1/routing/rules/${fileName}/content`, {
+    await authFetch(`/api/v1/routing/rules/${fileName}/content`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
@@ -531,12 +574,12 @@ export const api = {
   },
 
   async getRawConfig(): Promise<{ content: string }> {
-    const res = await fetch('/api/v1/config/raw');
+    const res = await authFetch('/api/v1/config/raw');
     return res.json();
   },
 
   async updateRawConfig(content: string): Promise<void> {
-    const res = await fetch('/api/v1/config/raw', {
+    const res = await authFetch('/api/v1/config/raw', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
@@ -545,5 +588,18 @@ export const api = {
       const err = await res.text();
       throw new Error(err);
     }
+  },
+
+  async toolQuery(domain: string, qtype: string = 'A'): Promise<ToolQueryResponse> {
+    const res = await authFetch('/api/v1/tools/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain, qtype }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || 'DNS 查询测试失败');
+    }
+    return res.json();
   },
 };

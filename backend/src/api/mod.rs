@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use chrono::Utc;
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use rust_embed::RustEmbed;
@@ -62,9 +62,8 @@ impl AppState {
     }
 }
 
-pub fn create_router(state: AppState) -> Router {
+pub fn create_web_router(state: AppState) -> Router {
     Router::new()
-        .route("/dns-query", get(doh_handler).post(doh_handler))
         .route("/api/v1/auth/login", post(login_handler))
         .route("/api/v1/auth/logout", post(logout_handler))
         .route("/api/v1/auth/me", get(auth_me_handler))
@@ -103,13 +102,90 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/routing/rules/{id}/toggle", post(toggle_routing_rule))
         .route("/api/v1/routing/rules/{id}/refresh", post(refresh_routing_rule))
         .route("/api/v1/routing/rules/{file_name}/content", get(get_routing_rule_content).put(update_routing_rule_content))
+        .route("/api/v1/tools/query", post(tool_query_dns))
         .route("/api/v1/config/raw", get(get_raw_config).put(update_raw_config))
         .route("/api/v1/rewrites", get(get_rewrites).post(add_rewrite))
         .route("/api/v1/rewrites/{id}", delete(delete_rewrite))
         .route("/api/v1/cache/flush", post(flush_cache))
         .route("/api/v1/sse/querylog", get(sse_querylog_handler))
         .fallback(static_handler)
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state)
+}
+
+pub fn create_doh_router(state: AppState) -> Router {
+    let doh_path = {
+        let c = state.config.read();
+        let p = c.dns.doh_path.trim().to_string();
+        if p.is_empty() {
+            "/dns-query".to_string()
+        } else if !p.starts_with('/') {
+            format!("/{}", p)
+        } else {
+            p
+        }
+    };
+
+    let mut router = Router::new()
+        .route("/dns-query", get(doh_handler).post(doh_handler));
+
+    if doh_path != "/dns-query" {
+        router = router.route(&doh_path, get(doh_handler).post(doh_handler));
+    }
+
+    router
+        .layer(tower_http::cors::CorsLayer::permissive())
+        .with_state(state)
+}
+
+#[allow(dead_code)]
+pub fn create_router(state: AppState) -> Router {
+    create_web_router(state)
+}
+async fn auth_middleware(
+    State(state): State<AppState>,
+    req: Request,
+    next: axum::middleware::Next,
+) -> Result<Response, (StatusCode, &'static str)> {
+    let path = req.uri().path();
+    // 允许登录与检查登录状态、前端静态资源免认证
+    // 注意: /dns-query 已完全移至独立 DoH 端口，Web 控制台端口不再响应 DoH 请求
+    if path == "/api/v1/auth/login"
+        || path == "/api/v1/auth/me"
+        || !path.starts_with("/api/v1/")
+    {
+        return Ok(next.run(req).await);
+    }
+
+    // 从请求头 Authorization: Bearer <token> 或 Query 参数 ?token=<token> 中提取凭据
+    let token = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(|s| s.to_string())
+        .or_else(|| {
+            req.uri().query().and_then(|q| {
+                for pair in q.split('&') {
+                    if let Some((k, v)) = pair.split_once('=') {
+                        if k == "token" {
+                            return Some(v.to_string());
+                        }
+                    }
+                }
+                None
+            })
+        });
+
+    if let Some(t) = token {
+        if let Ok(conn) = state.db.get_conn() {
+            if AuthManager::validate_token(&conn, &t).is_some() {
+                return Ok(next.run(req).await);
+            }
+        }
+    }
+
+    Err((StatusCode::UNAUTHORIZED, "Unauthorized"))
 }
 
 #[derive(Deserialize)]
@@ -218,8 +294,21 @@ async fn update_settings(
         }
     }
 
+    // 动态分流调度引擎开启强校验: 必须同时配置了 GFW / 境外组 与 海外备用组
+    if payload.routing.enabled {
+        let gfw_has_server = payload.upstreams.gfw.iter().any(|s| !s.trim().is_empty());
+        let overseas_has_server = payload.upstreams.overseas.iter().any(|s| !s.trim().is_empty());
+        if !gfw_has_server || !overseas_has_server {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "无法开启动态分流调度引擎：GFW / 境外组 (gfw) 与海外备用组 (overseas) 必须各自至少配置一个上游 DNS 服务器".to_string(),
+            ));
+        }
+    }
+
     // Hot apply to engine
     state.engine.anti_pollution_enabled.store(payload.anti_pollution, Ordering::SeqCst);
+    state.engine.router_enabled.store(payload.routing.enabled, Ordering::SeqCst);
     state.engine.qtype_65_enabled.store(payload.routing.qtype_65_reject, Ordering::SeqCst);
     state.engine.speed_check_enabled.store(payload.speed_check.enabled, Ordering::SeqCst);
     state.engine.cache.min_ttl.store(payload.cache.min_ttl, Ordering::SeqCst);
@@ -241,21 +330,27 @@ pub async fn doh_handler(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
-    let doh_enabled = state.config.read().dns.doh_enabled;
-
-    if !doh_enabled {
+    let dns_enabled = *state.dns_server_enabled.read();
+    if !dns_enabled {
         return (
             StatusCode::FORBIDDEN,
             [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            "DoH service is disabled",
+            "DNS service is disabled",
         ).into_response();
     }
 
     let req_bytes = if !body.is_empty() {
         body.to_vec()
     } else if let Some(dns_b64) = params.get("dns") {
-        use data_encoding::BASE64URL_NOPAD;
-        match BASE64URL_NOPAD.decode(dns_b64.as_bytes()) {
+        let clean_b64 = dns_b64.trim();
+        let unpadded = clean_b64.trim_end_matches('=');
+        let decoded = data_encoding::BASE64URL_NOPAD
+            .decode(unpadded.as_bytes())
+            .or_else(|_| data_encoding::BASE64URL.decode(clean_b64.as_bytes()))
+            .or_else(|_| data_encoding::BASE64.decode(clean_b64.as_bytes()))
+            .or_else(|_| data_encoding::BASE64_NOPAD.decode(unpadded.as_bytes()));
+
+        match decoded {
             Ok(b) => b,
             Err(_) => {
                 return (
@@ -291,8 +386,10 @@ pub async fn doh_handler(
     let mut ctx = crate::pipeline::context::QueryContext::new(client_ip, msg);
     state.engine.process(&mut ctx).await;
 
-    state.db.record_query(&ctx);
     state.metrics.record(&ctx);
+    if *state.logging_server_enabled.read() {
+        state.db.record_query(&ctx);
+    }
 
     if let Some(resp) = ctx.response {
         if let Ok(bytes) = resp.to_vec() {
@@ -396,6 +493,12 @@ async fn test_proxy(
 
 async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/').to_string();
+
+    // Web 控制台端口严格隔离: 对 DoH 路径直接返回 404，不允许 SPA fallback 接管
+    if path == "dns-query" || path.starts_with("dns-query/") {
+        return (StatusCode::NOT_FOUND, "404 Not Found").into_response();
+    }
+
     if path.is_empty() {
         path = "index.html".to_string();
     }
@@ -608,7 +711,7 @@ async fn get_pipeline(State(state): State<AppState>) -> Json<Vec<PipelineNode>> 
             name: "动态分流调度引擎",
             stage: "routing",
             description: "按 Direct 直连、Proxy 代理及 GeoIP 归属进行原生动态分流与防污染调度",
-            enabled: true,
+            enabled: state.engine.router_enabled.load(Ordering::Relaxed),
         },
         PipelineNode {
             id: "anti_pollution",
@@ -636,11 +739,23 @@ struct TogglePipelinePayload {
 async fn toggle_pipeline_stage(
     State(state): State<AppState>,
     Json(payload): Json<TogglePipelinePayload>,
-) -> StatusCode {
+) -> Result<StatusCode, (StatusCode, String)> {
+    if payload.id == "router" && payload.enabled {
+        let cfg = state.config.read();
+        let gfw_has_server = cfg.upstreams.gfw.iter().any(|s| !s.trim().is_empty());
+        let overseas_has_server = cfg.upstreams.overseas.iter().any(|s| !s.trim().is_empty());
+        if !gfw_has_server || !overseas_has_server {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "无法开启动态分流调度引擎：GFW / 境外组 (gfw) 与海外备用组 (overseas) 必须各自至少配置一个上游 DNS 服务器".to_string(),
+            ));
+        }
+    }
+
     if state.engine.toggle_stage(&payload.id, payload.enabled) {
-        StatusCode::OK
+        Ok(StatusCode::OK)
     } else {
-        StatusCode::BAD_REQUEST
+        Err((StatusCode::BAD_REQUEST, "无法切换该节点状态".to_string()))
     }
 }
 
@@ -699,7 +814,7 @@ async fn add_rule(
         url: payload.url,
         enabled: true,
         rule_count: count,
-        updated_at: Utc::now().to_rfc3339(),
+        updated_at: Local::now().to_rfc3339(),
     };
 
     state
@@ -759,7 +874,7 @@ async fn refresh_rule(
         let mut store = crate::pipeline::plugins::adblock::RuleStore::default();
         store.parse_rules(&text);
         r.rule_count = store.total_count;
-        r.updated_at = Utc::now().to_rfc3339();
+        r.updated_at = Local::now().to_rfc3339();
 
         state
             .db
@@ -780,15 +895,13 @@ pub async fn reload_all_rules(state: &AppState) {
         };
         for r in rules {
             if r.enabled {
-                if let Ok(content) = conn.query_row(
+                if let Ok(Some(c)) = conn.query_row(
                     "SELECT content FROM adblock_rules WHERE id = ?1",
                     rusqlite::params![r.id],
                     |row| row.get::<_, Option<String>>(0),
                 ) {
-                    if let Some(c) = content {
-                        combined.push_str(&c);
-                        combined.push('\n');
-                    }
+                    combined.push_str(&c);
+                    combined.push('\n');
                 }
             }
         }
@@ -1049,14 +1162,14 @@ async fn quick_add_rule(
         let _ = conn.execute(
             "INSERT INTO adblock_rules (id, name, url, enabled, rule_count, updated_at, content)
              VALUES (?1, '自定义规则', 'custom-local', 1, 0, ?2, '')",
-            rusqlite::params![new_id, Utc::now().to_rfc3339()],
+            rusqlite::params![new_id, Local::now().to_rfc3339()],
         );
         new_id
     });
 
     conn.execute(
         "UPDATE adblock_rules SET content = coalesce(content, '') || ?1, updated_at = ?2, rule_count = rule_count + 1 WHERE id = ?3",
-        rusqlite::params![line, Utc::now().to_rfc3339(), rule_id],
+        rusqlite::params![line, Local::now().to_rfc3339(), rule_id],
     ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     reload_all_rules(&state).await;
@@ -1394,7 +1507,7 @@ async fn update_rule_content(
     let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     conn.execute(
         "UPDATE adblock_rules SET content = ?1, rule_count = ?2, updated_at = ?3 WHERE id = ?4",
-        rusqlite::params![payload.content, count as i64, Utc::now().to_rfc3339(), id],
+        rusqlite::params![payload.content, count as i64, Local::now().to_rfc3339(), id],
     ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     reload_all_rules(&state).await;
@@ -1544,4 +1657,148 @@ async fn refresh_routing_rule(
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("拉取在线规则失败: {}", e)))?;
 
     Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize)]
+struct ToolQueryPayload {
+    domain: String,
+    #[serde(default = "default_tool_qtype")]
+    qtype: String,
+}
+
+fn default_tool_qtype() -> String {
+    "A".to_string()
+}
+
+#[derive(Serialize)]
+struct ToolAnswerItem {
+    record_type: String,
+    data: String,
+    ttl: u32,
+}
+
+#[derive(Serialize)]
+struct ToolQueryResponse {
+    domain: String,
+    qtype: String,
+    status: String,
+    outcome: String,
+    rcode: String,
+    duration_ms: f64,
+    answers_count: usize,
+    routing_group: Option<String>,
+    matched_rule: Option<String>,
+    answers: Vec<ToolAnswerItem>,
+    summary: String,
+}
+
+async fn tool_query_dns(
+    State(state): State<AppState>,
+    Json(payload): Json<ToolQueryPayload>,
+) -> Result<Json<ToolQueryResponse>, (StatusCode, String)> {
+    use hickory_proto::rr::RecordType;
+    use std::str::FromStr;
+
+    let domain_clean = payload.domain.trim().trim_end_matches('.').to_lowercase();
+    if domain_clean.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "域名不能为空".to_string()));
+    }
+
+    let qtype = match payload.qtype.trim().to_uppercase().as_str() {
+        "A" => RecordType::A,
+        "AAAA" => RecordType::AAAA,
+        "CNAME" => RecordType::CNAME,
+        "MX" => RecordType::MX,
+        "TXT" => RecordType::TXT,
+        "NS" => RecordType::NS,
+        "PTR" => RecordType::PTR,
+        "SOA" => RecordType::SOA,
+        "SRV" => RecordType::SRV,
+        _ => RecordType::A,
+    };
+
+    let mut req_msg = hickory_proto::op::Message::query();
+    let fqdn = format!("{}.", domain_clean);
+    let name = hickory_proto::rr::Name::from_str(&fqdn)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("非法域名格式: {}", e)))?;
+
+    req_msg.add_query(hickory_proto::op::Query::query(name, qtype));
+
+    let client_ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
+    let mut ctx = crate::pipeline::context::QueryContext::new(client_ip, req_msg);
+
+    state.engine.process(&mut ctx).await;
+    tracing::info!("Tool Query tags: {:?}, timings: {:?}", ctx.tags, ctx.timings);
+
+    let mut answers = Vec::new();
+    let mut answers_count = 0;
+
+    if let Some(ref resp) = ctx.response {
+        answers_count = resp.answers.len();
+        for ans in &resp.answers {
+            let record_str = match &ans.data {
+                hickory_proto::rr::RData::A(a) => a.0.to_string(),
+                hickory_proto::rr::RData::AAAA(aaaa) => aaaa.0.to_string(),
+                hickory_proto::rr::RData::CNAME(cname) => cname.to_utf8().trim_end_matches('.').to_string(),
+                hickory_proto::rr::RData::MX(mx) => format!("{} (pref: {})", mx.exchange.to_utf8().trim_end_matches('.'), mx.preference),
+                hickory_proto::rr::RData::TXT(txt) => txt.txt_data.iter().map(|b| String::from_utf8_lossy(b).to_string()).collect::<Vec<_>>().join(" "),
+                hickory_proto::rr::RData::PTR(ptr) => ptr.to_utf8().trim_end_matches('.').to_string(),
+                hickory_proto::rr::RData::NS(ns) => ns.to_utf8().trim_end_matches('.').to_string(),
+                _ => format!("{:?}", ans.data),
+            };
+            answers.push(ToolAnswerItem {
+                record_type: ans.record_type().to_string(),
+                data: record_str,
+                ttl: ans.ttl,
+            });
+        }
+    }
+
+    let status_str = match ctx.status {
+        crate::pipeline::context::QueryStatus::Allowed => "allowed",
+        crate::pipeline::context::QueryStatus::Blocked => "blocked",
+        crate::pipeline::context::QueryStatus::Cached => "cached",
+        crate::pipeline::context::QueryStatus::Rewritten => "rewritten",
+        crate::pipeline::context::QueryStatus::Error => "error",
+    };
+
+    let outcome = match ctx.status {
+        crate::pipeline::context::QueryStatus::Blocked => "BLOCKED".to_string(),
+        crate::pipeline::context::QueryStatus::Cached => "CACHED".to_string(),
+        crate::pipeline::context::QueryStatus::Rewritten => "REWRITTEN".to_string(),
+        crate::pipeline::context::QueryStatus::Allowed => {
+            if ctx.rcode == hickory_proto::op::ResponseCode::NoError {
+                "RESOLVED".to_string()
+            } else {
+                "ERROR".to_string()
+            }
+        }
+        crate::pipeline::context::QueryStatus::Error => "ERROR".to_string(),
+    };
+
+    let summary = if outcome == "BLOCKED" {
+        format!("BLOCKED ({})", ctx.matched_rule.as_deref().unwrap_or("rule_matched"))
+    } else if outcome == "CACHED" {
+        "RESOLVED (cache: hit_memory)".to_string()
+    } else if outcome == "REWRITTEN" {
+        "RESOLVED (local: rewrite_hosts)".to_string()
+    } else if let Some(ref g) = ctx.routing_group {
+        format!("RESOLVED (upstream: {})", g)
+    } else {
+        format!("{} ({})", outcome, ctx.rcode)
+    };
+
+    Ok(Json(ToolQueryResponse {
+        domain: domain_clean,
+        qtype: qtype.to_string(),
+        status: status_str.to_string(),
+        outcome,
+        rcode: ctx.rcode.to_string(),
+        duration_ms: (ctx.duration_ms * 100.0).round() / 100.0,
+        answers_count,
+        routing_group: ctx.routing_group,
+        matched_rule: ctx.matched_rule,
+        answers,
+        summary,
+    }))
 }

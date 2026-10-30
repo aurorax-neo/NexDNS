@@ -557,7 +557,7 @@ export const UpstreamsPage: React.FC = () => {
           '大陆直连组 (mainland)',
           'mainland',
           <Zap className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />,
-          '直连解析，支持阿里 DNS、DNSPub 等节点'
+          '直连解析'
         )}
         {renderGroup(
           'GFW / 境外组 (gfw)',
@@ -569,7 +569,7 @@ export const UpstreamsPage: React.FC = () => {
           '海外备用组 (overseas)',
           'overseas',
           <Globe className="w-4 h-4 text-emerald-600 dark:text-emerald-400 align-icon" />,
-          'Cloudflare 全球冗余应急解析'
+          '全球冗余应急解析'
         )}
       </div>
 

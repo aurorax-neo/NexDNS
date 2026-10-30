@@ -22,6 +22,8 @@ import { Drawer } from '../components/ui/Drawer';
 import { AlertDialog } from '../components/ui/AlertDialog';
 import { CustomSelect } from '../components/ui/CustomSelect';
 import { Snackbar } from '../components/ui/Snackbar';
+import { formatTime, formatDateTime } from '../lib/time';
+import { QueryTool } from '../components/ui/QueryTool';
 
 export interface QueryLogPageProps {
   onNavigate?: (tab: string) => void;
@@ -43,6 +45,8 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   const [total, setTotal] = useState(0);
   const [actionSnackbar, setActionSnackbar] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const bufferRef = useRef<QueryLogItem[]>([]);
+  const batchTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     api.getSettings().then((s) => {
@@ -89,18 +93,51 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
       }
+      if (batchTimeoutRef.current) {
+        window.clearTimeout(batchTimeoutRef.current);
+        batchTimeoutRef.current = null;
+      }
+      bufferRef.current = [];
       return;
     }
 
-    const es = new EventSource('/api/v1/sse/querylog');
+    const token = localStorage.getItem('nexdns_token');
+    const sseUrl = token
+      ? `/api/v1/sse/querylog?token=${encodeURIComponent(token)}`
+      : '/api/v1/sse/querylog';
+    const es = new EventSource(sseUrl);
     eventSourceRef.current = es;
+
+    const flushBuffer = () => {
+      const buffered = bufferRef.current;
+      if (buffered.length === 0) return;
+      bufferRef.current = [];
+
+      const count = buffered.length;
+      setTotal((prev) => prev + count);
+      if (page === 1) {
+        setLogs((prev) => {
+          // 保持时间倒序: 最新到来的日志置于顶部
+          const next = [...buffered.slice().reverse(), ...prev];
+          return next.slice(0, pageSize);
+        });
+      }
+    };
 
     es.onmessage = (event) => {
       try {
         const item: QueryLogItem = JSON.parse(event.data);
-        if (page === 1 && !search && statusFilter === 'all') {
-          setLogs((prev) => [item, ...prev.slice(0, pageSize - 1)]);
-          setTotal((prev) => prev + 1);
+        const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
+        const searchTrimmed = search.toLowerCase().trim();
+        const matchesSearch = !searchTrimmed || item.qname.toLowerCase().includes(searchTrimmed) || item.client_ip.includes(searchTrimmed);
+        if (matchesStatus && matchesSearch) {
+          bufferRef.current.push(item);
+          if (!batchTimeoutRef.current) {
+            batchTimeoutRef.current = window.setTimeout(() => {
+              batchTimeoutRef.current = null;
+              flushBuffer();
+            }, 80); // 80ms 优雅缓冲合并渲染，杜绝高频报文引发的频繁重绘与闪烁
+          }
         }
       } catch (e) {
         console.error('Failed to parse SSE log', e);
@@ -110,6 +147,11 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
     return () => {
       es.close();
       eventSourceRef.current = null;
+      if (batchTimeoutRef.current) {
+        window.clearTimeout(batchTimeoutRef.current);
+        batchTimeoutRef.current = null;
+      }
+      bufferRef.current = [];
     };
   }, [isLive, loggingEnabled, page, pageSize, search, statusFilter]);
 
@@ -208,11 +250,14 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
 
   return (
     <div className="space-y-4 animate-in fade-in-50 duration-200">
+      {/* DNS 诊断查询工具 (常驻显示) */}
+      <QueryTool />
+
       {/* 工具筛选栏 */}
-      <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-        <div className="flex flex-wrap items-center gap-3 flex-1">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 sm:p-4 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-3 flex-1 w-full">
           {/* 搜索框 */}
-          <div className="relative min-w-[220px] max-w-sm flex-1">
+          <div className="relative flex-1 w-full sm:max-w-sm">
             <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2 align-icon" />
             <input
               type="text"
@@ -227,15 +272,17 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
           </div>
 
           {/* 状态过滤 CustomSelect (100% 拒绝原生 Select) */}
-          <CustomSelect
-            options={statusOptions}
-            value={statusFilter}
-            onChange={handleFilterChange}
-          />
+          <div className="w-full sm:w-auto">
+            <CustomSelect
+              options={statusOptions}
+              value={statusFilter}
+              onChange={handleFilterChange}
+            />
+          </div>
         </div>
 
-        {/* 右侧动作按钮集合 */}
-        <div className="flex items-center gap-2">
+        {/* 右侧动作按钮集合: 移动端采用等分网格，桌面端行内排列 */}
+        <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 w-full sm:w-auto pt-2.5 sm:pt-0 border-t sm:border-t-0 border-neutral-100 dark:border-neutral-800/60">
           <button
             type="button"
             onClick={async () => {
@@ -244,7 +291,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
               setTimeout(() => setIsRefreshing(false), 500);
             }}
             disabled={isRefreshing}
-            className="inline-flex items-center gap-1.5 min-h-[38px] px-3 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors active:scale-95 disabled:opacity-60"
+            className="inline-flex items-center justify-center gap-1.5 min-h-[38px] px-3 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors active:scale-95 disabled:opacity-60"
             title="手动刷新日志"
           >
             <RefreshCw className={`w-3.5 h-3.5 align-icon ${isRefreshing ? 'animate-spin text-cyan-600 dark:text-cyan-400' : ''}`} />
@@ -254,7 +301,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
           <button
             type="button"
             onClick={() => setIsLive(!isLive)}
-            className={`inline-flex items-center gap-1.5 min-h-[38px] px-3 text-xs rounded-md border transition-colors ${
+            className={`inline-flex items-center justify-center gap-1.5 min-h-[38px] px-3 text-xs rounded-md border transition-colors ${
               isLive
                 ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400'
                 : 'bg-neutral-100 dark:bg-surface-2 border-neutral-300 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400'
@@ -265,9 +312,9 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
           </button>
 
           <a
-            href="/api/v1/querylog/export"
+            href={localStorage.getItem('nexdns_token') ? `/api/v1/querylog/export?token=${encodeURIComponent(localStorage.getItem('nexdns_token') || '')}` : '/api/v1/querylog/export'}
             download="nexdns-querylog.csv"
-            className="inline-flex items-center gap-1.5 min-h-[38px] px-3 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors"
+            className="inline-flex items-center justify-center gap-1.5 min-h-[38px] px-3 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors"
           >
             <Download className="w-3.5 h-3.5 align-icon" />
             导出 CSV
@@ -276,7 +323,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
           <button
             type="button"
             onClick={() => setIsClearAlertOpen(true)}
-            className="inline-flex items-center gap-1.5 min-h-[38px] px-3 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 bg-neutral-100 dark:bg-surface-2 border border-red-200 dark:border-red-900/40 rounded-md transition-colors"
+            className="inline-flex items-center justify-center gap-1.5 min-h-[38px] px-3 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 bg-neutral-100 dark:bg-surface-2 border border-red-200 dark:border-red-900/40 rounded-md transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5 align-icon" />
             清空日志
@@ -287,64 +334,76 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
       {/* 查询日志主表格 */}
       <div className="rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+          <table className="w-full min-w-[860px] text-left text-xs table-fixed">
             <thead className="bg-neutral-50 dark:bg-surface-2/60 border-b border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 uppercase font-medium">
               <tr>
-                <th className="py-3 px-4">请求时间</th>
-                <th className="py-3 px-4">状态</th>
-                <th className="py-3 px-4">查询域名与类型</th>
-                <th className="py-3 px-4">客户端 IP</th>
-                <th className="py-3 px-4">分流 / 匹配规则</th>
-                <th className="py-3 px-4">响应结果</th>
-                <th className="py-3 px-4 text-right">解析时延</th>
+                <th className="py-3 px-4 w-[95px]">请求时间</th>
+                <th className="py-3 px-4 w-[95px]">状态</th>
+                <th className="py-3 px-4 min-w-[260px]">查询域名与类型</th>
+                <th className="py-3 px-4 w-[115px]">客户端 IP</th>
+                <th className="py-3 px-4 w-[170px]">分流 / 匹配规则</th>
+                <th className="py-3 px-4 w-[170px]">响应结果</th>
+                <th className="py-3 px-4 w-[90px] text-right">解析时延</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800/60 font-normal">
+            <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800/60 font-normal bg-white dark:bg-surface-1">
               {logs.length > 0 ? (
                 logs.map((log) => {
-                  const timeStr = log.timestamp.split('T')[1]?.substring(0, 8) || log.timestamp;
+                  const timeDisplay = formatTime(log.timestamp);
+                  const fullTimeDisplay = formatDateTime(log.timestamp);
+                  const cleanQname = (log.qname || '').replace(/[\r\n\t]+/g, ' ');
                   return (
                     <tr
                       key={log.id}
                       onClick={() => setSelectedLog(log)}
-                      className="hover:bg-neutral-50 dark:hover:bg-surface-2/60 cursor-pointer transition-colors duration-100"
+                      className="cursor-pointer select-none hover:bg-neutral-100/60 dark:hover:bg-white/[0.04]"
                     >
-                      <td className="py-3 px-4 font-mono text-neutral-500 dark:text-neutral-400 tabular-nums whitespace-nowrap">
-                        {timeStr}
+                      <td
+                        className="py-2.5 px-4 font-mono text-neutral-500 dark:text-neutral-400 tabular-nums whitespace-nowrap"
+                        title={fullTimeDisplay}
+                      >
+                        {timeDisplay}
                       </td>
-                      <td className="py-3 px-4 whitespace-nowrap">
+                      <td className="py-2.5 px-4 whitespace-nowrap">
                         {getStatusBadge(log.status)}
                       </td>
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-neutral-800 dark:text-neutral-200 font-medium">{log.qname}</span>
-                          <span className="px-1 py-0.5 text-[10px] font-mono rounded bg-neutral-100 dark:bg-surface-3 text-neutral-500 dark:text-neutral-400">
+                      <td className="py-2.5 px-4 overflow-hidden">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className="font-mono text-neutral-800 dark:text-neutral-200 font-medium truncate block max-w-full whitespace-nowrap"
+                            title={cleanQname}
+                          >
+                            {cleanQname}
+                          </span>
+                          <span className="px-1 py-0.5 text-[10px] font-mono rounded bg-neutral-100 dark:bg-surface-3 text-neutral-500 dark:text-neutral-400 shrink-0">
                             {log.qtype}
                           </span>
                         </div>
                       </td>
-                      <td className="py-3 px-4 font-mono text-neutral-600 dark:text-neutral-300 tabular-nums whitespace-nowrap">
+                      <td className="py-2.5 px-4 font-mono text-neutral-600 dark:text-neutral-300 tabular-nums whitespace-nowrap">
                         {log.client_ip}
                       </td>
-                      <td className="py-3 px-4 text-neutral-500 dark:text-neutral-400 truncate max-w-[200px]">
+                      <td className="py-2.5 px-4 text-neutral-500 dark:text-neutral-400 truncate">
                         {log.matched_rule ? (
-                          <span className="text-rose-600 dark:text-rose-400 font-mono">{log.matched_rule}</span>
+                          <span className="text-rose-600 dark:text-rose-400 font-mono truncate block" title={log.matched_rule}>
+                            {log.matched_rule}
+                          </span>
                         ) : log.routing_group ? (
                           <span className="text-cyan-600 dark:text-cyan-400 font-mono">组: {log.routing_group}</span>
                         ) : (
                           '-'
                         )}
                       </td>
-                      <td className="py-3 px-4 font-mono text-neutral-700 dark:text-neutral-300 tabular-nums truncate max-w-[180px]">
+                      <td className="py-2.5 px-4 font-mono text-neutral-700 dark:text-neutral-300 tabular-nums truncate">
                         {log.response_ip ? (
-                          log.response_ip
+                          <span className="truncate block" title={log.response_ip}>{log.response_ip}</span>
                         ) : log.rcode === 'No Error' ? (
                           <span className="text-neutral-400">无记录 (NODATA)</span>
                         ) : (
                           <span className="text-rose-500 font-medium">{log.rcode}</span>
                         )}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono tabular-nums text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
+                      <td className="py-2.5 px-4 text-right font-mono tabular-nums text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
                         {log.duration_ms < 1 ? '< 1 ms' : `${log.duration_ms.toFixed(1)} ms`}
                       </td>
                     </tr>
@@ -362,12 +421,13 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
         </div>
 
         {/* 分页控制栏 */}
-        <div className="px-4 py-3 border-t border-neutral-200 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-3 text-xs text-neutral-500 dark:text-neutral-400">
-          <div className="flex items-center gap-2 font-mono">
+        <div className="px-4 py-3 border-t border-neutral-200 dark:border-neutral-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-neutral-500 dark:text-neutral-400">
+          <div className="flex items-center gap-2 font-mono w-full sm:w-auto justify-between sm:justify-start">
             <span>共 {total.toLocaleString()} 条日志流水</span>
             <span className="text-neutral-300 dark:text-neutral-700">|</span>
             <span>每页</span>
             <CustomSelect
+              direction="up"
               options={[
                 { value: '20', label: '20 条/页' },
                 { value: '50', label: '50 条/页' },
@@ -381,7 +441,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
             />
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-3">
             <span className="font-mono text-xs tabular-nums">
               第 {page} / {Math.max(1, Math.ceil(total / pageSize))} 页
             </span>
@@ -456,6 +516,12 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
 
             {/* 报文基础信息 */}
             <div className="p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-3">
+              <div className="flex justify-between items-center">
+                <span className="text-neutral-500 dark:text-neutral-400">请求时间:</span>
+                <span className="font-mono text-neutral-900 dark:text-neutral-100 tabular-nums font-medium">
+                  {formatDateTime(selectedLog.timestamp)}
+                </span>
+              </div>
               <div className="flex justify-between items-center">
                 <span className="text-neutral-500 dark:text-neutral-400">查询域名:</span>
                 <span className="font-mono text-neutral-900 dark:text-neutral-100 font-semibold">{selectedLog.qname}</span>

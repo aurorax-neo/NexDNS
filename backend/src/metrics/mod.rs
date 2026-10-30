@@ -1,4 +1,4 @@
-use chrono::{Timelike, Utc};
+use chrono::{Local, Timelike};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -34,7 +34,7 @@ pub struct CacheStatsTracker {
 
 impl CacheStatsTracker {
     pub fn new() -> Arc<Self> {
-        let today_str = Utc::now().format("%Y-%m-%d").to_string();
+        let today_str = Local::now().format("%Y-%m-%d").to_string();
         Arc::new(Self {
             current_date: RwLock::new(today_str),
             today_requests: AtomicU64::new(0),
@@ -62,7 +62,7 @@ impl CacheStatsTracker {
     }
 
     pub fn record(&self, is_hit: bool) {
-        let today_str = Utc::now().format("%Y-%m-%d").to_string();
+        let today_str = Local::now().format("%Y-%m-%d").to_string();
         self.check_rollover(&today_str);
 
         self.today_requests.fetch_add(1, Ordering::Relaxed);
@@ -74,7 +74,7 @@ impl CacheStatsTracker {
     }
 
     pub fn snapshot(&self) -> CacheStatsSnapshot {
-        let today_str = Utc::now().format("%Y-%m-%d").to_string();
+        let today_str = Local::now().format("%Y-%m-%d").to_string();
         self.check_rollover(&today_str);
 
         let t_req = self.today_requests.load(Ordering::Relaxed);
@@ -104,7 +104,7 @@ impl CacheStatsTracker {
             yesterday: make_row(y_req, y_hit),
             today: make_row(t_req, t_hit),
             total: make_row(tot_req, tot_hit),
-            updated_at: Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            updated_at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         }
     }
 
@@ -128,6 +128,7 @@ impl CacheStatsTracker {
         }
     }
 
+    #[allow(dead_code)]
     pub fn seed(&self, y_req: u64, y_hit: u64, t_req: u64, t_hit: u64, tot_req: u64, tot_hit: u64) {
         self.yesterday_requests.store(y_req, Ordering::SeqCst);
         self.yesterday_hits.store(y_hit, Ordering::SeqCst);

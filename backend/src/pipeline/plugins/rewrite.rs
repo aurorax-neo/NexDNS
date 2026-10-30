@@ -20,6 +20,12 @@ pub struct RewritePlugin {
     records: Arc<RwLock<HashMap<String, Vec<RewriteTarget>>>>,
 }
 
+impl Default for RewritePlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RewritePlugin {
     pub fn new() -> Self {
         let mut default_records = HashMap::new();
@@ -41,11 +47,13 @@ impl RewritePlugin {
         *w = new_records;
     }
 
+    #[allow(dead_code)]
     pub fn add_record(&self, domain: String, target: RewriteTarget) {
         let mut w = self.records.write();
         w.entry(domain.to_lowercase()).or_default().push(target);
     }
 
+    #[allow(dead_code)]
     pub fn remove_record(&self, domain: &str) {
         let mut w = self.records.write();
         w.remove(&domain.to_lowercase());

@@ -861,14 +861,42 @@ export const SettingsPage: React.FC = () => {
               <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
                 <div>
                   <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
-                    Qtype 65 (HTTPS/SVCB) 快捷阻断
+                    动态分流调度引擎
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    根据域名规则集与地理归属自动调度大陆、代理或 Fallback 链路；开启需配置 GFW 与海外备用组 (默认关闭)
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.routing.enabled ?? false}
+                  onChange={(v) => {
+                    if (v) {
+                      const gfwEmpty = !settings.upstreams.gfw || settings.upstreams.gfw.length === 0;
+                      const overseasEmpty = !settings.upstreams.overseas || settings.upstreams.overseas.length === 0;
+                      if (gfwEmpty || overseasEmpty) {
+                        setSnackbarMessage('无法开启：GFW / 境外组与海外备用组必须各自至少配置一个上游 DNS 服务器');
+                        return;
+                      }
+                    }
+                    setSettings({
+                      ...settings,
+                      routing: { ...settings.routing, enabled: v },
+                    });
+                  }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    Qtype 65 (HTTPS/SVCB) 快捷阻断 (默认关闭)
                   </span>
                   <span className="text-[11px] text-neutral-500">
                     阻止苹果及 Chrome 绕过系统 DNS 分流策略
                   </span>
                 </div>
                 <Switch
-                  checked={settings.routing.qtype_65_reject}
+                  checked={settings.routing.qtype_65_reject ?? false}
                   onChange={(v) =>
                     setSettings({
                       ...settings,
@@ -946,23 +974,27 @@ export const SettingsPage: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">日志保留天数</label>
-                <CustomSelect
-                  options={[
-                    { value: '1', label: '保留 24 小时' },
-                    { value: '7', label: '保留 7 天 (推荐)' },
-                    { value: '30', label: '保留 30 天' },
-                    { value: '90', label: '保留 90 天' },
-                  ]}
-                  value={settings.logging.retention_days.toString()}
-                  onChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      logging: { ...settings.logging, retention_days: parseInt(v) || 7 },
-                    })
-                  }
-                  className="w-full"
-                />
+                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">日志保留时长 (分钟)</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    max="10080"
+                    value={settings.logging.retention_mins || 60}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        logging: {
+                          ...settings.logging,
+                          retention_mins: Math.max(1, parseInt(e.target.value) || 60),
+                        },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 font-mono text-xs rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 focus:outline-none focus:border-cyan-500"
+                  />
+                  <span className="text-xs text-neutral-500 whitespace-nowrap">min (默认 60 分钟)</span>
+                </div>
+                <p className="text-[11px] text-neutral-400 mt-1">超过设定分钟数的历史日志将自动滚动清理并自动释放数据库空间</p>
               </div>
             </div>
           </div>

@@ -43,8 +43,9 @@ export const PipelinePage: React.FC = () => {
         prev.map((n) => (n.id === nodeId ? { ...n, enabled: nextState } : n))
       );
       setSnackbarMessage(`已${nextState ? '启用' : '停用'}节点`);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to toggle pipeline node', e);
+      setSnackbarMessage(e?.message || '切换节点失败，请检查上游组配置');
     }
   };
 
@@ -96,7 +97,7 @@ export const PipelinePage: React.FC = () => {
         <div className="space-y-4">
           {nodes.map((node, index) => {
             const isLast = index === nodes.length - 1;
-            const canToggle = node.id !== 'inbound' && node.id !== 'rewrite' && node.id !== 'router';
+            const canToggle = node.id !== 'inbound' && node.id !== 'rewrite';
             return (
               <div key={node.id} className="relative">
                 <div

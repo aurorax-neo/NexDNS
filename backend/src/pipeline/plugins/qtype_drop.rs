@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::RecordType;
-use crate::pipeline::context::QueryContext;
+use crate::pipeline::context::{QueryContext, QueryStatus};
 use crate::pipeline::plugin::{DnsPlugin, PluginResult};
 
 pub struct QtypeDropPlugin {
@@ -33,6 +33,7 @@ impl DnsPlugin for QtypeDropPlugin {
             resp.queries = ctx.request.queries.clone();
 
             ctx.response = Some(resp);
+            ctx.status = QueryStatus::Blocked;
             ctx.matched_rule = Some(format!("qtype_{}", u16::from(self.target_qtype)));
             ctx.tags.insert("dropped_qtype".to_string());
             PluginResult::Accept

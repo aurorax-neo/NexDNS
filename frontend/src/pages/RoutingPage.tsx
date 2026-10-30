@@ -17,6 +17,7 @@ import { Switch } from '../components/ui/Switch';
 import { CustomSelect } from '../components/ui/CustomSelect';
 import { Snackbar } from '../components/ui/Snackbar';
 import { Popconfirm } from '../components/ui/Popconfirm';
+import { formatDate } from '../lib/time';
 
 export const RoutingPage: React.FC = () => {
   const [ruleFiles, setRuleFiles] = useState<RuleFileInfo[]>([]);
@@ -278,8 +279,8 @@ export const RoutingPage: React.FC = () => {
       </div>
 
       {/* 分组筛选栏 */}
-      <div className="flex items-center justify-between gap-4 p-4 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 sm:p-4 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
           <span className="text-xs text-neutral-500 dark:text-neutral-400">所属分组:</span>
           <CustomSelect
             options={groupFilterOptions}
@@ -287,7 +288,7 @@ export const RoutingPage: React.FC = () => {
             onChange={setActiveGroup}
           />
         </div>
-        <span className="text-xs font-mono text-neutral-500">
+        <span className="text-xs font-mono text-neutral-500 dark:text-neutral-400">
           当前显示 {filteredFiles.length} 个规则文件
         </span>
       </div>
@@ -298,16 +299,16 @@ export const RoutingPage: React.FC = () => {
           {filteredFiles.map((rf) => (
             <div
               key={rf.id || rf.file_name}
-              className={`p-4 flex flex-wrap items-center justify-between gap-3 transition-colors ${
+              className={`p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 sm:gap-4 transition-colors ${
                 rf.enabled ? 'hover:bg-neutral-50 dark:hover:bg-surface-2/40' : 'opacity-60 bg-neutral-50/50 dark:bg-surface-2/10'
               }`}
             >
-              <div className="flex items-start gap-3 flex-1 min-w-0 pr-4">
-                <div className="p-2 rounded bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 text-cyan-600 dark:text-cyan-400 mt-0.5 shrink-0">
+              <div className="flex items-start sm:items-center gap-3 flex-1 min-w-0 pr-0 sm:pr-4">
+                <div className="p-2 rounded bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 text-cyan-600 dark:text-cyan-400 mt-0.5 sm:mt-0 shrink-0">
                   <FileCode className="w-4 h-4 align-icon" />
                 </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                     <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 truncate">
                       {rf.name}
                     </span>
@@ -326,12 +327,12 @@ export const RoutingPage: React.FC = () => {
                     <span className="mx-2 text-neutral-300 dark:text-neutral-700">|</span>
                     大小: {(rf.size_bytes / 1024).toFixed(1)} KB
                     <span className="mx-2 text-neutral-300 dark:text-neutral-700">|</span>
-                    更新: {rf.updated_at.split('T')[0] || '-'}
+                    更新: {formatDate(rf.updated_at)}
                   </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 shrink-0">
+              <div className="flex items-center justify-between sm:justify-end gap-2.5 w-full sm:w-auto pt-2.5 sm:pt-0 border-t sm:border-t-0 border-neutral-100 dark:border-neutral-800/60 shrink-0">
                 {/* 启停 Switch */}
                 <Switch
                   checked={rf.enabled}
@@ -339,6 +340,7 @@ export const RoutingPage: React.FC = () => {
                   ariaLabel={`切换 ${rf.name}`}
                 />
 
+                <div className="flex items-center gap-2">
                 {/* 编辑详细信息: 纯图标按钮无文字 */}
                 <button
                   type="button"
@@ -395,6 +397,7 @@ export const RoutingPage: React.FC = () => {
                     </button>
                   </Popconfirm>
                 )}
+                </div>
               </div>
             </div>
           ))}

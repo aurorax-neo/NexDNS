@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, params_from_iter, types::Value, Connection};
 use tokio::sync::{broadcast, mpsc};
 use crate::pipeline::context::{QueryContext, QueryStatus};
 
@@ -281,35 +281,45 @@ impl Database {
         client: Option<&str>,
     ) -> rusqlite::Result<(Vec<QueryLogItem>, usize)> {
         let conn = self.get_conn()?;
-        let mut sql = "SELECT id, timestamp, client_ip, client_name, qname, qtype, status, rcode, matched_rule, routing_group, response_ip, duration_ms FROM query_logs WHERE 1=1".to_string();
         let mut count_sql = "SELECT COUNT(*) FROM query_logs WHERE 1=1".to_string();
+        let mut sql = "SELECT id, timestamp, client_ip, client_name, qname, qtype, status, rcode, matched_rule, routing_group, response_ip, duration_ms FROM query_logs WHERE 1=1".to_string();
 
-        let mut where_clause = String::new();
+        let mut count_params = Vec::<Value>::new();
+
         if let Some(s) = search {
-            if !s.is_empty() {
-                where_clause.push_str(&format!(" AND qname LIKE '%{}%'", s.replace('\'', "''")));
+            let s_trim = s.trim();
+            if !s_trim.is_empty() {
+                count_sql.push_str(" AND qname LIKE ?");
+                sql.push_str(" AND qname LIKE ?");
+                count_params.push(Value::Text(format!("%{}%", s_trim)));
             }
         }
         if let Some(st) = status {
-            if !st.is_empty() && st != "all" {
-                where_clause.push_str(&format!(" AND status = '{}'", st.replace('\'', "''")));
+            let st_trim = st.trim();
+            if !st_trim.is_empty() && st_trim != "all" {
+                count_sql.push_str(" AND status = ?");
+                sql.push_str(" AND status = ?");
+                count_params.push(Value::Text(st_trim.to_string()));
             }
         }
         if let Some(c) = client {
-            if !c.is_empty() {
-                where_clause.push_str(&format!(" AND client_ip = '{}'", c.replace('\'', "''")));
+            let c_trim = c.trim();
+            if !c_trim.is_empty() {
+                count_sql.push_str(" AND client_ip = ?");
+                sql.push_str(" AND client_ip = ?");
+                count_params.push(Value::Text(c_trim.to_string()));
             }
         }
 
-        sql.push_str(&where_clause);
-        count_sql.push_str(&where_clause);
+        let total: usize = conn.query_row(&count_sql, params_from_iter(count_params.iter()), |r| r.get(0))?;
 
-        let total: usize = conn.query_row(&count_sql, [], |r| r.get(0))?;
-
-        sql.push_str(&format!(" ORDER BY timestamp DESC LIMIT {} OFFSET {}", limit, offset));
+        sql.push_str(" ORDER BY timestamp DESC LIMIT ? OFFSET ?");
+        let mut query_params = count_params;
+        query_params.push(Value::Integer(limit as i64));
+        query_params.push(Value::Integer(offset as i64));
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params_from_iter(query_params.iter()), |row| {
             Ok(QueryLogItem {
                 id: row.get(0)?,
                 timestamp: row.get(1)?,
@@ -337,8 +347,24 @@ impl Database {
     pub fn clear_logs(&self) -> rusqlite::Result<()> {
         let conn = self.get_conn()?;
         conn.execute("DELETE FROM query_logs", [])?;
-        conn.execute("VACUUM", [])?;
+        let _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", []);
+        let _ = conn.execute("VACUUM", []);
+        let _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", []);
         Ok(())
+    }
+
+    pub fn cleanup_logs_older_than(&self, mins: u32) -> rusqlite::Result<usize> {
+        let mins = mins.max(1);
+        let cutoff = (chrono::Local::now() - chrono::Duration::minutes(mins as i64)).to_rfc3339();
+        let conn = self.get_conn()?;
+        let deleted = conn.execute(
+            "DELETE FROM query_logs WHERE timestamp < ?1",
+            rusqlite::params![cutoff],
+        )?;
+        if deleted > 0 {
+            let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
+        }
+        Ok(deleted)
     }
 
     pub fn get_rules(&self) -> rusqlite::Result<Vec<AdblockRuleRecord>> {

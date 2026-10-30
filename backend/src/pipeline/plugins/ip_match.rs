@@ -8,18 +8,21 @@ use parking_lot::RwLock;
 #[derive(Default, Clone)]
 pub struct IpMatcher {
     pub name: String,
-    pub subnets: Vec<IpNet>,
+    pub v4_ranges: Vec<(u32, u32)>,
+    pub v6_subnets: Vec<ipnet::Ipv6Net>,
 }
 
 impl IpMatcher {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            subnets: Vec::new(),
+            v4_ranges: Vec::new(),
+            v6_subnets: Vec::new(),
         }
     }
 
     pub fn load_from_text(&mut self, text: &str) {
+        let mut raw_v4 = Vec::new();
         for line in text.lines() {
             let mut trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -29,25 +32,84 @@ impl IpMatcher {
                 trimmed = rest.trim();
             }
             if let Ok(net) = IpNet::from_str(trimmed) {
-                self.subnets.push(net);
+                match net {
+                    IpNet::V4(v4) => {
+                        let start = u32::from(v4.network());
+                        let end = u32::from(v4.broadcast());
+                        raw_v4.push((start, end));
+                    }
+                    IpNet::V6(v6) => {
+                        self.v6_subnets.push(v6);
+                    }
+                }
             } else if let Ok(ip) = IpAddr::from_str(trimmed) {
-                self.subnets.push(IpNet::from(ip));
+                match ip {
+                    IpAddr::V4(v4) => {
+                        let val = u32::from(v4);
+                        raw_v4.push((val, val));
+                    }
+                    IpAddr::V6(v6) => {
+                        if let Ok(net) = ipnet::Ipv6Net::new(v6, 128) {
+                            self.v6_subnets.push(net);
+                        }
+                    }
+                }
             }
+        }
+
+        // 归并排序 IPv4 区间，将上万条 CIDR 压缩为紧凑区间列表，实现 O(log n) 二分极速匹配
+        if !raw_v4.is_empty() {
+            raw_v4.sort_unstable_by_key(|&(start, _)| start);
+            let mut merged = Vec::with_capacity(raw_v4.len());
+            let (mut cur_start, mut cur_end) = raw_v4[0];
+            for &(start, end) in &raw_v4[1..] {
+                if start <= cur_end.saturating_add(1) {
+                    cur_end = cur_end.max(end);
+                } else {
+                    merged.push((cur_start, cur_end));
+                    cur_start = start;
+                    cur_end = end;
+                }
+            }
+            merged.push((cur_start, cur_end));
+            self.v4_ranges = merged;
         }
     }
 
     pub fn contains(&self, ip: &IpAddr) -> bool {
-        for net in &self.subnets {
-            if net.contains(ip) {
-                return true;
+        match ip {
+            IpAddr::V4(v4) => {
+                let target = u32::from(*v4);
+                self.v4_ranges.binary_search_by(|&(start, end)| {
+                    if target < start {
+                        std::cmp::Ordering::Greater
+                    } else if target > end {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                }).is_ok()
+            }
+            IpAddr::V6(v6) => {
+                for net in &self.v6_subnets {
+                    if net.contains(v6) {
+                        return true;
+                    }
+                }
+                false
             }
         }
-        false
     }
 }
 
 pub struct IpListRegistry {
     matchers: Arc<RwLock<HashMap<String, IpMatcher>>>,
+}
+
+impl Default for IpListRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IpListRegistry {

@@ -26,7 +26,7 @@ fn default_proxy_list() -> Vec<ProxyItem> {
         ProxyItem {
             id: "local_clash".to_string(),
             name: "本地 Clash/Mihomo 节点".to_string(),
-            addr: "socks5://10.96.1.108:7890".to_string(),
+            addr: "socks5://127.0.0.1:7890".to_string(),
             is_default: true,
         }
     ]
@@ -69,7 +69,7 @@ impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            socks5: Some("socks5://10.96.1.108:7890".to_string()),
+            socks5: Some("socks5://127.0.0.1:7890".to_string()),
             list: default_proxy_list(),
         }
     }
@@ -255,9 +255,20 @@ impl Default for UpstreamsConfig {
     }
 }
 
+fn default_false() -> bool {
+    false
+}
+
+fn default_retention_mins() -> u32 {
+    60
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
     pub anti_pollution: bool,
+    #[serde(default = "default_false")]
     pub qtype_65_reject: bool,
     pub fallback_timeout_ms: u64,
 }
@@ -265,8 +276,9 @@ pub struct RoutingConfig {
 impl Default for RoutingConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             anti_pollution: true,
-            qtype_65_reject: true,
+            qtype_65_reject: false,
             fallback_timeout_ms: 1500,
         }
     }
@@ -275,14 +287,18 @@ impl Default for RoutingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
     pub enabled: bool,
-    pub retention_days: u32,
+    #[serde(default = "default_retention_mins")]
+    pub retention_mins: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_days: Option<u32>,
 }
 
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            retention_days: 7,
+            retention_mins: 60,
+            retention_days: None,
         }
     }
 }
@@ -408,7 +424,13 @@ impl AppConfig {
     pub fn load_or_create<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         if path.as_ref().exists() {
             let content = fs::read_to_string(&path)?;
-            let config: Self = serde_yaml::from_str(&content)?;
+            let mut config: Self = serde_yaml::from_str(&content)?;
+            // 平滑兼容历史旧配置: 若存在 retention_days 且 retention_mins 为 0，换算为分钟
+            if let Some(days) = config.logging.retention_days {
+                if config.logging.retention_mins == 0 {
+                    config.logging.retention_mins = days * 1440;
+                }
+            }
             Ok(config)
         } else {
             let default_cfg = Self::default();

@@ -183,3 +183,135 @@ fn test_reqwest_socks_scheme() {
     println!("socks5 result: {:?}", p2.is_ok());
     assert!(p2.is_ok());
 }
+
+#[tokio::test]
+async fn test_cache_intelligent_eviction() {
+    use std::time::Duration;
+    // Cache size 3, min_ttl 1, max_ttl 10
+    let cache = nexdns::pipeline::plugins::cache::CachePlugin::new(3, false, false, 1, 10);
+    let name = Name::from_str("expired.com.").unwrap();
+    let mut msg_expired = Message::query();
+    msg_expired.answers.push(Record::from_rdata(name, 1, RData::A(A(Ipv4Addr::new(1, 1, 1, 1)))));
+
+    // Insert entry with 1s TTL
+    cache.insert("expired.com", RecordType::A, msg_expired);
+
+    // Insert fresh entry with 10s TTL
+    let name2 = Name::from_str("fresh1.com.").unwrap();
+    let mut msg_fresh1 = Message::query();
+    msg_fresh1.answers.push(Record::from_rdata(name2, 10, RData::A(A(Ipv4Addr::new(2, 2, 2, 2)))));
+    cache.insert("fresh1.com", RecordType::A, msg_fresh1);
+
+    let name3 = Name::from_str("fresh2.com.").unwrap();
+    let mut msg_fresh2 = Message::query();
+    msg_fresh2.answers.push(Record::from_rdata(name3, 10, RData::A(A(Ipv4Addr::new(3, 3, 3, 3)))));
+    cache.insert("fresh2.com", RecordType::A, msg_fresh2);
+
+    assert_eq!(cache.size(), 3);
+
+    // Wait 1.1s for expired.com to expire
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+
+    // Insert 4th entry to trigger eviction
+    let name4 = Name::from_str("fresh3.com.").unwrap();
+    let mut msg_fresh3 = Message::query();
+    msg_fresh3.answers.push(Record::from_rdata(name4, 10, RData::A(A(Ipv4Addr::new(4, 4, 4, 4)))));
+    cache.insert("fresh3.com", RecordType::A, msg_fresh3);
+
+    // Expired entry must be evicted, while fresh entries survive
+    assert!(cache.get("expired.com", RecordType::A).is_none());
+    assert!(cache.get("fresh1.com", RecordType::A).is_some());
+    assert!(cache.get("fresh2.com", RecordType::A).is_some());
+    assert!(cache.get("fresh3.com", RecordType::A).is_some());
+}
+
+#[test]
+fn test_ip_matcher_intervals() {
+    let mut matcher = nexdns::pipeline::plugins::ip_match::IpMatcher::new("test");
+    matcher.load_from_text("10.0.0.0/8\n172.16.0.0/12\n192.168.0.0/16");
+
+    assert!(matcher.contains(&"10.1.2.3".parse().unwrap()));
+    assert!(matcher.contains(&"172.20.10.5".parse().unwrap()));
+    assert!(matcher.contains(&"192.168.100.1".parse().unwrap()));
+    assert!(!matcher.contains(&"11.0.0.1".parse().unwrap()));
+    assert!(!matcher.contains(&"172.32.0.1".parse().unwrap()));
+    assert!(!matcher.contains(&"192.169.0.1".parse().unwrap()));
+}
+
+#[tokio::test]
+async fn test_qtype_65_drop_returns_nodata_noerror() {
+    use hickory_proto::op::ResponseCode;
+    use nexdns::pipeline::context::{QueryContext, QueryStatus};
+    use nexdns::pipeline::plugin::{DnsPlugin, PluginResult};
+    use nexdns::pipeline::plugins::qtype_drop::QtypeDropPlugin;
+
+    let plugin = QtypeDropPlugin::new(65, ResponseCode::NoError);
+    let mut req = Message::query();
+    req.add_query(hickory_proto::op::Query::query(
+        Name::from_ascii("www.baidu.com.").unwrap(),
+        RecordType::from(65),
+    ));
+
+    let mut ctx = QueryContext::new("127.0.0.1".parse().unwrap(), req);
+    let res = plugin.execute(&mut ctx).await;
+
+    assert_eq!(res, PluginResult::Accept);
+    assert!(matches!(ctx.status, QueryStatus::Blocked));
+    assert_eq!(ctx.matched_rule.as_deref(), Some("qtype_65"));
+
+    let resp = ctx.response.expect("Expected response for dropped qtype 65");
+    // Must be NoError (NODATA), not NXDomain!
+    assert_eq!(resp.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(resp.answers.len(), 0);
+}
+
+#[test]
+fn test_edns_cookie_echo_and_strip() {
+    use hickory_proto::op::Edns;
+    use hickory_proto::rr::rdata::opt::{EdnsCode, EdnsOption};
+
+    let mut edns = Edns::new();
+    let cookie_bytes = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    edns.options_mut().insert(EdnsOption::Unknown(10, cookie_bytes.clone()));
+
+    let opt = edns.options().get(EdnsCode::Cookie);
+    assert!(opt.is_some());
+
+    if let Some(EdnsOption::Unknown(10, data)) = opt {
+        assert_eq!(data, &cookie_bytes);
+    } else {
+        panic!("Expected cookie option");
+    }
+}
+
+#[tokio::test]
+async fn test_cname_precedes_address_records_in_speed_check() {
+    use nexdns::pipeline::plugins::speed_check::SpeedCheckPlugin;
+    use nexdns::pipeline::plugin::DnsPlugin;
+    use nexdns::pipeline::context::QueryContext;
+
+    let plugin = SpeedCheckPlugin::new(true, 100, 5);
+    let mut resp = Message::response(1, hickory_proto::op::OpCode::Query);
+
+    // Intentionally add A records and CNAME in mixed order
+    let qname = Name::from_str("www.baidu.com.").unwrap();
+    let target = Name::from_str("www.a.shifen.com.").unwrap();
+
+    resp.answers.push(Record::from_rdata(target.clone(), 300, RData::A(A(Ipv4Addr::new(220, 181, 111, 1)))));
+    resp.answers.push(Record::from_rdata(qname.clone(), 300, RData::CNAME(hickory_proto::rr::rdata::CNAME(target.clone()))));
+    resp.answers.push(Record::from_rdata(target.clone(), 300, RData::A(A(Ipv4Addr::new(220, 181, 111, 2)))));
+
+    let mut ctx = QueryContext::new("127.0.0.1".parse().unwrap(), Message::query());
+    ctx.response = Some(resp);
+
+    plugin.execute(&mut ctx).await;
+
+    let out_resp = ctx.response.unwrap();
+    assert_eq!(out_resp.answers.len(), 3);
+    // First record MUST be CNAME!
+    assert!(matches!(out_resp.answers[0].data, RData::CNAME(_)));
+    assert_eq!(&out_resp.answers[0].name, &qname);
+    // Subsequent records are A
+    assert!(matches!(out_resp.answers[1].data, RData::A(_)));
+    assert!(matches!(out_resp.answers[2].data, RData::A(_)));
+}

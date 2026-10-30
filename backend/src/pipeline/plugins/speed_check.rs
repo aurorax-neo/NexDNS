@@ -35,43 +35,60 @@ impl SpeedCheckPlugin {
         }
     }
 
+    #[allow(dead_code)]
     async fn test_ip(&self, ip: IpAddr) -> u64 {
-        // Check cache first
-        {
-            let r = self.cache.read();
-            if let Some(score) = r.get(&ip) {
-                if score.tested_at.elapsed() < self.cache_ttl {
-                    return score.rtt_ms;
-                }
-            }
-        }
-
-        let mut best_rtt = 9999u64;
-        for port in &self.target_ports {
-            let socket_addr = SocketAddr::new(ip, *port);
-            let start = Instant::now();
-            if let Ok(Ok(_)) = timeout(self.probe_timeout, TcpStream::connect(socket_addr)).await {
-                let rtt = start.elapsed().as_millis() as u64;
-                if rtt < best_rtt {
-                    best_rtt = rtt;
-                }
-            }
-        }
-
-        // Cache result
-        {
-            let mut w = self.cache.write();
-            w.insert(
-                ip,
-                IpScore {
-                    rtt_ms: best_rtt,
-                    tested_at: Instant::now(),
-                },
-            );
-        }
-
-        best_rtt
+        probe_ip_rtt(
+            self.cache.clone(),
+            ip,
+            &self.target_ports,
+            self.probe_timeout,
+            self.cache_ttl,
+        ).await
     }
+}
+
+async fn probe_ip_rtt(
+    cache: Arc<RwLock<HashMap<IpAddr, IpScore>>>,
+    ip: IpAddr,
+    ports: &[u16],
+    probe_timeout: Duration,
+    cache_ttl: Duration,
+) -> u64 {
+    // Check cache first
+    {
+        let r = cache.read();
+        if let Some(score) = r.get(&ip) {
+            if score.tested_at.elapsed() < cache_ttl {
+                return score.rtt_ms;
+            }
+        }
+    }
+
+    let mut best_rtt = 9999u64;
+    for port in ports {
+        let socket_addr = SocketAddr::new(ip, *port);
+        let start = Instant::now();
+        if let Ok(Ok(_)) = timeout(probe_timeout, TcpStream::connect(socket_addr)).await {
+            let rtt = start.elapsed().as_millis() as u64;
+            if rtt < best_rtt {
+                best_rtt = rtt;
+            }
+        }
+    }
+
+    // Cache result
+    {
+        let mut w = cache.write();
+        w.insert(
+            ip,
+            IpScore {
+                rtt_ms: best_rtt,
+                tested_at: Instant::now(),
+            },
+        );
+    }
+
+    best_rtt
 }
 
 #[async_trait]
@@ -107,12 +124,14 @@ impl DnsPlugin for SpeedCheckPlugin {
         }
 
         if ip_records.len() <= 1 {
-            // Only 0 or 1 IP, no re-ordering needed
-            for (ip, r) in ip_records {
-                ctx.fastest_ip = Some(ip);
+            // CRITICAL (RFC 1034 / RFC 2181): CNAME 别名重定向链必须严格位于应答区首部！
+            // 若 IP 记录排在 CNAME 之前，操作系统与浏览器解析器（glibc, macOS, Windows, Chrome）
+            // 将无法识别 CNAME 目标对应关系，导致报错 "Name or service not known" 或网页无法打开。
+            for r in other_records {
                 resp.answers.push(r);
             }
-            for r in other_records {
+            for (ip, r) in ip_records {
+                ctx.fastest_ip = Some(ip);
                 resp.answers.push(r);
             }
             return PluginResult::Continue;
@@ -149,16 +168,13 @@ impl DnsPlugin for SpeedCheckPlugin {
             let (to_probe, remaining) = ip_records.split_at(probe_limit);
 
             let mut tasks = Vec::new();
-            for (ip, record) in to_probe.to_vec() {
-                let self_clone = SpeedCheckPlugin {
-                    cache: self.cache.clone(),
-                    cache_ttl: self.cache_ttl,
-                    probe_timeout: self.probe_timeout.min(Duration::from_millis(200)),
-                    target_ports: self.target_ports.clone(),
-                    enabled: self.enabled,
-                };
+            for (ip, record) in to_probe.iter().cloned() {
+                let cache = self.cache.clone();
+                let ports = self.target_ports.clone();
+                let p_timeout = self.probe_timeout.min(Duration::from_millis(200));
+                let c_ttl = self.cache_ttl;
                 tasks.push(tokio::spawn(async move {
-                    let rtt = self_clone.test_ip(ip).await;
+                    let rtt = probe_ip_rtt(cache, ip, &ports, p_timeout, c_ttl).await;
                     (ip, record, rtt)
                 }));
             }
@@ -168,7 +184,7 @@ impl DnsPlugin for SpeedCheckPlugin {
                     scored_records.push(res);
                 }
             }
-            for (ip, rec) in remaining.to_vec() {
+            for (ip, rec) in remaining.iter().cloned() {
                 scored_records.push((ip, rec, 9999));
             }
         }
@@ -181,10 +197,11 @@ impl DnsPlugin for SpeedCheckPlugin {
             ctx.tags.insert(format!("fastest_ip:{}:{}ms", best_ip, best_rtt));
         }
 
-        for (_, record, _) in scored_records {
+        // CNAME 别名记录与非 IP 记录必须优先放置于应答首部，紧接着才是优选排序后的 IP 记录
+        for record in other_records {
             resp.answers.push(record);
         }
-        for record in other_records {
+        for (_, record, _) in scored_records {
             resp.answers.push(record);
         }
 

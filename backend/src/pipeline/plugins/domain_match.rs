@@ -82,6 +82,12 @@ pub struct DomainListRegistry {
     matchers: Arc<RwLock<std::collections::HashMap<String, DomainMatcher>>>,
 }
 
+impl Default for DomainListRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DomainListRegistry {
     pub fn new() -> Self {
         Self {

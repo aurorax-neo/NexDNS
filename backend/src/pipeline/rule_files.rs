@@ -99,7 +99,7 @@ impl RuleFileManager {
                 let _ = conn.execute(
                     "INSERT OR REPLACE INTO routing_rule_files (id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8)",
-                    params![id, name, file_name, group_type, url, line_count as i64, size as i64, chrono::Utc::now().to_rfc3339()],
+                    params![id, name, file_name, group_type, url, line_count as i64, size as i64, chrono::Local::now().to_rfc3339()],
                 );
             }
         }
@@ -132,7 +132,7 @@ impl RuleFileManager {
                 enabled: true,
                 count: line_count,
                 size_bytes: size,
-                updated_at: chrono::Utc::now().to_rfc3339(),
+                updated_at: chrono::Local::now().to_rfc3339(),
             });
         }
         res
@@ -219,7 +219,7 @@ impl RuleFileManager {
         conn.execute(
             "INSERT OR REPLACE INTO routing_rule_files (id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8)",
-            params![id, safe_name, safe_file_name, group_type, url, line_count as i64, size as i64, chrono::Utc::now().to_rfc3339()],
+            params![id, safe_name, safe_file_name, group_type, url, line_count as i64, size as i64, chrono::Local::now().to_rfc3339()],
         )?;
 
         self.load_local_rules();
@@ -275,7 +275,7 @@ impl RuleFileManager {
         if let Ok(conn) = self.get_conn() {
             let _ = conn.execute(
                 "UPDATE routing_rule_files SET line_count = ?1, size_bytes = ?2, updated_at = ?3 WHERE file_name = ?4",
-                params![line_count as i64, size as i64, chrono::Utc::now().to_rfc3339(), file_name],
+                params![line_count as i64, size as i64, chrono::Local::now().to_rfc3339(), file_name],
             );
         }
 

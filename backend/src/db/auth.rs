@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::{Duration, Local};
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -39,16 +39,25 @@ impl AuthManager {
             let hash = hash_password("admin1234", &salt);
             conn.execute(
                 "INSERT INTO users (username, password_hash, salt, created_at) VALUES (?1, ?2, ?3, ?4)",
-                params!["admin", hash, salt, Utc::now().to_rfc3339()],
+                params!["admin", hash, salt, Local::now().format("%Y-%m-%d %H:%M:%S").to_string()],
             )?;
             tracing::info!("创建默认管理员账户: admin / admin1234 (请在设置中及时修改密码)");
         }
 
+        let _ = Self::cleanup_expired_sessions(conn);
+
+        Ok(())
+    }
+
+    pub fn cleanup_expired_sessions(conn: &Connection) -> rusqlite::Result<()> {
+        let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        conn.execute("DELETE FROM sessions WHERE expires_at <= ?1", params![now])?;
         Ok(())
     }
 
     pub fn authenticate(conn: &Connection, username: &str, password: &str) -> Result<Option<(String, String)>, String> {
         let _ = Self::init_tables(conn);
+        let _ = Self::cleanup_expired_sessions(conn);
         let mut stmt = conn
             .prepare("SELECT password_hash, salt FROM users WHERE username = ?1")
             .map_err(|e| e.to_string())?;
@@ -62,7 +71,7 @@ impl AuthManager {
                 let input_hash = hash_password(password, &salt);
                 if input_hash == stored_hash {
                     let token = Uuid::new_v4().to_string();
-                    let expires_at = (Utc::now() + Duration::days(7)).to_rfc3339();
+                    let expires_at = (Local::now() + Duration::days(7)).format("%Y-%m-%d %H:%M:%S").to_string();
                     conn.execute(
                         "INSERT INTO sessions (token, username, expires_at) VALUES (?1, ?2, ?3)",
                         params![token, username, expires_at],
@@ -79,7 +88,7 @@ impl AuthManager {
 
     pub fn validate_token(conn: &Connection, token: &str) -> Option<String> {
         let _ = Self::init_tables(conn);
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         conn.query_row(
             "SELECT username FROM sessions WHERE token = ?1 AND expires_at > ?2",
             params![token, now],

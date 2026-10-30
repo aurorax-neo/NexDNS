@@ -11,7 +11,10 @@ RUN cargo build --release
 
 FROM dx.aorz.kdns.fr/alpine:latest
 WORKDIR /app
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata && \
+    ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone
+ENV TZ=Asia/Shanghai
 COPY --from=builder /app/target/release/nexdns /app/nexdns
 EXPOSE 53/udp 53/tcp 3000/tcp
 ENTRYPOINT ["/app/nexdns"]

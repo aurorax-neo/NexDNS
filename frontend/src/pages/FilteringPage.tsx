@@ -275,13 +275,13 @@ export const FilteringPage: React.FC = () => {
         <div className="divide-y divide-neutral-200 dark:divide-neutral-800/60">
           {rules.length > 0 ? (
             rules.map((rule) => (
-              <div key={rule.id} className="p-4 flex items-center justify-between hover:bg-neutral-50 dark:hover:bg-surface-2/40 transition-colors">
-                <div className="flex items-start gap-3">
-                  <div className="p-2 rounded bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 text-rose-500 dark:text-rose-400 mt-0.5">
+              <div key={rule.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 sm:gap-4 hover:bg-neutral-50 dark:hover:bg-surface-2/40 transition-colors">
+                <div className="flex items-start sm:items-center gap-3 flex-1 min-w-0 pr-0 sm:pr-4">
+                  <div className="p-2 rounded bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 text-rose-500 dark:text-rose-400 mt-0.5 sm:mt-0 shrink-0">
                     <FileText className="w-4 h-4 align-icon" />
                   </div>
-                  <div>
-                    <div className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                       <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{rule.name}</span>
                       <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-neutral-100 dark:bg-surface-3 text-neutral-600 dark:text-neutral-400">
                         {rule.rule_count.toLocaleString()} 条
@@ -292,18 +292,19 @@ export const FilteringPage: React.FC = () => {
                         </span>
                       )}
                     </div>
-                    <p className="text-xs font-mono text-neutral-500 dark:text-neutral-400 mt-1 truncate max-w-md">
+                    <p className="text-xs font-mono text-neutral-500 dark:text-neutral-400 mt-1 truncate">
                       {rule.url}
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex items-center justify-between sm:justify-end gap-2.5 w-full sm:w-auto pt-2.5 sm:pt-0 border-t sm:border-t-0 border-neutral-100 dark:border-neutral-800/60 shrink-0">
                   <Switch
                     checked={rule.enabled}
                     onChange={() => handleToggleRule(rule.id, rule.enabled)}
                     ariaLabel={`切换 ${rule.name}`}
                   />
+                  <div className="flex items-center gap-2">
                   {/* 查看规则内容: 纯图标按钮无文字 */}
                   <button
                     type="button"
@@ -335,6 +336,7 @@ export const FilteringPage: React.FC = () => {
                     <Trash2 className="w-4 h-4 align-icon" />
                   </button>
                   </Popconfirm>
+                  </div>
                 </div>
               </div>
             ))

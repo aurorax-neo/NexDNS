@@ -204,9 +204,9 @@ impl UpstreamServer {
             }
             Err(_) => {
                 let cnt = self.fail_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if cnt >= 3 {
+                if cnt >= 5 {
                     let mut w = self.cooldown_until.write();
-                    *w = Instant::now() + Duration::from_secs(10);
+                    *w = Instant::now() + Duration::from_secs(3);
                 }
             }
         }
@@ -476,12 +476,26 @@ impl UpstreamGroup {
             return Err(format!("Upstream group '{}' has no servers", self.name));
         }
 
+        let now = Instant::now();
+        let any_alive = servers.iter().any(|s| now >= *s.cooldown_until.read());
+
         let mut futures = Vec::new();
-        for s in servers {
+        for (idx, s) in servers.iter().enumerate() {
             let bytes_vec = req_bytes.to_vec();
             let dur = self.timeout;
+            let force_probe = !any_alive && idx == 0;
+            let s_clone = s.clone();
             futures.push(Box::pin(async move {
-                s.query(&bytes_vec, dur).await
+                if force_probe {
+                    let res = s_clone.query_internal(&bytes_vec, dur).await;
+                    if res.is_ok() {
+                        s_clone.fail_count.store(0, std::sync::atomic::Ordering::Relaxed);
+                        *s_clone.cooldown_until.write() = Instant::now();
+                    }
+                    res
+                } else {
+                    s_clone.query(&bytes_vec, dur).await
+                }
             }));
         }
 
@@ -513,13 +527,15 @@ impl DnsPlugin for ForwardPlugin {
             return PluginResult::Continue;
         };
 
+        // 预设当前尝试的分流链路，避免失败后路由组留空
+        ctx.routing_group = Some(self.group.name.clone());
+
         ctx.record_timing(&format!("forward_{}_start", self.group.name));
         match self.group.query_parallel(&req_bytes).await {
             Ok(mut resp) => {
                 ctx.record_timing(&format!("forward_{}_end", self.group.name));
                 resp.metadata.id = ctx.request.metadata.id;
                 ctx.response = Some(resp);
-                ctx.routing_group = Some(self.group.name.clone());
                 ctx.tags.insert(format!("upstream:{}", self.group.name));
                 PluginResult::Continue
             }

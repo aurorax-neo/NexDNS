@@ -1,5 +1,9 @@
 # NexDNS: 高性能自研原生统一单内核 DNS 服务系统
 
+[![Release & Publish](https://github.com/aurorax-neo/NexDNS/actions/workflows/release.yml/badge.svg)](https://github.com/aurorax-neo/NexDNS/actions/workflows/release.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/aurorax-neo/NexDNS?color=cyan)](https://github.com/aurorax-neo/NexDNS/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 NexDNS 是一款自研原生统一单内核架构的下一代高性能 DNS 综合解决方案。深度融合主流开源 DNS 工具的核心能力：
 - **AdGuard Home 风格**：全兼容 ABP 规则语法（`||domain^`、`@@||`）、Hosts 格式与正则的高并发安全拦截；
 - **MosDNS 风格**：高度灵活的流水线分流调度、GeoSite / CIDR 地址树匹配与双重防 DNS 污染探测；
@@ -65,7 +69,28 @@ cargo build --release
 ./target/release/nexdns
 ```
 
-### 2. Docker Compose 一键部署 (推荐生产模式)
+### 方式一：直接下载各平台预编译静态单二进制 (开箱即用)
+
+前往 [GitHub Releases](https://github.com/aurorax-neo/NexDNS/releases) 页面直接下载对应平台架构的独立单二进制压缩包（已完整内嵌管理控制台前端 SPA，无需安装任何运行时依赖）：
+
+| 操作系统 / 架构 | Target 标识 | 适用平台说明 |
+| :--- | :--- | :--- |
+| **Linux x86_64** | `x86_64-unknown-linux-musl` | 常见 Linux 64位物理机、云服务器、软路由 (纯静态零依赖) |
+| **Linux ARM64** | `aarch64-unknown-linux-musl` | 树莓派 4/5、甲骨文 ARM、各类 ARM64 软路由与工控机 |
+| **macOS (Apple Silicon)** | `aarch64-apple-darwin` | 苹果 M1 / M2 / M3 / M4 系列芯片原生架构 |
+| **macOS (Intel)** | `x86_64-apple-darwin` | 苹果 Intel 系列处理器 Mac 设备 |
+| **Windows x64** | `x86_64-pc-windows-msvc` | Windows 10 / 11 / Server 64 位系统 |
+
+运行命令：
+```bash
+# 解压后直接启动
+chmod +x nexdns
+./nexdns --config data/config.yaml
+```
+
+### 方式二：Docker Compose 多架构镜像部署 (推荐生产模式)
+
+官方通过 GitHub Actions 自动化编译并发布多架构镜像至 GitHub Container Registry（同时原生支持 `linux/amd64` 与 `linux/arm64`）：
 
 创建 `docker-compose.yml`：
 
@@ -92,6 +117,28 @@ docker compose up -d
 ```
 
 打开浏览器访问 `http://<服务器IP>:3000` 即可使用。
+
+### 方式三：源码本地自主编译构建
+
+环境要求：Rust 1.80+、Node.js 20+、pnpm。
+
+```bash
+# 1. 克隆源码仓库
+git clone https://github.com/aurorax-neo/NexDNS.git
+cd NexDNS
+
+# 2. 构建前端静态资源
+cd frontend
+pnpm install
+pnpm build
+
+# 3. 编译 Rust 后端 (自动内嵌前端 dist 静态产物)
+cd ../backend
+cargo build --release
+
+# 4. 运行单二进制文件
+./target/release/nexdns --config data/config.yaml
+```
 
 ---
 

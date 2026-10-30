@@ -845,107 +845,43 @@ export const SettingsPage: React.FC = () => {
                   }
                 />
               </div>
+
+              <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    立即清除 DNS 运行时缓存
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    清空当前内存中所有已缓存的 DNS 解析结果
+                  </span>
+                </div>
+                <Popconfirm
+                  title="确认立即清空全部 DNS 运行时内存缓存？"
+                  actionText="确认清空"
+                  onConfirm={async () => {
+                    try {
+                      await api.flushCache();
+                      setSnackbarMessage('已成功清空当前运行时全部 DNS 内存缓存！');
+                    } catch (e: any) {
+                      setSnackbarMessage(e?.message || '清空缓存失败');
+                    }
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 min-h-[32px] px-3 text-xs font-medium rounded-md bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60 transition-colors shadow-2xs"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 align-icon" />
+                    清空内存缓存
+                  </button>
+                </Popconfirm>
+              </div>
             </div>
           </div>
 
           {/* 实时 DNS 缓存状态 (SmartDNS 统计面板) */}
           <DnsCacheStatusTable />
 
-            {/* 3. 分流与安全防御设置 (Routing Pipeline) */}
-          <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
-            <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
-              <Shield className="w-4 h-4 text-rose-600 dark:text-rose-400 align-icon" />
-              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">分流与安全防御</h4>
-            </div>
-            <div className="space-y-3 text-xs">
-              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
-                <div>
-                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
-                    动态分流调度引擎
-                  </span>
-                  <span className="text-[11px] text-neutral-500">
-                    根据域名规则集与地理归属自动调度大陆、代理或 Fallback 链路；开启需配置 GFW 与海外备用组 (默认关闭)
-                  </span>
-                </div>
-                <Switch
-                  checked={settings.routing.enabled ?? false}
-                  onChange={(v) => {
-                    if (v) {
-                      const gfwEmpty = !settings.upstreams.gfw || settings.upstreams.gfw.length === 0;
-                      const overseasEmpty = !settings.upstreams.overseas || settings.upstreams.overseas.length === 0;
-                      if (gfwEmpty || overseasEmpty) {
-                        setSnackbarMessage('无法开启：GFW / 境外组与海外备用组必须各自至少配置一个上游 DNS 服务器');
-                        return;
-                      }
-                    }
-                    setSettings({
-                      ...settings,
-                      routing: { ...settings.routing, enabled: v },
-                    });
-                  }}
-                />
-              </div>
-
-              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
-                <div>
-                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
-                    Qtype 65 (HTTPS/SVCB) 快捷阻断 (默认关闭)
-                  </span>
-                  <span className="text-[11px] text-neutral-500">
-                    阻止苹果及 Chrome 绕过系统 DNS 分流策略
-                  </span>
-                </div>
-                <Switch
-                  checked={settings.routing.qtype_65_reject ?? false}
-                  onChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      routing: { ...settings.routing, qtype_65_reject: v },
-                    })
-                  }
-                />
-              </div>
-
-              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
-                <div>
-                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
-                    严格防 DNS 污染检测
-                  </span>
-                  <span className="text-[11px] text-neutral-500">
-                    大陆组若返回非中国 IP 则直接丢弃并触发 Fallback 回退
-                  </span>
-                </div>
-                <Switch
-                  checked={settings.anti_pollution}
-                  onChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      anti_pollution: v,
-                      routing: { ...settings.routing, anti_pollution: v },
-                    })
-                  }
-                />
-              </div>
-
-              <div>
-                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">Fallback 回退切换超时 (毫秒)</label>
-                <input
-                  type="number"
-                  value={settings.routing.fallback_timeout_ms}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      routing: {
-                        ...settings.routing,
-                        fallback_timeout_ms: parseInt(e.target.value) || 1500,
-                      },
-                    })
-                  }
-                  className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
-                />
-              </div>
-            </div>
-          </div>
             {/* 5. 日志与留存设置 */}
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">

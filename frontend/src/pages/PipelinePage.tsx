@@ -176,6 +176,41 @@ export const PipelinePage: React.FC = () => {
               <p className="text-sm text-neutral-800 dark:text-neutral-200 leading-relaxed">{selectedNode.description}</p>
             </div>
 
+            {selectedNode.id === 'cache' && (
+              <div className="space-y-4">
+                <div className="p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-3">
+                  <h4 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
+                    智能缓存运行机制
+                  </h4>
+                  <div className="text-xs text-neutral-700 dark:text-neutral-300 space-y-2 leading-relaxed">
+                    <p>• <strong>Serve-Expired (零等待响应)</strong>: 过期记录以 3s TTL 立即返回客户端，后台自动静默拉取最新 IP，消除用户等待。</p>
+                    <p>• <strong>Prefetch-Domain (智能预取)</strong>: 当高频热点域名的 TTL 剩余低于 20% 时，由内核异步刷新。</p>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">立即清空运行时缓存</div>
+                    <div className="text-[11px] text-neutral-500 mt-0.5">立即注销当前单内核内存中所有的 DNS 解析缓存条目</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await api.flushCache();
+                        setSnackbarMessage('已成功清空当前单内核全部内存 DNS 缓存！');
+                      } catch (e: any) {
+                        setSnackbarMessage(e?.message || '清空缓存失败');
+                      }
+                    }}
+                    className="min-h-[34px] px-3.5 text-xs font-medium rounded-md bg-amber-500 hover:bg-amber-400 text-white transition-colors shadow-2xs"
+                  >
+                    清空内存缓存
+                  </button>
+                </div>
+              </div>
+            )}
+
             {selectedNode.id === 'router' && (
               <div className="space-y-4">
                 <h4 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">

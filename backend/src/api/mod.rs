@@ -753,6 +753,21 @@ async fn toggle_pipeline_stage(
     }
 
     if state.engine.toggle_stage(&payload.id, payload.enabled) {
+        // 同步持久化写入 config.yaml，确保刷新或切换页面绝不丢失
+        {
+            let mut cfg = state.config.write();
+            match payload.id.as_str() {
+                "qtype_drop" => cfg.routing.qtype_65_reject = payload.enabled,
+                "router" => cfg.routing.enabled = payload.enabled,
+                "anti_pollution" => {
+                    cfg.routing.anti_pollution = payload.enabled;
+                    cfg.anti_pollution = payload.enabled;
+                }
+                "speed_check" => cfg.speed_check.enabled = payload.enabled,
+                _ => {}
+            }
+            let _ = cfg.save(&state.config_path);
+        }
         Ok(StatusCode::OK)
     } else {
         Err((StatusCode::BAD_REQUEST, "无法切换该节点状态".to_string()))

@@ -9,6 +9,8 @@ export interface DnsCacheStatusTableProps {
 export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({ className = '' }) => {
   const [stats, setStats] = useState<CacheStatsSnapshot | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [flushing, setFlushing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const fetchStats = async () => {
     try {
@@ -30,10 +32,25 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({ classN
     try {
       await api.clearCacheStats();
       await fetchStats();
+      setNotice('已重置缓存统计计数！');
+      setTimeout(() => setNotice(null), 3000);
     } catch (e) {
       console.error('Failed to clear cache stats', e);
     } finally {
       setClearing(false);
+    }
+  };
+
+  const handleFlushCache = async () => {
+    setFlushing(true);
+    try {
+      await api.flushCache();
+      setNotice('已清空当前全部 DNS 内存缓存条目！');
+      setTimeout(() => setNotice(null), 3000);
+    } catch (e) {
+      console.error('Failed to flush cache', e);
+    } finally {
+      setFlushing(false);
     }
   };
 
@@ -45,15 +62,34 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({ classN
 
   return (
     <div className={`p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4 ${className}`}>
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="text-sm font-normal text-neutral-800 dark:text-neutral-200">
           DNS缓存状态(更新频率: 1分钟)
         </div>
 
-        <div>
+        <div className="flex items-center gap-2">
+          {notice && (
+            <span className="text-xs text-emerald-600 dark:text-emerald-400 font-mono animate-in fade-in">
+              {notice}
+            </span>
+          )}
           <Popconfirm
-            title="确定清除所有 DNS 缓存累计统计数据吗？"
-            actionText="确认清除"
+            title="确认立即清空内存中的所有 DNS 缓存条目？"
+            actionText="确认清空缓存"
+            onConfirm={handleFlushCache}
+          >
+            <button
+              type="button"
+              disabled={flushing}
+              className="inline-flex items-center min-h-[30px] px-3.5 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/60 border border-amber-200 dark:border-amber-800/60 rounded shadow-2xs transition-colors disabled:opacity-50"
+            >
+              {flushing ? '正在清空...' : '清空内存缓存'}
+            </button>
+          </Popconfirm>
+
+          <Popconfirm
+            title="确定清除所有 DNS 缓存累计统计计数吗？"
+            actionText="确认重置计数"
             onConfirm={handleClear}
           >
             <button
@@ -61,7 +97,7 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({ classN
               disabled={clearing}
               className="inline-flex items-center min-h-[30px] px-3.5 text-xs text-neutral-700 dark:text-neutral-300 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 rounded shadow-2xs transition-colors disabled:opacity-50"
             >
-              {clearing ? '正在清除...' : '清除所有数据'}
+              {clearing ? '正在重置...' : '重置统计计数'}
             </button>
           </Popconfirm>
         </div>

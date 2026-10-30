@@ -59,6 +59,8 @@ impl DnsServer {
 
         tracing::info!("DNS UDP epoll SO_REUSEPORT 并发监听在 0.0.0.0:{} (启动 {} 个独立内核队列工作线程)", self.port, num_workers);
 
+        let inflight_semaphore = Arc::new(tokio::sync::Semaphore::new(2048));
+
         for worker_id in 0..num_workers {
             let udp_socket = match bind_udp_socket(udp_addr) {
                 Ok(s) => Arc::new(s),
@@ -72,6 +74,7 @@ impl DnsServer {
             let metrics_clone = self.metrics.clone();
             let enabled_udp = self.dns_enabled.clone();
             let logging_udp = self.logging_enabled.clone();
+            let sem = inflight_semaphore.clone();
 
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 4096];
@@ -81,6 +84,13 @@ impl DnsServer {
                             if !*enabled_udp.read() {
                                 continue;
                             }
+                            let permit = match sem.clone().try_acquire_owned() {
+                                Ok(p) => p,
+                                Err(_) => {
+                                    // 队列过载防雪崩熔断，直接丢弃过载报文
+                                    continue;
+                                }
+                            };
                             let req_bytes = buf[..len].to_vec();
                             let socket = udp_socket.clone();
                             let engine = engine_clone.clone();
@@ -89,6 +99,7 @@ impl DnsServer {
                             let logging_enabled = logging_udp.clone();
 
                             tokio::spawn(async move {
+                                let _permit = permit;
                                 if let Ok(req_msg) = Message::from_vec(&req_bytes) {
                                     let mut ctx = QueryContext::new(src.ip(), req_msg);
                                     engine.process(&mut ctx).await;

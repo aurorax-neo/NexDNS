@@ -1,6 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::str::FromStr;
 use async_trait::async_trait;
 use futures_util::future::select_ok;
@@ -28,12 +28,22 @@ pub struct UpstreamServer {
     pub proxy: Option<String>,
     #[serde(skip)]
     pub doh_client: Arc<parking_lot::RwLock<Option<reqwest::Client>>>,
+    #[serde(skip, default)]
+    pub fail_count: Arc<std::sync::atomic::AtomicU32>,
+    #[serde(skip, default = "default_cooldown")]
+    pub cooldown_until: Arc<parking_lot::RwLock<Instant>>,
+}
+
+fn default_cooldown() -> Arc<parking_lot::RwLock<Instant>> {
+    Arc::new(parking_lot::RwLock::new(Instant::now()))
 }
 
 impl UpstreamServer {
     pub fn set_proxy(&mut self, proxy: Option<String>) {
         self.proxy = proxy;
         *self.doh_client.write() = None;
+        self.fail_count.store(0, std::sync::atomic::Ordering::Relaxed);
+        *self.cooldown_until.write() = Instant::now();
     }
 
     pub fn get_or_init_doh_client(&self, timeout_duration: Duration) -> Result<reqwest::Client, String> {
@@ -176,10 +186,34 @@ impl UpstreamServer {
             host_name,
             proxy,
             doh_client: Arc::new(parking_lot::RwLock::new(None)),
+            fail_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            cooldown_until: Arc::new(parking_lot::RwLock::new(Instant::now())),
         })
     }
 
     pub async fn query(&self, req_bytes: &[u8], timeout_duration: Duration) -> Result<Message, String> {
+        let now = Instant::now();
+        if now < *self.cooldown_until.read() {
+            return Err(format!("上游节点 [{}] 熔断冷却中", self.addr));
+        }
+
+        let res = self.query_internal(req_bytes, timeout_duration).await;
+        match &res {
+            Ok(_) => {
+                self.fail_count.store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(_) => {
+                let cnt = self.fail_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if cnt >= 3 {
+                    let mut w = self.cooldown_until.write();
+                    *w = Instant::now() + Duration::from_secs(10);
+                }
+            }
+        }
+        res
+    }
+
+    async fn query_internal(&self, req_bytes: &[u8], timeout_duration: Duration) -> Result<Message, String> {
         match self.protocol {
             UpstreamProtocol::Udp => {
                 let socket_addr: SocketAddr = if self.addr.contains(':') {

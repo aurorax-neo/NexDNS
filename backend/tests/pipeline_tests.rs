@@ -158,6 +158,21 @@ fn test_cloudflare_doh_url_bypass() {
     }
     assert_eq!(final_url, "https://1.1.1.1/dns-query");
 }
+
+#[tokio::test]
+async fn test_alidns_doh() {
+    use nexdns::pipeline::plugins::upstream::UpstreamServer;
+    let s = UpstreamServer::parse("mainland", "https://223.5.5.5/dns-query#sni=dns.alidns.com").unwrap();
+    let mut req = Message::query();
+    req.add_query(hickory_proto::op::Query::query(
+        Name::from_ascii("example.com.").unwrap(),
+        RecordType::A,
+    ));
+    let bytes = req.to_vec().unwrap();
+    let res = s.query(&bytes, std::time::Duration::from_millis(4000)).await;
+    println!("Alidns result: {:?}", res);
+    assert!(res.is_ok());
+}
 #[test]
 fn test_reqwest_socks_scheme() {
     let p1 = reqwest::Proxy::all("socks5h://127.0.0.1:7890");

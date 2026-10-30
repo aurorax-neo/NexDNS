@@ -118,26 +118,58 @@ impl DnsPlugin for SpeedCheckPlugin {
             return PluginResult::Continue;
         }
 
-        // Concurrently probe all IPs
-        let mut tasks = Vec::new();
-        for (ip, record) in ip_records {
-            let self_clone = SpeedCheckPlugin {
-                cache: self.cache.clone(),
-                cache_ttl: self.cache_ttl,
-                probe_timeout: self.probe_timeout,
-                target_ports: self.target_ports.clone(),
-                enabled: self.enabled,
-            };
-            tasks.push(tokio::spawn(async move {
-                let rtt = self_clone.test_ip(ip).await;
-                (ip, record, rtt)
-            }));
+        // Fast path: check in-memory cache first without spawning tasks
+        let mut all_cached = true;
+        let mut cached_scores = Vec::new();
+        {
+            let r = self.cache.read();
+            for (ip, _) in &ip_records {
+                if let Some(score) = r.get(ip) {
+                    if score.tested_at.elapsed() < self.cache_ttl {
+                        cached_scores.push((*ip, score.rtt_ms));
+                    } else {
+                        all_cached = false;
+                        break;
+                    }
+                } else {
+                    all_cached = false;
+                    break;
+                }
+            }
         }
 
         let mut scored_records = Vec::new();
-        for t in tasks {
-            if let Ok(res) = t.await {
-                scored_records.push(res);
+        if all_cached && cached_scores.len() == ip_records.len() {
+            for (i, (ip, rec)) in ip_records.into_iter().enumerate() {
+                scored_records.push((ip, rec, cached_scores[i].1));
+            }
+        } else {
+            // Limit concurrent probing to top 3 IPs to prevent TCP socket explosion
+            let probe_limit = ip_records.len().min(3);
+            let (to_probe, remaining) = ip_records.split_at(probe_limit);
+
+            let mut tasks = Vec::new();
+            for (ip, record) in to_probe.to_vec() {
+                let self_clone = SpeedCheckPlugin {
+                    cache: self.cache.clone(),
+                    cache_ttl: self.cache_ttl,
+                    probe_timeout: self.probe_timeout.min(Duration::from_millis(200)),
+                    target_ports: self.target_ports.clone(),
+                    enabled: self.enabled,
+                };
+                tasks.push(tokio::spawn(async move {
+                    let rtt = self_clone.test_ip(ip).await;
+                    (ip, record, rtt)
+                }));
+            }
+
+            for t in tasks {
+                if let Ok(res) = t.await {
+                    scored_records.push(res);
+                }
+            }
+            for (ip, rec) in remaining.to_vec() {
+                scored_records.push((ip, rec, 9999));
             }
         }
 

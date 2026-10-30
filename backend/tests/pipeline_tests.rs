@@ -139,6 +139,24 @@ fn test_proxy_config_lookup() {
     assert_eq!(cfg.find_proxy_addr("default").as_deref(), Some("socks5://10.96.1.108:7890"));
     assert_eq!(cfg.find_proxy_addr("p2").as_deref(), Some("socks5://10.96.1.108:1080"));
     assert_eq!(cfg.find_proxy_addr("socks5://127.0.0.1:9050").as_deref(), Some("socks5://127.0.0.1:9050"));
+
+    // Disabled proxy returns None
+    cfg.enabled = false;
+    assert_eq!(cfg.find_proxy_addr("default"), None);
+    assert_eq!(cfg.find_proxy_addr("p1"), None);
+}
+
+#[test]
+fn test_cloudflare_doh_url_bypass() {
+    let mut final_url = "https://cloudflare-dns.com/dns-query".to_string();
+    let has_proxy = true;
+    let is_cf_domain = final_url.contains("cloudflare-dns.com") || final_url.contains("dns.cloudflare.com");
+    if has_proxy && is_cf_domain {
+        final_url = final_url
+            .replace("cloudflare-dns.com", "1.1.1.1")
+            .replace("dns.cloudflare.com", "1.1.1.1");
+    }
+    assert_eq!(final_url, "https://1.1.1.1/dns-query");
 }
 #[test]
 fn test_reqwest_socks_scheme() {

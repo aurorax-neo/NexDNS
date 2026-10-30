@@ -157,7 +157,6 @@ impl Default for WebConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConfig {
     pub size: usize,
-    pub serve_expired: bool,
     pub prefetch: bool,
     #[serde(default = "default_min_ttl")]
     pub min_ttl: u32,
@@ -169,10 +168,9 @@ impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             size: 10000,
-            serve_expired: true,
             prefetch: true,
             min_ttl: 60,
-            max_ttl: 300,
+            max_ttl: 120,
         }
     }
 }
@@ -182,7 +180,7 @@ fn default_min_ttl() -> u32 {
 }
 
 fn default_max_ttl() -> u32 {
-    300
+    120
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,8 +266,6 @@ pub struct RoutingConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
     pub anti_pollution: bool,
-    #[serde(default = "default_false")]
-    pub qtype_65_reject: bool,
     pub fallback_timeout_ms: u64,
 }
 
@@ -278,7 +274,6 @@ impl Default for RoutingConfig {
         Self {
             enabled: false,
             anti_pollution: true,
-            qtype_65_reject: false,
             fallback_timeout_ms: 1500,
         }
     }
@@ -358,13 +353,7 @@ impl Default for AppConfig {
             dns: DnsConfig::default(),
             web: WebConfig { port: 3000 },
             proxy: ProxyConfig::default(),
-            cache: CacheConfig {
-                size: 10000,
-                serve_expired: true,
-                prefetch: true,
-                min_ttl: 60,
-                max_ttl: 300,
-            },
+            cache: CacheConfig::default(),
             speed_check: SpeedCheckConfig {
                 enabled: true,
                 timeout_ms: 400,

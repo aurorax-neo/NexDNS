@@ -4,6 +4,13 @@ ARG BASE_IMAGE=alpine:latest
 FROM ${RUST_IMAGE} AS builder
 RUN apk add --no-cache musl-dev gcc
 WORKDIR /app
+RUN mkdir -p /root/.cargo && \
+    echo '[source.crates-io]' > /root/.cargo/config.toml && \
+    echo 'replace-with = "rsproxy-sparse"' >> /root/.cargo/config.toml && \
+    echo '[source.rsproxy-sparse]' >> /root/.cargo/config.toml && \
+    echo 'registry = "sparse+https://rsproxy.cn/index/"' >> /root/.cargo/config.toml && \
+    echo '[net]' >> /root/.cargo/config.toml && \
+    echo 'git-fetch-with-cli = true' >> /root/.cargo/config.toml
 COPY Cargo.toml ./
 COPY backend/Cargo.toml backend/
 COPY backend/src backend/src

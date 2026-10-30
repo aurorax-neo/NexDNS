@@ -8,13 +8,11 @@ use crate::pipeline::plugins::adblock::AdblockPlugin;
 use crate::pipeline::plugins::cache::CachePlugin;
 use crate::pipeline::plugins::domain_match::DomainListRegistry;
 use crate::pipeline::plugins::ip_match::IpListRegistry;
-use crate::pipeline::plugins::qtype_drop::QtypeDropPlugin;
 use crate::pipeline::plugins::rewrite::RewritePlugin;
 use crate::pipeline::plugins::speed_check::SpeedCheckPlugin;
 use crate::pipeline::plugins::upstream::ForwardPlugin;
 
 pub struct PipelineEngine {
-    pub qtype_drop: Arc<QtypeDropPlugin>,
     pub rewrite: Arc<RewritePlugin>,
     pub adblock: Arc<AdblockPlugin>,
     pub cache: Arc<CachePlugin>,
@@ -24,7 +22,6 @@ pub struct PipelineEngine {
     pub forward_gfw: Arc<ForwardPlugin>,
     pub forward_overseas: Arc<ForwardPlugin>,
     pub speed_check: Arc<SpeedCheckPlugin>,
-    pub qtype_65_enabled: AtomicBool,
     pub adblock_enabled: AtomicBool,
     pub cache_enabled: AtomicBool,
     pub router_enabled: AtomicBool,
@@ -35,7 +32,6 @@ pub struct PipelineEngine {
 
 impl PipelineEngine {
     pub fn new(
-        qtype_drop: Arc<QtypeDropPlugin>,
         rewrite: Arc<RewritePlugin>,
         adblock: Arc<AdblockPlugin>,
         cache: Arc<CachePlugin>,
@@ -45,13 +41,11 @@ impl PipelineEngine {
         forward_gfw: Arc<ForwardPlugin>,
         forward_overseas: Arc<ForwardPlugin>,
         speed_check: Arc<SpeedCheckPlugin>,
-        qtype_65_enabled: bool,
         router_enabled: bool,
         anti_pollution_enabled: bool,
         response_mode: String,
     ) -> Self {
         Self {
-            qtype_drop,
             rewrite,
             adblock,
             cache,
@@ -61,7 +55,6 @@ impl PipelineEngine {
             forward_gfw,
             forward_overseas,
             speed_check,
-            qtype_65_enabled: AtomicBool::new(qtype_65_enabled),
             adblock_enabled: AtomicBool::new(true),
             cache_enabled: AtomicBool::new(true),
             router_enabled: AtomicBool::new(router_enabled),
@@ -73,10 +66,6 @@ impl PipelineEngine {
 
     pub fn toggle_stage(&self, stage_id: &str, enabled: bool) -> bool {
         match stage_id {
-            "qtype_drop" => {
-                self.qtype_65_enabled.store(enabled, Ordering::SeqCst);
-                true
-            }
             "adblock" => {
                 self.adblock_enabled.store(enabled, Ordering::SeqCst);
                 true
@@ -157,15 +146,7 @@ impl PipelineEngine {
     pub async fn process(&self, ctx: &mut QueryContext) {
         ctx.record_timing("start");
 
-        // 1. Qtype check (e.g. Qtype 65 drop)
-        if self.qtype_65_enabled.load(Ordering::Relaxed) && ctx.qtype == RecordType::from(65) {
-            self.qtype_drop.execute(ctx).await;
-            align_edns_response(ctx);
-            ctx.finish();
-            return;
-        }
-
-        // 2. Private domain check
+        // 1. Private domain check
         if self.domain_registry.matches("domain_private", &ctx.qname) {
             let mut resp = Message::error_msg(
                 ctx.request.metadata.id,
@@ -199,22 +180,17 @@ impl PipelineEngine {
             }
         }
 
-        // 5. Cache (Serve-expired)
+        // 5. Cache
         ctx.record_timing("cache");
         if self.cache_enabled.load(Ordering::Relaxed) {
-            if let Some((mut cached_resp, is_expired)) = self.cache.get(&ctx.qname, ctx.qtype) {
+            if let Some(mut cached_resp) = self.cache.get(&ctx.qname, ctx.qtype) {
                 cached_resp.metadata.id = ctx.request.metadata.id;
                 cached_resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
                 cached_resp.metadata.recursion_available = true;
 
                 ctx.response = Some(cached_resp);
                 ctx.status = QueryStatus::Cached;
-                if is_expired {
-                    ctx.tags.insert("hit_cache_expired".to_string());
-                    self.spawn_background_refresh(ctx.qname.clone(), ctx.qtype);
-                } else {
-                    ctx.tags.insert("hit_cache".to_string());
-                }
+                ctx.tags.insert("hit_cache".to_string());
                 align_edns_response(ctx);
                 ctx.finish();
                 return;
@@ -334,88 +310,6 @@ impl PipelineEngine {
 
         align_edns_response(ctx);
         ctx.finish();
-    }
-
-    pub fn spawn_background_refresh(&self, qname: String, qtype: RecordType) {
-        let is_direct = self.domain_registry.matches("domain_direct", &qname);
-        let is_proxy = self.domain_registry.matches("domain_proxy", &qname);
-        let forward_mainland = self.forward_mainland.clone();
-        let forward_gfw = self.forward_gfw.clone();
-        let forward_overseas = self.forward_overseas.clone();
-        let cache = self.cache.clone();
-        let speed_check = self.speed_check.clone();
-        let speed_check_enabled = self.speed_check_enabled.load(Ordering::Relaxed);
-        let router_enabled = self.router_enabled.load(Ordering::Relaxed);
-        let anti_pollution_enabled = self.anti_pollution_enabled.load(Ordering::Relaxed);
-        let ip_registry = self.ip_registry.clone();
-
-        tokio::spawn(async move {
-            use std::str::FromStr;
-            let mut req = Message::query();
-            let Ok(name) = hickory_proto::rr::Name::from_str(&format!("{}.", qname.trim_end_matches('.'))) else {
-                return;
-            };
-            req.add_query(hickory_proto::op::Query::query(name, qtype));
-            let dummy_ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
-            let mut bg_ctx = QueryContext::new(dummy_ip, req);
-
-            if !router_enabled {
-                forward_mainland.execute(&mut bg_ctx).await;
-            } else if is_direct {
-                forward_mainland.execute(&mut bg_ctx).await;
-            } else if is_proxy {
-                forward_gfw.execute(&mut bg_ctx).await;
-            } else {
-                forward_mainland.execute(&mut bg_ctx).await;
-                let mut bg_fallback_resp = None;
-                if anti_pollution_enabled {
-                    if let Some(ref resp) = bg_ctx.response {
-                        let mut has_ip = false;
-                        let mut has_cn = false;
-                        for ans in &resp.answers {
-                            match &ans.data {
-                                RData::A(a) => {
-                                    has_ip = true;
-                                    if ip_registry.contains("ipv4_china", &std::net::IpAddr::V4(a.0)) {
-                                        has_cn = true;
-                                    }
-                                }
-                                RData::AAAA(aaaa) => {
-                                    has_ip = true;
-                                    if ip_registry.contains("ipv6_china", &std::net::IpAddr::V6(aaaa.0)) {
-                                        has_cn = true;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        if has_ip && !has_cn {
-                            bg_fallback_resp = bg_ctx.response.take();
-                        }
-                    }
-                }
-                if bg_ctx.response.is_none() {
-                    forward_gfw.execute(&mut bg_ctx).await;
-                    if bg_ctx.response.is_none() {
-                        forward_overseas.execute(&mut bg_ctx).await;
-                    }
-                    if bg_ctx.response.is_none() && bg_fallback_resp.is_some() {
-                        bg_ctx.response = bg_fallback_resp;
-                    }
-                }
-            }
-
-            if bg_ctx.response.is_some() {
-                if speed_check_enabled {
-                    speed_check.execute(&mut bg_ctx).await;
-                }
-                if let Some(resp) = bg_ctx.response {
-                    if resp.metadata.response_code == ResponseCode::NoError {
-                        cache.insert(&qname, qtype, resp);
-                    }
-                }
-            }
-        });
     }
 }
 

@@ -20,7 +20,6 @@ pub struct CacheEntry {
 pub struct CachePlugin {
     entries: Arc<RwLock<HashMap<(String, RecordType), CacheEntry>>>,
     max_size: usize,
-    serve_expired: bool,
     #[allow(dead_code)]
     prefetch: bool,
     pub min_ttl: AtomicU32,
@@ -28,39 +27,30 @@ pub struct CachePlugin {
 }
 
 impl CachePlugin {
-    pub fn new(max_size: usize, serve_expired: bool, prefetch: bool, min_ttl: u32, max_ttl: u32) -> Self {
+    pub fn new(max_size: usize, prefetch: bool, min_ttl: u32, max_ttl: u32) -> Self {
         Self {
             entries: Arc::new(RwLock::new(HashMap::with_capacity(max_size))),
             max_size,
-            serve_expired,
             prefetch,
             min_ttl: AtomicU32::new(min_ttl),
             max_ttl: AtomicU32::new(max_ttl),
         }
     }
 
-    pub fn get(&self, qname: &str, qtype: RecordType) -> Option<(Message, bool)> {
+    pub fn get(&self, qname: &str, qtype: RecordType) -> Option<Message> {
         let r = self.entries.read();
         let key = (qname.to_lowercase(), qtype);
         if let Some(entry) = r.get(&key) {
             entry.hits.fetch_add(1, Ordering::Relaxed);
             let elapsed = entry.created_at.elapsed();
+            // 严格遵循 TTL：未过期极速秒返，过期返回 None 触发正常回源放行
             if elapsed <= entry.ttl {
                 let mut resp = entry.message.clone();
                 let remaining_ttl = (entry.ttl - elapsed).as_secs().max(1) as u32;
                 for ans in &mut resp.answers {
                     ans.ttl = remaining_ttl;
                 }
-                return Some((resp, false));
-            } else if self.serve_expired {
-                // 过期记录在 1 小时内允许通过 serve-expired 闪速返回，同时触发后台静默拉取更新；超过 1 小时强制同步回源
-                if elapsed <= Duration::from_secs(3600) {
-                    let mut resp = entry.message.clone();
-                    for ans in &mut resp.answers {
-                        ans.ttl = 3;
-                    }
-                    return Some((resp, true));
-                }
+                return Some(resp);
             }
         }
         None
@@ -138,18 +128,14 @@ impl DnsPlugin for CachePlugin {
     }
 
     async fn execute(&self, ctx: &mut QueryContext) -> PluginResult {
-        if let Some((mut cached_resp, is_expired)) = self.get(&ctx.qname, ctx.qtype) {
+        if let Some(mut cached_resp) = self.get(&ctx.qname, ctx.qtype) {
             cached_resp.metadata.id = ctx.request.metadata.id;
             cached_resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
             cached_resp.metadata.recursion_available = true;
 
             ctx.response = Some(cached_resp);
             ctx.status = QueryStatus::Cached;
-            if is_expired {
-                ctx.tags.insert("hit_cache_expired".to_string());
-            } else {
-                ctx.tags.insert("hit_cache".to_string());
-            }
+            ctx.tags.insert("hit_cache".to_string());
             return PluginResult::Accept;
         }
 

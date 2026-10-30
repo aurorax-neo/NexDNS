@@ -309,7 +309,6 @@ async fn update_settings(
     // Hot apply to engine
     state.engine.anti_pollution_enabled.store(payload.anti_pollution, Ordering::SeqCst);
     state.engine.router_enabled.store(payload.routing.enabled, Ordering::SeqCst);
-    state.engine.qtype_65_enabled.store(payload.routing.qtype_65_reject, Ordering::SeqCst);
     state.engine.speed_check_enabled.store(payload.speed_check.enabled, Ordering::SeqCst);
     state.engine.cache.min_ttl.store(payload.cache.min_ttl, Ordering::SeqCst);
     state.engine.cache.max_ttl.store(payload.cache.max_ttl, Ordering::SeqCst);
@@ -679,13 +678,6 @@ async fn get_pipeline(State(state): State<AppState>) -> Json<Vec<PipelineNode>> 
             enabled: true,
         },
         PipelineNode {
-            id: "qtype_drop",
-            name: "Qtype 65 阻断",
-            stage: "filter",
-            description: "拦截苹果/Chrome HTTPS RR (Qtype 65) 避免绕过分流",
-            enabled: state.engine.qtype_65_enabled.load(Ordering::Relaxed),
-        },
-        PipelineNode {
             id: "rewrite",
             name: "本地重写 & Hosts",
             stage: "resolve",
@@ -703,22 +695,15 @@ async fn get_pipeline(State(state): State<AppState>) -> Json<Vec<PipelineNode>> 
             id: "cache",
             name: "高性能智能缓存",
             stage: "cache",
-            description: "Serve-Expired 零等待秒级应答与热点记录静默预取",
+            description: "内存零拷贝极速秒级应答与高频热点记录静默预取",
             enabled: state.engine.cache_enabled.load(Ordering::Relaxed),
         },
         PipelineNode {
             id: "router",
-            name: "动态分流调度引擎",
+            name: "智能分流调度引擎",
             stage: "routing",
-            description: "按 Direct 直连、Proxy 代理及 GeoIP 归属进行原生动态分流与防污染调度",
+            description: "集成 Direct/Proxy 分流、未命中智能回退与非大陆 IP 防污染探测，带优雅降级保底",
             enabled: state.engine.router_enabled.load(Ordering::Relaxed),
-        },
-        PipelineNode {
-            id: "anti_pollution",
-            name: "防 DNS 污染检测",
-            stage: "security",
-            description: "国内上游返回非大陆 IP 时丢弃应答并触发回退",
-            enabled: state.engine.anti_pollution_enabled.load(Ordering::Relaxed),
         },
         PipelineNode {
             id: "speed_check",
@@ -757,12 +742,7 @@ async fn toggle_pipeline_stage(
         {
             let mut cfg = state.config.write();
             match payload.id.as_str() {
-                "qtype_drop" => cfg.routing.qtype_65_reject = payload.enabled,
                 "router" => cfg.routing.enabled = payload.enabled,
-                "anti_pollution" => {
-                    cfg.routing.anti_pollution = payload.enabled;
-                    cfg.anti_pollution = payload.enabled;
-                }
                 "speed_check" => cfg.speed_check.enabled = payload.enabled,
                 _ => {}
             }

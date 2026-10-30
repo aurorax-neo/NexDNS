@@ -794,36 +794,16 @@ export const SettingsPage: React.FC = () => {
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">最大 TTL (秒)</label>
                   <input
                     type="number"
-                    value={settings.cache.max_ttl || 300}
+                    value={settings.cache.max_ttl || 120}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
-                        cache: { ...settings.cache, max_ttl: parseInt(e.target.value) || 3600 },
+                        cache: { ...settings.cache, max_ttl: parseInt(e.target.value) || 120 },
                       })
                     }
                     className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
                   />
                 </div>
-              </div>
-
-              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
-                <div>
-                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
-                    Serve-Expired (过期缓存秒返)
-                  </span>
-                  <span className="text-[11px] text-neutral-500">
-                    过期后先以 3s TTL 立即应答，后台静默向真实上游更新
-                  </span>
-                </div>
-                <Switch
-                  checked={settings.cache.serve_expired}
-                  onChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      cache: { ...settings.cache, serve_expired: v },
-                    })
-                  }
-                />
               </div>
 
               <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">

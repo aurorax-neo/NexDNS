@@ -175,7 +175,6 @@ export interface AppSettings {
   proxy: ProxyConfig;
   cache: {
     size: number;
-    serve_expired: boolean;
     prefetch: boolean;
     min_ttl: number;
     max_ttl: number;
@@ -190,7 +189,6 @@ export interface AppSettings {
   routing: {
     enabled?: boolean;
     anti_pollution: boolean;
-    qtype_65_reject: boolean;
     fallback_timeout_ms: number;
   };
   logging: {

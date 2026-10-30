@@ -63,8 +63,8 @@ fn test_ip_matcher() {
 }
 
 #[tokio::test]
-async fn test_cache_serve_expired() {
-    let cache = nexdns::pipeline::plugins::cache::CachePlugin::new(100, true, false, 10, 3600);
+async fn test_cache_standard_ttl() {
+    let cache = nexdns::pipeline::plugins::cache::CachePlugin::new(100, false, 10, 3600);
     let name = Name::from_str("example.com.").unwrap();
     let mut msg = Message::query();
     let record = Record::from_rdata(name, 10, RData::A(A(Ipv4Addr::new(93, 184, 216, 34))));
@@ -75,8 +75,7 @@ async fn test_cache_serve_expired() {
 
     let res = cache.get("example.com", RecordType::A);
     assert!(res.is_some());
-    let (cached_msg, is_expired) = res.unwrap();
-    assert!(!is_expired);
+    let cached_msg = res.unwrap();
     assert_eq!(cached_msg.answers.len(), 1);
 }
 
@@ -188,7 +187,7 @@ fn test_reqwest_socks_scheme() {
 async fn test_cache_intelligent_eviction() {
     use std::time::Duration;
     // Cache size 3, min_ttl 1, max_ttl 10
-    let cache = nexdns::pipeline::plugins::cache::CachePlugin::new(3, false, false, 1, 10);
+    let cache = nexdns::pipeline::plugins::cache::CachePlugin::new(3, false, 1, 10);
     let name = Name::from_str("expired.com.").unwrap();
     let mut msg_expired = Message::query();
     msg_expired.answers.push(Record::from_rdata(name, 1, RData::A(A(Ipv4Addr::new(1, 1, 1, 1)))));
@@ -236,33 +235,6 @@ fn test_ip_matcher_intervals() {
     assert!(!matcher.contains(&"11.0.0.1".parse().unwrap()));
     assert!(!matcher.contains(&"172.32.0.1".parse().unwrap()));
     assert!(!matcher.contains(&"192.169.0.1".parse().unwrap()));
-}
-
-#[tokio::test]
-async fn test_qtype_65_drop_returns_nodata_noerror() {
-    use hickory_proto::op::ResponseCode;
-    use nexdns::pipeline::context::{QueryContext, QueryStatus};
-    use nexdns::pipeline::plugin::{DnsPlugin, PluginResult};
-    use nexdns::pipeline::plugins::qtype_drop::QtypeDropPlugin;
-
-    let plugin = QtypeDropPlugin::new(65, ResponseCode::NoError);
-    let mut req = Message::query();
-    req.add_query(hickory_proto::op::Query::query(
-        Name::from_ascii("www.baidu.com.").unwrap(),
-        RecordType::from(65),
-    ));
-
-    let mut ctx = QueryContext::new("127.0.0.1".parse().unwrap(), req);
-    let res = plugin.execute(&mut ctx).await;
-
-    assert_eq!(res, PluginResult::Accept);
-    assert!(matches!(ctx.status, QueryStatus::Blocked));
-    assert_eq!(ctx.matched_rule.as_deref(), Some("qtype_65"));
-
-    let resp = ctx.response.expect("Expected response for dropped qtype 65");
-    // Must be NoError (NODATA), not NXDomain!
-    assert_eq!(resp.metadata.response_code, ResponseCode::NoError);
-    assert_eq!(resp.answers.len(), 0);
 }
 
 #[test]

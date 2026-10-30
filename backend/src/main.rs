@@ -21,7 +21,6 @@ use pipeline::plugins::adblock::{AdblockPlugin, BlockType};
 use pipeline::plugins::cache::CachePlugin;
 use pipeline::plugins::domain_match::{DomainListRegistry, DomainMatcher};
 use pipeline::plugins::ip_match::IpListRegistry;
-use pipeline::plugins::qtype_drop::QtypeDropPlugin;
 use pipeline::plugins::rewrite::{RewritePlugin, RewriteTarget};
 use pipeline::plugins::speed_check::SpeedCheckPlugin;
 use pipeline::plugins::upstream::{ForwardPlugin, UpstreamGroup, UpstreamServer};
@@ -76,13 +75,7 @@ async fn main() -> anyhow::Result<()> {
     // Init Metrics
     let metrics = MetricsCollector::new();
 
-    // 1. Plugins: QtypeDrop
-    // 必须返回 NoError (NODATA)，严禁返回 NXDomain！
-    // 根据 RFC 8020 与 RFC 9460，若对 Qtype 65 返回 NXDomain，浏览器与操作系统解析器会判定整个域名不存在，
-    // 导致客户端缓存 NXDomain 并直接阻断后续常规 A/AAAA 记录的正常解析，引发网站访问瘫痪。
-    let qtype_drop = Arc::new(QtypeDropPlugin::new(65, hickory_proto::op::ResponseCode::NoError));
-
-    // 2. Plugins: Rewrite
+    // 1. Plugins: Rewrite
     let rewrite = Arc::new(RewritePlugin::new());
     if let Ok(rewrites) = db.get_rewrites() {
         let mut map = std::collections::HashMap::new();
@@ -139,7 +132,6 @@ async fn main() -> anyhow::Result<()> {
     // 4. Plugins: Cache
     let cache = Arc::new(CachePlugin::new(
         config.cache.size,
-        config.cache.serve_expired,
         config.cache.prefetch,
         config.cache.min_ttl,
         config.cache.max_ttl,
@@ -244,7 +236,6 @@ async fn main() -> anyhow::Result<()> {
 
     // 9. Pipeline Engine
     let engine = Arc::new(PipelineEngine::new(
-        qtype_drop,
         rewrite,
         adblock,
         cache,
@@ -254,7 +245,6 @@ async fn main() -> anyhow::Result<()> {
         forward_gfw,
         forward_overseas,
         speed_check,
-        config.routing.qtype_65_reject,
         config.routing.enabled,
         config.anti_pollution,
         config.dns.response_mode.clone(),

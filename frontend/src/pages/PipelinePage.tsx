@@ -53,8 +53,6 @@ export const PipelinePage: React.FC = () => {
     switch (id) {
       case 'inbound':
         return <Layers className="w-5 h-5 text-cyan-400 align-icon" />;
-      case 'qtype_drop':
-        return <AlertTriangle className="w-5 h-5 text-amber-400 align-icon" />;
       case 'rewrite':
         return <GitFork className="w-5 h-5 text-indigo-400 align-icon" />;
       case 'adblock':
@@ -180,11 +178,11 @@ export const PipelinePage: React.FC = () => {
               <div className="space-y-4">
                 <div className="p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-3">
                   <h4 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                    智能缓存运行机制
+                    高性能智能缓存说明
                   </h4>
                   <div className="text-xs text-neutral-700 dark:text-neutral-300 space-y-2 leading-relaxed">
-                    <p>• <strong>Serve-Expired (零等待响应)</strong>: 过期记录以 3s TTL 立即返回客户端，后台自动静默拉取最新 IP，消除用户等待。</p>
-                    <p>• <strong>Prefetch-Domain (智能预取)</strong>: 当高频热点域名的 TTL 剩余低于 20% 时，由内核异步刷新。</p>
+                    <p>• <strong>标准 TTL 生命周期</strong>: 按照上游权威解析真实 TTL 缓存（默认 60s~120s），未过期秒返，过期自动回源拉取最新解析，杜绝陈旧失效 IP。</p>
+                    <p>• <strong>Prefetch-Domain (智能预取)</strong>: 高频访问热点域名在 TTL 剩余低于 20% 时由内核自动发起异步预取刷新。</p>
                   </div>
                 </div>
 
@@ -214,7 +212,7 @@ export const PipelinePage: React.FC = () => {
             {selectedNode.id === 'router' && (
               <div className="space-y-4">
                 <h4 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                  NexDNS 原生分流策略与调度拓扑
+                  NexDNS 原生智能分流策略与调度拓扑
                 </h4>
                 <div className="space-y-2 text-xs">
                   <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center">
@@ -240,26 +238,12 @@ export const PipelinePage: React.FC = () => {
                   </div>
                   <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center">
                     <div>
-                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">未命中规则域名 (Fallback Routing)</div>
-                      <div className="text-[11px] text-neutral-500 mt-0.5">未分配特定策略的普通域名</div>
+                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">未命中规则域名 (智能回退与防污染探测)</div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">优先直连；若返回非中国 IP 触发 GFW 回退；境外不可达时大陆公网 IP 优雅降级保底</div>
                     </div>
-                    <span className="text-amber-600 dark:text-amber-400 font-semibold">&rarr; 优先直连，非中国 IP 触发回退</span>
+                    <span className="text-amber-600 dark:text-amber-400 font-semibold">&rarr; 智能回退 + 降级保底</span>
                   </div>
                 </div>
-              </div>
-            )}
-
-            {selectedNode.id === 'anti_pollution' && (
-              <div className="p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-3">
-                <h4 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                  防污染判断逻辑
-                </h4>
-                <p className="text-xs text-neutral-700 dark:text-neutral-300 leading-relaxed">
-                  当未指定分流规则的域名向大陆上游发起解析，若返回的 IP <strong className="text-rose-600 dark:text-rose-400">不在中国 IPv4/IPv6 CIDR 地址库中</strong>，则判定为 DNS 劫持污染。
-                </p>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400 leading-relaxed">
-                  执行动作：<code className="text-amber-600 dark:text-amber-400 bg-neutral-200 dark:bg-surface-3 px-1 py-0.5 rounded">DropResp</code> 丢弃该虚假解析，流水线无缝回退至 GFW 纯净代理组。
-                </p>
               </div>
             )}
 

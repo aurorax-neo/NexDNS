@@ -1,10 +1,12 @@
 name: Release & Publish
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release Tag (例如 v0.1.0)'
+        required: false
+        default: 'v0.1.0'
 
 permissions:
   contents: write
@@ -105,7 +107,7 @@ jobs:
       - name: Package archive
         shell: bash
         run: |
-          TAG_NAME="${{ github.ref_name }}"
+          TAG_NAME="${{ inputs.tag || github.ref_name }}"
           [ "$TAG_NAME" = "" ] || [ "$TAG_NAME" = "main" ] && TAG_NAME="dev"
           PKG_NAME="nexdns_${TAG_NAME}_${{ matrix.target }}"
           ROOT_DIR="$(pwd)"
@@ -165,7 +167,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           draft: false
           prerelease: false

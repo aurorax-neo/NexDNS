@@ -218,6 +218,7 @@ impl UpstreamServer {
             }
             UpstreamProtocol::Doh => {
                 let mut builder = reqwest::Client::builder().timeout(timeout_duration);
+                let mut has_proxy = false;
                 if let Some(ref p) = self.proxy {
                     if p != "none" && !p.is_empty() {
                         let mut p_addr = p.clone();
@@ -228,6 +229,7 @@ impl UpstreamServer {
                         }
                         if let Ok(proxy) = reqwest::Proxy::all(&p_addr) {
                             builder = builder.proxy(proxy);
+                            has_proxy = true;
                         }
                     }
                 }
@@ -247,17 +249,27 @@ impl UpstreamServer {
                         };
                         if let Ok(ip) = IpAddr::from_str(ip_str) {
                             builder = builder.resolve(host, SocketAddr::new(ip, port));
-                            final_url = format!("https://{}{}", host, path);
+                            if has_proxy && (ip == IpAddr::from([1, 1, 1, 1]) || ip == IpAddr::from([1, 0, 0, 1])) {
+                                final_url = self.addr.clone();
+                            } else {
+                                final_url = format!("https://{}{}", host, path);
+                            }
                         }
                     }
                 }
 
                 let client = builder.build().map_err(|e| e.to_string())?;
 
-                let resp = client
+                let mut req_builder = client
                     .post(&final_url)
                     .header("content-type", "application/dns-message")
-                    .body(req_bytes.to_vec())
+                    .body(req_bytes.to_vec());
+
+                if let Some(ref host) = self.host_name {
+                    req_builder = req_builder.header("host", host);
+                }
+
+                let resp = req_builder
                     .send()
                     .await
                     .map_err(|e| e.to_string())?;

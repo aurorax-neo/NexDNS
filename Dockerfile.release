@@ -1,0 +1,12 @@
+FROM alpine:latest
+ARG TARGETARCH
+WORKDIR /app
+RUN apk add --no-cache ca-certificates tzdata && \
+    ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone
+ENV TZ=Asia/Shanghai
+COPY docker-bin/${TARGETARCH}/nexdns /app/nexdns
+RUN chmod +x /app/nexdns
+EXPOSE 53/udp 53/tcp 3000/tcp 8053/tcp
+ENTRYPOINT ["/app/nexdns"]
+CMD ["--config", "/app/data/config.yaml"]

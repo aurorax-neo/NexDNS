@@ -177,17 +177,32 @@ jobs:
 
   docker:
     name: Publish Multi-arch Docker Image to GHCR
-    needs: build-frontend
+    needs: build-binaries
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download frontend artifact
+      - name: Download linux-amd64 binary artifact
         uses: actions/download-artifact@v4
         with:
-          name: frontend-dist
-          path: frontend/dist
+          name: package-x86_64-unknown-linux-musl
+          path: pkg-amd64
+
+      - name: Download linux-arm64 binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: package-aarch64-unknown-linux-musl
+          path: pkg-arm64
+
+      - name: Prepare multi-arch binaries
+        shell: bash
+        run: |
+          mkdir -p docker-bin/amd64 docker-bin/arm64
+          tar -xvf pkg-amd64/*.tar.gz -C docker-bin/amd64/
+          tar -xvf pkg-arm64/*.tar.gz -C docker-bin/arm64/
+          chmod +x docker-bin/amd64/nexdns docker-bin/arm64/nexdns
+          ls -la docker-bin/amd64/ docker-bin/arm64/
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -216,6 +231,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

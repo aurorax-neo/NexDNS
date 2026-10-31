@@ -48,6 +48,20 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   const abortControllerRef = useRef<AbortController | null>(null);
   const bufferRef = useRef<QueryLogItem[]>([]);
   const batchTimeoutRef = useRef<number | null>(null);
+  // SSE 连接存活期间读取最新筛选条件，但筛选变化不重建连接
+  const liveFiltersRef = useRef({ page, pageSize, search, statusFilter });
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    liveFiltersRef.current = { page, pageSize, search, statusFilter };
+  }, [page, pageSize, search, statusFilter]);
 
   useEffect(() => {
     api.getSettings().then((s) => {
@@ -88,6 +102,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   };
 
   // HTTPS SSE (Server-Sent Events) live streaming (默认关闭，用户手动开启后连接)
+  // 连接生命周期只受开关与日志开关控制，筛选条件通过 ref 读取，避免重连竞态导致无法关闭
   useEffect(() => {
     if (!isLive || !loggingEnabled) {
       if (abortControllerRef.current) {
@@ -117,29 +132,36 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
       if (buffered.length === 0) return;
       bufferRef.current = [];
 
+      const { page: curPage, pageSize: curPageSize } = liveFiltersRef.current;
       const count = buffered.length;
       setTotal((prev) => prev + count);
-      if (page === 1) {
+      if (curPage === 1) {
         setLogs((prev) => {
           // 保持时间倒序: 最新到来的日志置于顶部
           const next = [...buffered.slice().reverse(), ...prev];
-          return next.slice(0, pageSize);
+          return next.slice(0, curPageSize);
         });
       }
     };
 
     (async () => {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
       try {
         const response = await fetch('/api/v1/sse/querylog', {
           headers,
           signal: abortCtrl.signal,
         });
-        if (!response.ok || !response.body) return;
-        const reader = response.body.getReader();
+        if (!response.ok || !response.body) {
+          if (!abortCtrl.signal.aborted && mountedRef.current) {
+            setIsLive(false);
+          }
+          return;
+        }
+        reader = response.body.getReader();
         const decoder = new TextDecoder();
         let streamBuffer = '';
 
-        while (true) {
+        while (!abortCtrl.signal.aborted) {
           const { done, value } = await reader.read();
           if (done) break;
           streamBuffer += decoder.decode(value, { stream: true });
@@ -153,8 +175,9 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                 if (!dataStr) continue;
                 try {
                   const item: QueryLogItem = JSON.parse(dataStr);
-                  const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
-                  const searchTrimmed = search.toLowerCase().trim();
+                  const { search: curSearch, statusFilter: curStatus } = liveFiltersRef.current;
+                  const matchesStatus = curStatus === 'all' || item.status === curStatus;
+                  const searchTrimmed = curSearch.toLowerCase().trim();
                   const matchesSearch =
                     !searchTrimmed ||
                     item.qname.toLowerCase().includes(searchTrimmed) ||
@@ -176,22 +199,36 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
           }
         }
       } catch (err: any) {
-        if (err.name !== 'AbortError') {
+        if (err?.name !== 'AbortError') {
           console.error('SSE live stream error', err);
+        }
+      } finally {
+        // 非用户主动关闭（服务端结束/网络断开/鉴权失效）时同步 UI，避免显示"实时流"但实际已断开
+        if (!abortCtrl.signal.aborted && mountedRef.current) {
+          setIsLive(false);
+        }
+        if (reader) {
+          try {
+            await reader.cancel();
+          } catch {
+            // 流可能已关闭，忽略
+          }
         }
       }
     })();
 
     return () => {
       abortCtrl.abort();
-      abortControllerRef.current = null;
+      if (abortControllerRef.current === abortCtrl) {
+        abortControllerRef.current = null;
+      }
       if (batchTimeoutRef.current) {
         window.clearTimeout(batchTimeoutRef.current);
         batchTimeoutRef.current = null;
       }
       bufferRef.current = [];
     };
-  }, [isLive, loggingEnabled, page, pageSize, search, statusFilter]);
+  }, [isLive, loggingEnabled]);
 
   const handleClearLogs = async () => {
     try {
@@ -364,7 +401,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
 
           <button
             type="button"
-            onClick={() => setIsLive(!isLive)}
+            onClick={() => setIsLive((prev) => !prev)}
             className={`inline-flex items-center justify-center gap-1.5 min-h-[38px] px-3 text-xs rounded-md border transition-colors ${
               isLive
                 ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400'

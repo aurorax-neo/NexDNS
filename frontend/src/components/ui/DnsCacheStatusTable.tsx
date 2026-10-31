@@ -108,10 +108,20 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({ classN
           <thead>
             <tr className="bg-[#4a5568] dark:bg-neutral-800 text-white font-medium">
               <th className="py-2.5 px-4 w-28"></th>
-              <th className="py-2.5 px-4 text-center font-normal">请求DNS次数</th>
+              <th
+                className="py-2.5 px-4 text-center font-normal cursor-help"
+                title="仅统计实际进入缓存路径的查询；私有域名拒绝、规则拦截与本地重写不计入"
+              >
+                缓存查询次数
+              </th>
               <th className="py-2.5 px-4 text-center font-normal">缓存命中次数</th>
               <th className="py-2.5 px-4 text-center font-normal">未命中次数</th>
-              <th className="py-2.5 px-4 text-center font-normal">命中比例</th>
+              <th
+                className="py-2.5 px-4 text-center font-normal cursor-help"
+                title="缓存命中次数 ÷ 缓存查询次数"
+              >
+                命中比例
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800/80 bg-white dark:bg-surface-1">

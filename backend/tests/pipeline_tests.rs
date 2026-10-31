@@ -439,3 +439,52 @@ fn test_change_password_execution() {
     let new_auth = AuthManager::authenticate(&conn, "admin", "newpass123").unwrap();
     assert!(new_auth.is_some());
 }
+
+#[test]
+fn test_cache_hit_rate_only_counts_cache_path_queries() {
+    use hickory_proto::op::Message;
+    use nexdns::metrics::MetricsCollector;
+    use nexdns::pipeline::context::{QueryContext, QueryStatus};
+
+    let metrics = MetricsCollector::new();
+
+    let build_ctx = |status: QueryStatus, idx: usize| {
+        let mut req = Message::query();
+        req.add_query(hickory_proto::op::Query::query(
+            Name::from_str(&format!("host{}.example.com.", idx)).unwrap(),
+            RecordType::A,
+        ));
+        let mut ctx = QueryContext::new("127.0.0.1".parse().unwrap(), req);
+        ctx.status = status;
+        ctx.finish();
+        ctx
+    };
+
+    // 2 次缓存命中
+    for i in 0..2 {
+        metrics.record(&build_ctx(QueryStatus::Cached, i));
+    }
+    // 3 次回源未命中
+    for i in 10..13 {
+        metrics.record(&build_ctx(QueryStatus::Allowed, i));
+    }
+    // 5 次规则拦截 + 4 次本地重写: 均在缓存之前短路，不应进入缓存统计
+    for i in 20..25 {
+        metrics.record(&build_ctx(QueryStatus::Blocked, i));
+    }
+    for i in 30..34 {
+        metrics.record(&build_ctx(QueryStatus::Rewritten, i));
+    }
+
+    let snap = metrics.snapshot();
+    assert_eq!(snap.total_queries, 14);
+    assert_eq!(snap.cached_queries, 2);
+    // 分母只含 2 命中 + 3 回源 = 5
+    assert!((snap.cache_hit_rate - 40.0).abs() < 1e-9, "hit rate was {}", snap.cache_hit_rate);
+
+    let cache = metrics.cache_stats.snapshot();
+    assert_eq!(cache.today.requests, 5);
+    assert_eq!(cache.today.hits, 2);
+    assert_eq!(cache.today.misses, 3);
+    assert!((cache.today.hit_rate - 40.0).abs() < 1e-9);
+}

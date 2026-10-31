@@ -173,6 +173,8 @@ pub struct MetricsCollector {
     blocked_queries: AtomicU64,
     cached_queries: AtomicU64,
     rewritten_queries: AtomicU64,
+    /// 真正进入缓存路径的查询数（命中 + 回源），作为缓存命中率的分母
+    cache_eligible_queries: AtomicU64,
     total_duration_micros: AtomicU64,
     domain_counts: Arc<RwLock<HashMap<String, u64>>>,
     blocked_counts: Arc<RwLock<HashMap<String, u64>>>,
@@ -189,6 +191,7 @@ impl MetricsCollector {
             blocked_queries: AtomicU64::new(0),
             cached_queries: AtomicU64::new(0),
             rewritten_queries: AtomicU64::new(0),
+            cache_eligible_queries: AtomicU64::new(0),
             total_duration_micros: AtomicU64::new(0),
             domain_counts: Arc::new(RwLock::new(HashMap::new())),
             blocked_counts: Arc::new(RwLock::new(HashMap::new())),
@@ -210,7 +213,13 @@ impl MetricsCollector {
         let micros = (ctx.duration_ms * 1000.0) as u64;
         self.total_duration_micros.fetch_add(micros, Ordering::Relaxed);
         let is_cached = matches!(ctx.status, QueryStatus::Cached);
-        self.cache_stats.record(is_cached);
+        // 私有域名拒绝、规则拦截与本地重写都在进入缓存查询之前就返回，
+        // 它们既不可能命中缓存，也不应稀释缓存命中率。
+        let enters_cache_path = !matches!(ctx.status, QueryStatus::Blocked | QueryStatus::Rewritten);
+        if enters_cache_path {
+            self.cache_eligible_queries.fetch_add(1, Ordering::Relaxed);
+            self.cache_stats.record(is_cached);
+        }
 
         match ctx.status {
             QueryStatus::Blocked => {
@@ -311,6 +320,7 @@ impl MetricsCollector {
         let blocked = self.blocked_queries.load(Ordering::Relaxed);
         let cached = self.cached_queries.load(Ordering::Relaxed);
         let rewritten = self.rewritten_queries.load(Ordering::Relaxed);
+        let cache_eligible = self.cache_eligible_queries.load(Ordering::Relaxed);
         let total_dur = self.total_duration_micros.load(Ordering::Relaxed);
 
         let avg_dur = if total > 0 {
@@ -325,8 +335,8 @@ impl MetricsCollector {
             0.0
         };
 
-        let cache_hit_rate = if total > 0 {
-            (cached as f64 / total as f64) * 100.0
+        let cache_hit_rate = if cache_eligible > 0 {
+            ((cached.min(cache_eligible)) as f64 / cache_eligible as f64) * 100.0
         } else {
             0.0
         };

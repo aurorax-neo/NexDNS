@@ -50,8 +50,8 @@ export const SettingsPage: React.FC = () => {
   const loadData = async () => {
     try {
       const settingsRes = await api.getSettings();
-      if (!settingsRes.cache.max_ttl || settingsRes.cache.max_ttl === 3600) {
-        settingsRes.cache.max_ttl = 300;
+      if (settingsRes.cache.max_ttl === undefined || settingsRes.cache.max_ttl === null) {
+        settingsRes.cache.max_ttl = 120;
       }
       if (!settingsRes.rules_update) {
         settingsRes.rules_update = { auto_update: true, interval_mins: 1440 };

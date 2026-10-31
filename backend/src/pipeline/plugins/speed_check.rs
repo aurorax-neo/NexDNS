@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use async_trait::async_trait;
@@ -21,7 +22,7 @@ pub struct SpeedCheckPlugin {
     cache_ttl: Duration,
     probe_timeout: Duration,
     target_ports: Vec<u16>,
-    enabled: bool,
+    pub enabled: AtomicBool,
 }
 
 impl SpeedCheckPlugin {
@@ -31,8 +32,12 @@ impl SpeedCheckPlugin {
             cache_ttl: Duration::from_secs(cache_mins * 60),
             probe_timeout: Duration::from_millis(timeout_ms),
             target_ports: vec![80, 443],
-            enabled,
+            enabled: AtomicBool::new(enabled),
         }
+    }
+
+    pub fn set_enabled(&self, val: bool) {
+        self.enabled.store(val, Ordering::SeqCst);
     }
 
     #[allow(dead_code)]
@@ -98,7 +103,7 @@ impl DnsPlugin for SpeedCheckPlugin {
     }
 
     async fn execute(&self, ctx: &mut QueryContext) -> PluginResult {
-        if !self.enabled {
+        if !self.enabled.load(Ordering::Relaxed) {
             return PluginResult::Continue;
         }
 

@@ -44,7 +44,8 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   const [pageSize, setPageSize] = useState(50);
   const [total, setTotal] = useState(0);
   const [actionSnackbar, setActionSnackbar] = useState<string | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const bufferRef = useRef<QueryLogItem[]>([]);
   const batchTimeoutRef = useRef<number | null>(null);
 
@@ -89,9 +90,9 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   // HTTPS SSE (Server-Sent Events) live streaming (默认关闭，用户手动开启后连接)
   useEffect(() => {
     if (!isLive || !loggingEnabled) {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
       }
       if (batchTimeoutRef.current) {
         window.clearTimeout(batchTimeoutRef.current);
@@ -101,12 +102,15 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
       return;
     }
 
+    const abortCtrl = new AbortController();
+    abortControllerRef.current = abortCtrl;
     const token = localStorage.getItem('nexdns_token');
-    const sseUrl = token
-      ? `/api/v1/sse/querylog?token=${encodeURIComponent(token)}`
-      : '/api/v1/sse/querylog';
-    const es = new EventSource(sseUrl);
-    eventSourceRef.current = es;
+    const headers: Record<string, string> = {
+      'Accept': 'text/event-stream',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
 
     const flushBuffer = () => {
       const buffered = bufferRef.current;
@@ -124,29 +128,63 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
       }
     };
 
-    es.onmessage = (event) => {
+    (async () => {
       try {
-        const item: QueryLogItem = JSON.parse(event.data);
-        const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
-        const searchTrimmed = search.toLowerCase().trim();
-        const matchesSearch = !searchTrimmed || item.qname.toLowerCase().includes(searchTrimmed) || item.client_ip.includes(searchTrimmed);
-        if (matchesStatus && matchesSearch) {
-          bufferRef.current.push(item);
-          if (!batchTimeoutRef.current) {
-            batchTimeoutRef.current = window.setTimeout(() => {
-              batchTimeoutRef.current = null;
-              flushBuffer();
-            }, 80); // 80ms 优雅缓冲合并渲染，杜绝高频报文引发的频繁重绘与闪烁
+        const response = await fetch('/api/v1/sse/querylog', {
+          headers,
+          signal: abortCtrl.signal,
+        });
+        if (!response.ok || !response.body) return;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let streamBuffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          streamBuffer += decoder.decode(value, { stream: true });
+          const blocks = streamBuffer.split('\n\n');
+          streamBuffer = blocks.pop() || '';
+
+          for (const block of blocks) {
+            for (const line of block.split('\n')) {
+              if (line.startsWith('data:')) {
+                const dataStr = line.slice(5).trim();
+                if (!dataStr) continue;
+                try {
+                  const item: QueryLogItem = JSON.parse(dataStr);
+                  const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
+                  const searchTrimmed = search.toLowerCase().trim();
+                  const matchesSearch =
+                    !searchTrimmed ||
+                    item.qname.toLowerCase().includes(searchTrimmed) ||
+                    item.client_ip.includes(searchTrimmed);
+                  if (matchesStatus && matchesSearch) {
+                    bufferRef.current.push(item);
+                    if (!batchTimeoutRef.current) {
+                      batchTimeoutRef.current = window.setTimeout(() => {
+                        batchTimeoutRef.current = null;
+                        flushBuffer();
+                      }, 80); // 80ms 缓冲防闪烁
+                    }
+                  }
+                } catch (e) {
+                  console.error('Failed to parse SSE log', e);
+                }
+              }
+            }
           }
         }
-      } catch (e) {
-        console.error('Failed to parse SSE log', e);
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.error('SSE live stream error', err);
+        }
       }
-    };
+    })();
 
     return () => {
-      es.close();
-      eventSourceRef.current = null;
+      abortCtrl.abort();
+      abortControllerRef.current = null;
       if (batchTimeoutRef.current) {
         window.clearTimeout(batchTimeoutRef.current);
         batchTimeoutRef.current = null;
@@ -161,6 +199,32 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
       setLogs([]);
     } catch (e) {
       console.error('Failed to clear logs', e);
+    }
+  };
+
+  const handleExportCsv = async () => {
+    setIsExporting(true);
+    try {
+      const token = localStorage.getItem('nexdns_token');
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch('/api/v1/querylog/export', { headers });
+      if (!res.ok) throw new Error('导出失败');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `nexdns-querylog-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      setActionSnackbar('已成功导出查询日志 CSV');
+    } catch (e) {
+      console.error('Export CSV error', e);
+      setActionSnackbar('导出 CSV 失败，请检查网络或登录状态');
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -311,14 +375,15 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
             {isLive ? '实时流' : '已暂停'}
           </button>
 
-          <a
-            href={localStorage.getItem('nexdns_token') ? `/api/v1/querylog/export?token=${encodeURIComponent(localStorage.getItem('nexdns_token') || '')}` : '/api/v1/querylog/export'}
-            download="nexdns-querylog.csv"
-            className="inline-flex items-center justify-center gap-1.5 min-h-[38px] px-3 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors"
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            disabled={isExporting}
+            className="inline-flex items-center justify-center gap-1.5 min-h-[38px] px-3 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors disabled:opacity-50"
           >
             <Download className="w-3.5 h-3.5 align-icon" />
-            导出 CSV
-          </a>
+            {isExporting ? '导出中...' : '导出 CSV'}
+          </button>
 
           <button
             type="button"

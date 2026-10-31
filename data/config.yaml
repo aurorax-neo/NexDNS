@@ -4,19 +4,18 @@ dns:
 web:
   port: 3000
 proxy:
-  enabled: true
-  socks5: "socks5://10.96.1.108:7890"
+  enabled: false
+  socks5: "socks5://127.0.0.1:7890"
   list:
     - id: local_clash
       name: "本地 Clash/Mihomo 节点"
-      addr: "socks5://10.96.1.108:7890"
+      addr: "socks5://127.0.0.1:7890"
       is_default: true
 cache:
   size: 10000
-  serve_expired: true
   prefetch: true
   min_ttl: 60
-  max_ttl: 300
+  max_ttl: 120
 speed_check:
   enabled: true
   timeout_ms: 400

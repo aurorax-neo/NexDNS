@@ -15,13 +15,13 @@ pub struct CacheEntry {
     pub created_at: Instant,
     pub ttl: Duration,
     pub hits: Arc<AtomicU64>,
+    pub prefetched: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub struct CachePlugin {
     entries: Arc<RwLock<HashMap<(String, RecordType), CacheEntry>>>,
     max_size: usize,
-    #[allow(dead_code)]
-    prefetch: bool,
+    pub prefetch: std::sync::atomic::AtomicBool,
     pub min_ttl: AtomicU32,
     pub max_ttl: AtomicU32,
 }
@@ -31,13 +31,13 @@ impl CachePlugin {
         Self {
             entries: Arc::new(RwLock::new(HashMap::with_capacity(max_size))),
             max_size,
-            prefetch,
+            prefetch: std::sync::atomic::AtomicBool::new(prefetch),
             min_ttl: AtomicU32::new(min_ttl),
             max_ttl: AtomicU32::new(max_ttl),
         }
     }
 
-    pub fn get(&self, qname: &str, qtype: RecordType) -> Option<Message> {
+    pub fn get_with_prefetch(&self, qname: &str, qtype: RecordType) -> Option<(Message, bool)> {
         let r = self.entries.read();
         let key = (qname.to_lowercase(), qtype);
         if let Some(entry) = r.get(&key) {
@@ -50,10 +50,18 @@ impl CachePlugin {
                 for ans in &mut resp.answers {
                     ans.ttl = remaining_ttl;
                 }
-                return Some(resp);
+                // 剩余 TTL 低于 20% 时 (即消耗超过 80%)，若开启 prefetch 且尚未预取过，触发异步预取
+                let should_prefetch = self.prefetch.load(Ordering::Relaxed)
+                    && (elapsed * 5 >= entry.ttl * 4)
+                    && entry.prefetched.compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed).is_ok();
+                return Some((resp, should_prefetch));
             }
         }
         None
+    }
+
+    pub fn get(&self, qname: &str, qtype: RecordType) -> Option<Message> {
+        self.get_with_prefetch(qname, qtype).map(|(msg, _)| msg)
     }
 
     pub fn insert(&self, qname: &str, qtype: RecordType, mut message: Message) {
@@ -75,11 +83,15 @@ impl CachePlugin {
         }
         let effective_ttl = record_ttl.clamp(min_limit, max_limit);
 
+        let key = (qname.to_lowercase(), qtype);
         let mut w = self.entries.write();
-        if w.len() >= self.max_size {
-            // 智能驱逐策略: 优先清理已过期记录，其次清理低频命中(LFU)与最老记录(LRU)
-            let mut candidates: Vec<((String, RecordType), bool, u64, Instant)> = w
+        if !w.contains_key(&key) && w.len() >= self.max_size {
+            // 智能非阻塞微秒级采样驱逐策略 (类 Redis 采样法):
+            // 避免在持有写锁时全量排序 10,000 条条目，仅抽样 64 条候选进行极速驱逐，消除微突发抖动
+            let evict_count = (self.max_size / 50).clamp(1, 20);
+            let mut sample: Vec<((String, RecordType), bool, u64, Instant)> = w
                 .iter()
+                .take(64)
                 .map(|(k, v)| {
                     let is_expired = v.created_at.elapsed() > v.ttl;
                     let hits = v.hits.load(Ordering::Relaxed);
@@ -87,19 +99,17 @@ impl CachePlugin {
                 })
                 .collect();
 
-            candidates.sort_by(|a, b| {
+            sample.sort_by(|a, b| {
                 b.1.cmp(&a.1) // 过期项优先驱逐
                     .then_with(|| a.2.cmp(&b.2)) // 命中数低者优先
                     .then_with(|| a.3.cmp(&b.3)) // 创建时间早者优先
             });
 
-            let evict_count = (self.max_size / 20).clamp(1, 100).min(candidates.len());
-            for (k, _, _, _) in candidates.into_iter().take(evict_count) {
+            for (k, _, _, _) in sample.into_iter().take(evict_count) {
                 w.remove(&k);
             }
         }
 
-        let key = (qname.to_lowercase(), qtype);
         w.insert(
             key,
             CacheEntry {
@@ -107,6 +117,7 @@ impl CachePlugin {
                 created_at: Instant::now(),
                 ttl: Duration::from_secs(effective_ttl as u64),
                 hits: Arc::new(AtomicU64::new(0)),
+                prefetched: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
     }

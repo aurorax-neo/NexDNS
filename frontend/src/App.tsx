@@ -36,7 +36,14 @@ export function App() {
     const params = new URLSearchParams(window.location.search);
     return params.get('tab') || 'overview';
   });
-  const [isDark, setIsDark] = useState<boolean>(true);
+  const [isDark, setIsDark] = useState<boolean>(() => {
+    const saved = localStorage.getItem('nexdns_theme');
+    if (saved) return saved === 'dark';
+    if (typeof window !== 'undefined' && window.matchMedia) {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    return true;
+  });
 
   useEffect(() => {
     api.getMe().then((res) => {
@@ -68,8 +75,10 @@ export function App() {
   useEffect(() => {
     if (isDark) {
       document.documentElement.classList.add('dark');
+      localStorage.setItem('nexdns_theme', 'dark');
     } else {
       document.documentElement.classList.remove('dark');
+      localStorage.setItem('nexdns_theme', 'light');
     }
   }, [isDark]);
 

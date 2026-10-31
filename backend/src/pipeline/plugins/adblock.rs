@@ -18,6 +18,16 @@ pub enum BlockType {
     Refused,
 }
 
+impl BlockType {
+    pub fn from_str_name(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "nxdomain" => BlockType::NxDomain,
+            "refused" => BlockType::Refused,
+            _ => BlockType::ZeroIp,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct RuleStore {
     pub exact_deny: HashSet<String>,
@@ -136,15 +146,25 @@ impl RuleStore {
 
 pub struct AdblockPlugin {
     rules: Arc<RwLock<RuleStore>>,
-    block_type: BlockType,
+    pub block_type: Arc<RwLock<BlockType>>,
+    pub block_ttl: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl AdblockPlugin {
-    pub fn new(block_type: BlockType) -> Self {
+    pub fn new(block_type: BlockType, block_ttl: u32) -> Self {
         Self {
             rules: Arc::new(RwLock::new(RuleStore::default())),
-            block_type,
+            block_type: Arc::new(RwLock::new(block_type)),
+            block_ttl: Arc::new(std::sync::atomic::AtomicU32::new(block_ttl.max(1))),
         }
+    }
+
+    pub fn set_block_type(&self, bt: BlockType) {
+        *self.block_type.write() = bt;
+    }
+
+    pub fn set_block_ttl(&self, ttl: u32) {
+        self.block_ttl.store(ttl.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn load_rules_from_text(&self, text: &str) {
@@ -176,7 +196,10 @@ impl DnsPlugin for AdblockPlugin {
             ctx.matched_rule = Some(rule);
             ctx.tags.insert("ad_blocked".to_string());
 
-            match self.block_type {
+            let current_bt = *self.block_type.read();
+            let current_ttl = self.block_ttl.load(std::sync::atomic::Ordering::Relaxed).max(1);
+
+            match current_bt {
                 BlockType::NxDomain => {
                     let mut resp = Message::error_msg(
                         ctx.request.metadata.id,
@@ -210,10 +233,10 @@ impl DnsPlugin for AdblockPlugin {
 
                     if let Ok(name) = Name::from_str(&format!("{}.", ctx.qname)) {
                         if ctx.qtype == RecordType::A {
-                            let record = Record::from_rdata(name, 60, RData::A(A(Ipv4Addr::new(0, 0, 0, 0))));
+                            let record = Record::from_rdata(name, current_ttl, RData::A(A(Ipv4Addr::new(0, 0, 0, 0))));
                             resp.answers.push(record);
                         } else if ctx.qtype == RecordType::AAAA {
-                            let record = Record::from_rdata(name, 60, RData::AAAA(AAAA(Ipv6Addr::UNSPECIFIED)));
+                            let record = Record::from_rdata(name, current_ttl, RData::AAAA(AAAA(Ipv6Addr::UNSPECIFIED)));
                             resp.answers.push(record);
                         }
                     }

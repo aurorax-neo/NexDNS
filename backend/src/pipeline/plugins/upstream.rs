@@ -479,8 +479,16 @@ impl UpstreamGroup {
         let now = Instant::now();
         let any_alive = servers.iter().any(|s| now >= *s.cooldown_until.read());
 
+        // 限制首轮出站并发数最多 4 个节点，避免无界连接风暴
+        let max_parallel = 4;
+        let (first_batch, overflow_batch) = if servers.len() > max_parallel {
+            servers.split_at(max_parallel)
+        } else {
+            (servers.as_slice(), [].as_slice())
+        };
+
         let mut futures = Vec::new();
-        for (idx, s) in servers.iter().enumerate() {
+        for (idx, s) in first_batch.iter().enumerate() {
             let bytes_vec = req_bytes.to_vec();
             let dur = self.timeout;
             let force_probe = !any_alive && idx == 0;
@@ -501,7 +509,23 @@ impl UpstreamGroup {
 
         match select_ok(futures).await {
             Ok((msg, _)) => Ok(msg),
-            Err(e) => Err(format!("All upstreams in '{}' failed: {}", self.name, e)),
+            Err(first_err) => {
+                if !overflow_batch.is_empty() {
+                    let mut fallback_futures = Vec::new();
+                    for s in overflow_batch {
+                        let bytes_vec = req_bytes.to_vec();
+                        let dur = self.timeout;
+                        let s_clone = s.clone();
+                        fallback_futures.push(Box::pin(async move {
+                            s_clone.query(&bytes_vec, dur).await
+                        }));
+                    }
+                    if let Ok((msg, _)) = select_ok(fallback_futures).await {
+                        return Ok(msg);
+                    }
+                }
+                Err(format!("All upstreams in '{}' failed: {}", self.name, first_err))
+            }
         }
     }
 }

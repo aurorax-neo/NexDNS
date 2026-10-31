@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use rusqlite::{params, Connection};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crate::pipeline::plugins::domain_match::{DomainListRegistry, DomainMatcher};
@@ -22,7 +22,7 @@ pub struct RuleFileInfo {
 
 pub struct RuleFileManager {
     base_dir: PathBuf,
-    db_path: String,
+    db: Arc<crate::db::Database>,
     domain_registry: Arc<DomainListRegistry>,
     ip_registry: Arc<IpListRegistry>,
 }
@@ -30,7 +30,7 @@ pub struct RuleFileManager {
 impl RuleFileManager {
     pub fn new<P: AsRef<Path>>(
         base_dir: P,
-        db_path: &str,
+        db: Arc<crate::db::Database>,
         domain_registry: Arc<DomainListRegistry>,
         ip_registry: Arc<IpListRegistry>,
     ) -> Self {
@@ -38,7 +38,7 @@ impl RuleFileManager {
         let _ = fs::create_dir_all(&p);
         let s = Self {
             base_dir: p,
-            db_path: db_path.to_string(),
+            db,
             domain_registry,
             ip_registry,
         };
@@ -46,11 +46,12 @@ impl RuleFileManager {
         s
     }
 
-    fn get_conn(&self) -> rusqlite::Result<Connection> {
-        let conn = Connection::open(&self.db_path)?;
-        let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
-        let _ = conn.execute_batch("PRAGMA busy_timeout = 5000;");
-        Ok(conn)
+    pub fn rules_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
+    fn get_conn(&self) -> rusqlite::Result<crate::db::PooledConn<'_>> {
+        self.db.get_conn()
     }
 
     fn init_db(&self) -> rusqlite::Result<()> {

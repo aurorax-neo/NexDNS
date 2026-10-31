@@ -91,6 +91,7 @@ impl PipelineEngine {
             }
             "speed_check" => {
                 self.speed_check_enabled.store(enabled, Ordering::SeqCst);
+                self.speed_check.set_enabled(enabled);
                 true
             }
             _ => false,
@@ -183,7 +184,7 @@ impl PipelineEngine {
         // 5. Cache
         ctx.record_timing("cache");
         if self.cache_enabled.load(Ordering::Relaxed) {
-            if let Some(mut cached_resp) = self.cache.get(&ctx.qname, ctx.qtype) {
+            if let Some((mut cached_resp, should_prefetch)) = self.cache.get_with_prefetch(&ctx.qname, ctx.qtype) {
                 cached_resp.metadata.id = ctx.request.metadata.id;
                 cached_resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
                 cached_resp.metadata.recursion_available = true;
@@ -191,6 +192,33 @@ impl PipelineEngine {
                 ctx.response = Some(cached_resp);
                 ctx.status = QueryStatus::Cached;
                 ctx.tags.insert("hit_cache".to_string());
+
+                if should_prefetch {
+                    ctx.tags.insert("prefetch_triggered".to_string());
+                    let forward = self.forward_mainland.clone();
+                    let cache = self.cache.clone();
+                    let qname = ctx.qname.clone();
+                    let qtype = ctx.qtype;
+                    tokio::spawn(async move {
+                        use std::str::FromStr;
+                        let mut req = Message::query();
+                        if let Ok(name) = hickory_proto::rr::Name::from_str(&format!("{}.", qname)) {
+                            req.add_query(hickory_proto::op::Query::query(name, qtype));
+                            let mut sub_ctx = QueryContext::new(
+                                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                                req,
+                            );
+                            forward.execute(&mut sub_ctx).await;
+                            if let Some(resp) = sub_ctx.response {
+                                if resp.metadata.response_code == ResponseCode::NoError && !resp.answers.is_empty() {
+                                    cache.insert(&qname, qtype, resp);
+                                    tracing::debug!("Prefetch-Domain 自动预取静默更新成功: {}", qname);
+                                }
+                            }
+                        }
+                    });
+                }
+
                 align_edns_response(ctx);
                 ctx.finish();
                 return;

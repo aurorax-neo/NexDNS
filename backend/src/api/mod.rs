@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use axum::extract::{Path as AxumPath, Query, State, Request};
+use std::net::SocketAddr;
+use axum::extract::{ConnectInfo, Path as AxumPath, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -203,16 +204,27 @@ struct LoginResponse {
 
 async fn login_handler(
     State(state): State<AppState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     Json(payload): Json<LoginPayload>,
 ) -> Result<Json<LoginResponse>, (StatusCode, String)> {
+    let client_ip = peer_addr.ip().to_string();
+    if let Err(e) = AuthManager::check_rate_limit(&client_ip) {
+        return Err((StatusCode::TOO_MANY_REQUESTS, e));
+    }
     let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     match AuthManager::authenticate(&conn, &payload.username, &payload.password) {
-        Ok(Some((token, expires_at))) => Ok(Json(LoginResponse {
-            token,
-            username: payload.username,
-            expires_at,
-        })),
-        Ok(None) => Err((StatusCode::UNAUTHORIZED, "用户名或密码错误".to_string())),
+        Ok(Some((token, expires_at))) => {
+            AuthManager::reset_login_attempts(&client_ip);
+            Ok(Json(LoginResponse {
+                token,
+                username: payload.username,
+                expires_at,
+            }))
+        }
+        Ok(None) => {
+            AuthManager::record_login_failure(&client_ip);
+            Err((StatusCode::UNAUTHORIZED, "用户名或密码错误".to_string()))
+        }
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
     }
 }
@@ -283,18 +295,24 @@ async fn get_settings(State(state): State<AppState>) -> Json<AppConfig> {
     Json(state.config.read().clone())
 }
 
-async fn update_settings(
-    State(state): State<AppState>,
-    Json(payload): Json<AppConfig>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    // 引导 DNS 强校验: 目标主机必须是纯 IP，支持 DoT/DoH/SNI，严禁主机为域名
+fn validate_config_safety(payload: &AppConfig) -> Result<(), (StatusCode, String)> {
+    if payload.dns.port == 0 {
+        return Err((StatusCode::BAD_REQUEST, "DNS 监听端口不能为 0".to_string()));
+    }
+    if payload.web.port == 0 {
+        return Err((StatusCode::BAD_REQUEST, "Web 控制台端口不能为 0".to_string()));
+    }
+    if payload.dns.doh_enabled && payload.dns.doh_port > 0 && payload.dns.doh_port == payload.web.port {
+        return Err((StatusCode::BAD_REQUEST, "DoH 独立端口禁止与 Web 控制台端口冲突".to_string()));
+    }
+    if payload.cache.min_ttl > payload.cache.max_ttl {
+        return Err((StatusCode::BAD_REQUEST, "缓存最小 TTL 不能大于最大 TTL".to_string()));
+    }
     for b in &payload.upstreams.bootstrap_dns {
         if let Err(e) = validate_bootstrap_addr(b) {
             return Err((StatusCode::BAD_REQUEST, e));
         }
     }
-
-    // 动态分流调度引擎开启强校验: 必须同时配置了 GFW / 境外组 与 海外备用组
     if payload.routing.enabled {
         let gfw_has_server = payload.upstreams.gfw.iter().any(|s| !s.trim().is_empty());
         let overseas_has_server = payload.upstreams.overseas.iter().any(|s| !s.trim().is_empty());
@@ -305,26 +323,41 @@ async fn update_settings(
             ));
         }
     }
+    Ok(())
+}
 
-    // Hot apply to engine
+fn apply_config_to_runtime(state: &AppState, payload: &AppConfig) {
     state.engine.anti_pollution_enabled.store(payload.anti_pollution, Ordering::SeqCst);
     state.engine.router_enabled.store(payload.routing.enabled, Ordering::SeqCst);
     state.engine.speed_check_enabled.store(payload.speed_check.enabled, Ordering::SeqCst);
+    state.engine.speed_check.set_enabled(payload.speed_check.enabled);
     state.engine.cache.min_ttl.store(payload.cache.min_ttl, Ordering::SeqCst);
     state.engine.cache.max_ttl.store(payload.cache.max_ttl, Ordering::SeqCst);
+    state.engine.cache.prefetch.store(payload.cache.prefetch, Ordering::SeqCst);
+    let bt = crate::pipeline::plugins::adblock::BlockType::from_str_name(&payload.dns.block_type);
+    state.engine.adblock.set_block_type(bt);
+    state.engine.adblock.set_block_ttl(payload.dns.block_ttl);
     *state.engine.response_mode.write() = payload.dns.response_mode.clone();
     *state.dns_server_enabled.write() = payload.dns.enabled;
     *state.logging_server_enabled.write() = payload.logging.enabled;
 
     *state.config.write() = payload.clone();
-    payload.save(&state.config_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state.reload_engine_upstreams();
+}
 
+async fn update_settings(
+    State(state): State<AppState>,
+    Json(payload): Json<AppConfig>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_config_safety(&payload)?;
+    payload.save(&state.config_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    apply_config_to_runtime(&state, &payload);
     Ok(StatusCode::OK)
 }
 
 pub async fn doh_handler(
     State(state): State<AppState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     body: axum::body::Bytes,
@@ -375,12 +408,22 @@ pub async fn doh_handler(
         ).into_response();
     };
 
-    let client_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
-        .unwrap_or_else(|| std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+    let peer_ip = peer_addr.ip();
+    let is_trusted_peer = peer_ip.is_loopback() || match peer_ip {
+        std::net::IpAddr::V4(v4) => v4.is_private(),
+        std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00,
+    };
+
+    let client_ip = if is_trusted_peer {
+        headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+            .unwrap_or(peer_ip)
+    } else {
+        peer_ip
+    };
 
     let mut ctx = crate::pipeline::context::QueryContext::new(client_ip, msg);
     state.engine.process(&mut ctx).await;
@@ -536,7 +579,7 @@ async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
         (c.dns.port, c.web.port)
     };
     Json(StatusResponse {
-        version: "0.1.1",
+        version: env!("CARGO_PKG_VERSION"),
         uptime_seconds: state.start_time.elapsed().as_secs(),
         dns_port: dns_p,
         web_port: web_p,
@@ -1515,11 +1558,28 @@ struct RoutingRuleContentResponse {
     content: String,
 }
 
+fn validate_rule_filename(name: &str) -> Result<(), (StatusCode, String)> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed.starts_with('.')
+    {
+        return Err((StatusCode::BAD_REQUEST, "非法文件名格式，严禁包含路径穿越字符".to_string()));
+    }
+    if !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
+        return Err((StatusCode::BAD_REQUEST, "文件名包含非法字符，仅允许字母、数字、点、横杠与下划线".to_string()));
+    }
+    Ok(())
+}
+
 async fn get_routing_rule_content(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     AxumPath(file_name): AxumPath<String>,
 ) -> Result<Json<RoutingRuleContentResponse>, (StatusCode, String)> {
-    let path = std::path::Path::new("data/rules").join(&file_name);
+    validate_rule_filename(&file_name)?;
+    let path = state.rule_manager.rules_dir().join(&file_name);
     let content = std::fs::read_to_string(&path).unwrap_or_default();
     Ok(Json(RoutingRuleContentResponse { file_name, content }))
 }
@@ -1529,7 +1589,8 @@ async fn update_routing_rule_content(
     AxumPath(file_name): AxumPath<String>,
     Json(payload): Json<UpdateRuleContentPayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let path = std::path::Path::new("data/rules").join(&file_name);
+    validate_rule_filename(&file_name)?;
+    let path = state.rule_manager.rules_dir().join(&file_name);
     std::fs::write(&path, &payload.content).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state.rule_manager.load_local_rules();
     Ok(StatusCode::OK)
@@ -1540,18 +1601,21 @@ struct RawConfigResponse {
     content: String,
 }
 
-async fn get_raw_config() -> Result<Json<RawConfigResponse>, (StatusCode, String)> {
-    let content = std::fs::read_to_string("data/config.yaml").unwrap_or_default();
+async fn get_raw_config(State(state): State<AppState>) -> Result<Json<RawConfigResponse>, (StatusCode, String)> {
+    let content = std::fs::read_to_string(&state.config_path).unwrap_or_default();
     Ok(Json(RawConfigResponse { content }))
 }
 
 async fn update_raw_config(
+    State(state): State<AppState>,
     Json(payload): Json<UpdateRuleContentPayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let _: crate::config::AppConfig = serde_yaml::from_str(&payload.content)
+    let parsed: crate::config::AppConfig = serde_yaml::from_str(&payload.content)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid YAML: {}", e)))?;
-    std::fs::write("data/config.yaml", &payload.content)
+    validate_config_safety(&parsed)?;
+    std::fs::write(&state.config_path, &payload.content)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    apply_config_to_runtime(&state, &parsed);
     Ok(StatusCode::OK)
 }
 #[derive(Deserialize)]

@@ -32,7 +32,7 @@ export const FilteringPage: React.FC = () => {
     matched_rule?: string;
   } | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
-  const [lastDeletedRule, setLastDeletedRule] = useState<AdblockRuleRecord | null>(null);
+  const [lastDeletedRule, setLastDeletedRule] = useState<{ record: AdblockRuleRecord; content?: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   // Drawer view/edit rule content state
@@ -91,8 +91,13 @@ export const FilteringPage: React.FC = () => {
 
   const handleDeleteRule = async (rule: AdblockRuleRecord) => {
     try {
+      let content = '';
+      try {
+        const res = await api.getRuleContent(rule.id);
+        content = res.content || '';
+      } catch (_) {}
       await api.deleteRule(rule.id);
-      setLastDeletedRule(rule);
+      setLastDeletedRule({ record: rule, content });
       setSnackbarMessage(`已删除规则源: ${rule.name}`);
       await fetchRules();
     } catch (e) {
@@ -104,9 +109,11 @@ export const FilteringPage: React.FC = () => {
     if (lastDeletedRule) {
       try {
         await api.addRule({
-          name: lastDeletedRule.name,
-          url: lastDeletedRule.url,
+          name: lastDeletedRule.record.name,
+          url: lastDeletedRule.record.url,
+          content: lastDeletedRule.content || undefined,
         });
+        setSnackbarMessage(`已成功恢复规则源: ${lastDeletedRule.record.name}`);
         setLastDeletedRule(null);
         await fetchRules();
       } catch (e) {

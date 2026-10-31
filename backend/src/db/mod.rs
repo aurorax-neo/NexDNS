@@ -43,8 +43,38 @@ pub struct DnsRewriteRecord {
 
 pub struct Database {
     db_path: String,
+    pool: parking_lot::Mutex<Vec<Connection>>,
     log_tx: mpsc::Sender<QueryLogItem>,
     ws_broadcast_tx: broadcast::Sender<QueryLogItem>,
+}
+
+pub struct PooledConn<'a> {
+    conn: Option<Connection>,
+    pool: &'a parking_lot::Mutex<Vec<Connection>>,
+}
+
+impl<'a> std::ops::Deref for PooledConn<'a> {
+    type Target = Connection;
+    fn deref(&self) -> &Self::Target {
+        self.conn.as_ref().unwrap()
+    }
+}
+
+impl<'a> std::ops::DerefMut for PooledConn<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.conn.as_mut().unwrap()
+    }
+}
+
+impl<'a> Drop for PooledConn<'a> {
+    fn drop(&mut self) {
+        if let Some(c) = self.conn.take() {
+            let mut p = self.pool.lock();
+            if p.len() < 16 {
+                p.push(c);
+            }
+        }
+    }
 }
 
 impl Database {
@@ -167,6 +197,7 @@ impl Database {
 
         Ok(Arc::new(Self {
             db_path: path_str,
+            pool: parking_lot::Mutex::new(Vec::new()),
             log_tx,
             ws_broadcast_tx,
         }))
@@ -265,11 +296,21 @@ impl Database {
         self.ws_broadcast_tx.subscribe()
     }
 
-    pub fn get_conn(&self) -> rusqlite::Result<Connection> {
-        let conn = Connection::open(&self.db_path)?;
-        let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
-        let _ = conn.execute_batch("PRAGMA busy_timeout = 5000;");
-        Ok(conn)
+    pub fn get_conn(&self) -> rusqlite::Result<PooledConn<'_>> {
+        let maybe_conn = self.pool.lock().pop();
+        let conn = match maybe_conn {
+            Some(c) => c,
+            None => {
+                let c = Connection::open(&self.db_path)?;
+                let _ = c.busy_timeout(std::time::Duration::from_millis(5000));
+                let _ = c.execute_batch("PRAGMA busy_timeout = 5000;");
+                c
+            }
+        };
+        Ok(PooledConn {
+            conn: Some(conn),
+            pool: &self.pool,
+        })
     }
 
     pub fn query_logs(

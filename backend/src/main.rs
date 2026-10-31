@@ -28,7 +28,7 @@ use pipeline::rule_files::RuleFileManager;
 use server::DnsServer;
 
 #[derive(Parser, Debug)]
-#[command(name = "nexdns", version = "0.1.1", about = "高性能融合型 DNS 原生服务")]
+#[command(name = "nexdns", version = env!("CARGO_PKG_VERSION"), about = "高性能融合型 DNS 原生服务")]
 struct Cli {
     #[arg(short, long, default_value = "data/config.yaml")]
     config: PathBuf,
@@ -94,7 +94,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 3. Plugins: Adblock
-    let adblock = Arc::new(AdblockPlugin::new(BlockType::ZeroIp));
+    let block_type = BlockType::from_str_name(&config.dns.block_type);
+    let adblock = Arc::new(AdblockPlugin::new(block_type, config.dns.block_ttl));
     // Seed default common ad rules if DB empty
     if let Ok(existing_rules) = db.get_rules() {
         if existing_rules.is_empty() {
@@ -150,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
     // Rule File Manager (loads direct.txt, proxy.txt, private.txt, ipv4_china.txt from data/rules)
     let rule_manager = Arc::new(RuleFileManager::new(
         rules_dir,
-        &db_path_str,
+        db.clone(),
         domain_registry.clone(),
         ip_registry.clone(),
     ));
@@ -283,6 +284,7 @@ async fn main() -> anyhow::Result<()> {
 
     let dns_server = DnsServer::new(
         config.dns.port,
+        config.dns.listen_mode.clone(),
         engine.clone(),
         db.clone(),
         metrics.clone(),
@@ -371,8 +373,22 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let cors = CorsLayer::new()
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::ACCEPT,
+        ]);
+
     let web_router = create_web_router(app_state.clone())
-        .layer(CorsLayer::permissive());
+        .layer(cors);
 
     // DoH 独立解析服务 (与 Web 控制台严格物理端口隔离，禁止共用端口)
     if config.dns.doh_enabled && config.dns.doh_port > 0 && config.dns.doh_port != config.web.port {

@@ -178,7 +178,7 @@ pub struct MetricsCollector {
     blocked_counts: Arc<RwLock<HashMap<String, u64>>>,
     client_counts: Arc<RwLock<HashMap<String, u64>>>,
     qps_slots: [QpsSlot; 5],
-    hourly_buckets: Arc<RwLock<HashMap<String, (u64, u64, u64)>>>, // hour_key -> (total, blocked, total_micros)
+    hourly_buckets: Arc<RwLock<HashMap<String, (u64, u64, u64, u64)>>>, // hour_key -> (total, blocked, total_micros, epoch_hour)
     pub cache_stats: Arc<CacheStatsTracker>,
 }
 
@@ -217,6 +217,13 @@ impl MetricsCollector {
                 self.blocked_queries.fetch_add(1, Ordering::Relaxed);
                 let mut w = self.blocked_counts.write();
                 *w.entry(ctx.qname.clone()).or_insert(0) += 1;
+                if w.len() > 1000 {
+                    let mut list: Vec<(String, u64)> = w.drain().collect();
+                    list.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
+                    for (k, v) in list.into_iter().take(300) {
+                        w.insert(k, v);
+                    }
+                }
             }
             QueryStatus::Cached => {
                 self.cached_queries.fetch_add(1, Ordering::Relaxed);
@@ -237,12 +244,26 @@ impl MetricsCollector {
             let inc = if is_cached { 10 } else { 1 };
             let mut w = self.domain_counts.write();
             *w.entry(ctx.qname.clone()).or_insert(0) += inc;
+            if w.len() > 2000 {
+                let mut list: Vec<(String, u64)> = w.drain().collect();
+                list.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
+                for (k, v) in list.into_iter().take(500) {
+                    w.insert(k, v);
+                }
+            }
         }
 
         if sample {
             let inc = if is_cached { 10 } else { 1 };
             let mut w = self.client_counts.write();
             *w.entry(ctx.client_ip.to_string()).or_insert(0) += inc;
+            if w.len() > 500 {
+                let mut list: Vec<(String, u64)> = w.drain().collect();
+                list.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
+                for (k, v) in list.into_iter().take(200) {
+                    w.insert(k, v);
+                }
+            }
         }
 
         // Lock-free atomic QPS slot update
@@ -264,10 +285,17 @@ impl MetricsCollector {
         // Record hourly bucket
         {
             let now = chrono::Local::now();
+            let now_epoch_hour = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() / 3600;
             let hour_key = format!("{:02}:00", now.hour());
             let is_blocked = matches!(ctx.status, QueryStatus::Blocked);
             let mut w = self.hourly_buckets.write();
-            let entry = w.entry(hour_key).or_insert((0, 0, 0));
+            let entry = w.entry(hour_key).or_insert((0, 0, 0, now_epoch_hour));
+            if entry.3 != now_epoch_hour {
+                *entry = (0, 0, 0, now_epoch_hour);
+            }
             entry.0 += 1;
             if is_blocked {
                 entry.1 += 1;
@@ -342,27 +370,33 @@ impl MetricsCollector {
 
         let hourly_history = {
             let r = self.hourly_buckets.read();
+            let now_epoch_hour = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() / 3600;
             let now_hour = chrono::Local::now().hour();
             let mut res = Vec::with_capacity(24);
             for i in 0..24 {
                 let h = (now_hour + 24 - (23 - i)) % 24;
                 let hour_key = format!("{:02}:00", h);
-                if let Some(&(tot, blk, dur)) = r.get(&hour_key) {
-                    let avg = if tot > 0 { (dur as f64 / tot as f64) / 1000.0 } else { 0.0 };
-                    res.push(HourlyMetric {
-                        hour: hour_key,
-                        total: tot,
-                        blocked: blk,
-                        avg_duration_ms: avg,
-                    });
-                } else {
-                    res.push(HourlyMetric {
-                        hour: hour_key,
-                        total: 0,
-                        blocked: 0,
-                        avg_duration_ms: 0.0,
-                    });
+                if let Some(&(tot, blk, dur, epoch_hour)) = r.get(&hour_key) {
+                    if now_epoch_hour.saturating_sub(epoch_hour) < 24 && tot > 0 {
+                        let avg = (dur as f64 / tot as f64) / 1000.0;
+                        res.push(HourlyMetric {
+                            hour: hour_key,
+                            total: tot,
+                            blocked: blk,
+                            avg_duration_ms: avg,
+                        });
+                        continue;
+                    }
                 }
+                res.push(HourlyMetric {
+                    hour: hour_key,
+                    total: 0,
+                    blocked: 0,
+                    avg_duration_ms: 0.0,
+                });
             }
             res
         };
@@ -389,8 +423,14 @@ impl MetricsCollector {
     }
 
     pub fn load_hourly_buckets_json(&self, json_str: &str) {
-        if let Ok(map) = serde_json::from_str::<HashMap<String, (u64, u64, u64)>>(json_str) {
+        if let Ok(map) = serde_json::from_str::<HashMap<String, (u64, u64, u64, u64)>>(json_str) {
             *self.hourly_buckets.write() = map;
+        } else if let Ok(old_map) = serde_json::from_str::<HashMap<String, (u64, u64, u64)>>(json_str) {
+            let mut new_map = HashMap::new();
+            for (k, (tot, blk, dur)) in old_map {
+                new_map.insert(k, (tot, blk, dur, 0));
+            }
+            *self.hourly_buckets.write() = new_map;
         }
     }
 }

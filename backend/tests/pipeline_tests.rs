@@ -287,3 +287,155 @@ async fn test_cname_precedes_address_records_in_speed_check() {
     assert!(matches!(out_resp.answers[1].data, RData::A(_)));
     assert!(matches!(out_resp.answers[2].data, RData::A(_)));
 }
+
+#[test]
+fn test_argon2_and_legacy_fallback() {
+    use nexdns::db::auth::{hash_password, verify_password};
+    use sha2::Digest;
+
+    // 1. Argon2 hashing & verification
+    let pass = "admin1234";
+    let hash = hash_password(pass).expect("Argon2 hash should succeed");
+    assert!(hash.starts_with("$argon2"));
+
+    let (valid, should_upgrade) = verify_password(pass, &hash, "");
+    assert!(valid);
+    assert!(!should_upgrade);
+
+    let (invalid, _) = verify_password("wrongpass", &hash, "");
+    assert!(!invalid);
+
+    // 2. Legacy SHA-256 fallback verification
+    let salt = "test-salt-123";
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"oldpassword");
+    hasher.update(b":nexdns_salt:");
+    hasher.update(salt.as_bytes());
+    let legacy_hash = format!("{:x}", hasher.finalize());
+
+    let (legacy_valid, upgrade_needed) = verify_password("oldpassword", &legacy_hash, salt);
+    assert!(legacy_valid);
+    assert!(upgrade_needed); // Must flag for automatic upgrade to Argon2!
+}
+
+#[test]
+fn test_login_rate_limiting() {
+    use nexdns::db::auth::AuthManager;
+
+    let test_ip = "192.0.2.100";
+    AuthManager::reset_login_attempts(test_ip);
+    assert!(AuthManager::check_rate_limit(test_ip).is_ok());
+
+    for _ in 0..4 {
+        AuthManager::record_login_failure(test_ip);
+        assert!(AuthManager::check_rate_limit(test_ip).is_ok());
+    }
+
+    // 5th failure triggers rate limit
+    AuthManager::record_login_failure(test_ip);
+    assert!(AuthManager::check_rate_limit(test_ip).is_err());
+
+    // Reset clears the limit
+    AuthManager::reset_login_attempts(test_ip);
+    assert!(AuthManager::check_rate_limit(test_ip).is_ok());
+}
+
+#[tokio::test]
+async fn test_dynamic_block_type_and_ttl() {
+    use nexdns::pipeline::plugins::adblock::{AdblockPlugin, BlockType};
+    use nexdns::pipeline::plugin::DnsPlugin;
+    use nexdns::pipeline::context::QueryContext;
+    use hickory_proto::op::ResponseCode;
+
+    let plugin = AdblockPlugin::new(BlockType::ZeroIp, 45);
+    plugin.load_rules_from_text("||ad.test.com^");
+
+    // 1. ZeroIp test with custom TTL 45
+    let mut req1 = Message::query();
+    req1.add_query(hickory_proto::op::Query::query(
+        Name::from_str("ad.test.com.").unwrap(),
+        RecordType::A,
+    ));
+    let mut ctx1 = QueryContext::new("127.0.0.1".parse().unwrap(), req1);
+    plugin.execute(&mut ctx1).await;
+    let resp1 = ctx1.response.expect("Should have blocked response");
+    assert_eq!(resp1.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(resp1.answers[0].ttl, 45);
+
+    // 2. Dynamically change to NXDomain
+    plugin.set_block_type(BlockType::NxDomain);
+    let mut req2 = Message::query();
+    req2.add_query(hickory_proto::op::Query::query(
+        Name::from_str("ad.test.com.").unwrap(),
+        RecordType::A,
+    ));
+    let mut ctx2 = QueryContext::new("127.0.0.1".parse().unwrap(), req2);
+    plugin.execute(&mut ctx2).await;
+    let resp2 = ctx2.response.expect("Should have blocked response");
+    assert_eq!(resp2.metadata.response_code, ResponseCode::NXDomain);
+
+    // 3. Dynamically change to Refused
+    plugin.set_block_type(BlockType::Refused);
+    let mut req3 = Message::query();
+    req3.add_query(hickory_proto::op::Query::query(
+        Name::from_str("ad.test.com.").unwrap(),
+        RecordType::A,
+    ));
+    let mut ctx3 = QueryContext::new("127.0.0.1".parse().unwrap(), req3);
+    plugin.execute(&mut ctx3).await;
+    let resp3 = ctx3.response.expect("Should have blocked response");
+    assert_eq!(resp3.metadata.response_code, ResponseCode::Refused);
+}
+
+#[tokio::test]
+async fn test_cache_prefetch_trigger_under_20_percent_ttl() {
+    use std::time::Duration;
+    use nexdns::pipeline::plugins::cache::CachePlugin;
+
+    let cache = CachePlugin::new(100, true, 2, 10);
+    let name = Name::from_str("prefetch.example.com.").unwrap();
+    let mut msg = Message::query();
+    msg.answers.push(Record::from_rdata(name, 2, RData::A(A(Ipv4Addr::new(1, 2, 3, 4)))));
+
+    cache.insert("prefetch.example.com", RecordType::A, msg);
+
+    // Query immediately (100% TTL remaining): should NOT prefetch
+    let (msg1, should_prefetch1) = cache.get_with_prefetch("prefetch.example.com", RecordType::A).unwrap();
+    assert_eq!(msg1.answers.len(), 1);
+    assert!(!should_prefetch1);
+
+    // Sleep 1.65s (elapsed > 80%, remaining < 20%): MUST trigger prefetch
+    tokio::time::sleep(Duration::from_millis(1650)).await;
+    let (msg2, should_prefetch2) = cache.get_with_prefetch("prefetch.example.com", RecordType::A).unwrap();
+    assert_eq!(msg2.answers.len(), 1);
+    assert!(should_prefetch2);
+
+    // Query immediately again: prefetched already flagged, should NOT duplicate
+    let (_, should_prefetch3) = cache.get_with_prefetch("prefetch.example.com", RecordType::A).unwrap();
+    assert!(!should_prefetch3);
+}
+
+#[test]
+fn test_change_password_execution() {
+    use nexdns::db::auth::AuthManager;
+    use rusqlite::Connection;
+
+    let conn = Connection::open_in_memory().unwrap();
+    AuthManager::init_tables(&conn).unwrap();
+
+    // Default admin user exists
+    let auth_res = AuthManager::authenticate(&conn, "admin", "admin1234").unwrap();
+    assert!(auth_res.is_some());
+
+    // Change password from admin1234 to newpass123
+    let res = AuthManager::change_password(&conn, "admin", "admin1234", "newpass123");
+    assert!(res.is_ok(), "change_password should succeed: {:?}", res);
+
+    // Verify old password no longer works
+    let old_auth = AuthManager::authenticate(&conn, "admin", "admin1234").unwrap();
+    assert!(old_auth.is_none());
+
+    // Verify new password works
+    let new_auth = AuthManager::authenticate(&conn, "admin", "newpass123").unwrap();
+    assert!(new_auth.is_some());
+}

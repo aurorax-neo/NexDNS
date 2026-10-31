@@ -33,7 +33,8 @@ export const UpstreamsPage: React.FC = () => {
   const [newProxyMode, setNewProxyMode] = useState('none');
 
   // Single test state
-  const [testingSingleAddr, setTestingSingleAddr] = useState<string | null>(null);
+  const [testingSingleKey, setTestingSingleKey] = useState<string | null>(null);
+  const [testingGroup, setTestingGroup] = useState<string | null>(null);
 
   // Edit upstream state
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -149,23 +150,54 @@ export const UpstreamsPage: React.FC = () => {
     }
   };
 
+  const getGroupTitle = (group: UpstreamGroupKey) => {
+    switch (group) {
+      case 'bootstrap':
+        return '引导 DNS';
+      case 'mainland':
+        return '大陆直连组';
+      case 'gfw':
+        return 'GFW 代理组';
+      case 'overseas':
+        return '海外备用组';
+    }
+  };
+
+  const handleBenchmarkGroup = async (groupKey: UpstreamGroupKey) => {
+    setTestingGroup(groupKey);
+    try {
+      const res = await api.testGroupUpstreams(groupKey);
+      setTestResults((prev) => {
+        const otherGroups = prev.filter((r) => r.group !== groupKey);
+        return [...otherGroups, ...res];
+      });
+      const okCount = res.filter((r) => r.ok).length;
+      setSnackbarMessage(`【${getGroupTitle(groupKey)}】整体测速完成: ${okCount}/${res.length} 节点可用`);
+    } catch (e: any) {
+      setSnackbarMessage(`组测速失败: ${e.message}`);
+    } finally {
+      setTestingGroup(null);
+    }
+  };
+
   const handleTestSingle = async (group: string, addr: string) => {
-    setTestingSingleAddr(addr);
+    const key = `${group}:${addr}`;
+    setTestingSingleKey(key);
     try {
       const res = await api.testSingleUpstream(group, addr);
       setTestResults((prev) => {
-        const existing = prev.filter((r) => r.addr !== addr);
+        const existing = prev.filter((r) => !(r.group === group && r.addr === addr));
         return [...existing, { addr, group, latency_ms: res.latency_ms, ok: res.ok }];
       });
       if (res.ok) {
-        setSnackbarMessage(`单节点测速成功！时延: ${res.latency_ms?.toFixed(1)} ms`);
+        setSnackbarMessage(`【${getGroupTitle(group as UpstreamGroupKey)}】单节点测速成功！时延: ${res.latency_ms?.toFixed(1)} ms`);
       } else {
-        setSnackbarMessage(`节点连接失败: ${res.error || '不可达'}`);
+        setSnackbarMessage(`【${getGroupTitle(group as UpstreamGroupKey)}】节点连接失败: ${res.error || '不可达'}`);
       }
     } catch (e: any) {
       setSnackbarMessage(`测试请求失败: ${e.message}`);
     } finally {
-      setTestingSingleAddr(null);
+      setTestingSingleKey(null);
     }
   };
 
@@ -321,8 +353,8 @@ export const UpstreamsPage: React.FC = () => {
     }
   };
 
-  const getLatencyScore = (addr: string) => {
-    const match = testResults.find((r) => r.addr === addr);
+  const getLatencyScore = (group: string, addr: string) => {
+    const match = testResults.find((r) => r.group === group && r.addr === addr);
     if (!match) return null;
     return match;
   };
@@ -375,7 +407,7 @@ export const UpstreamsPage: React.FC = () => {
       : [];
     return (
       <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
-        <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800">
+        <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 flex-wrap gap-2">
           <div className="flex items-center gap-2.5">
             {icon}
             <div>
@@ -383,14 +415,27 @@ export const UpstreamsPage: React.FC = () => {
               <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">{desc}</p>
             </div>
           </div>
-          <span className="text-xs font-mono text-neutral-600 dark:text-neutral-400 bg-neutral-100 dark:bg-surface-2 px-2.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-800">
-            {servers.length} 个节点
-          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleBenchmarkGroup(groupKey)}
+              disabled={testingGroup === groupKey || testing || servers.length === 0}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-surface-2 text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 transition-colors disabled:opacity-50"
+              title={`对${title}执行整体并发测速`}
+            >
+              <Zap className={`w-3.5 h-3.5 align-icon ${testingGroup === groupKey ? 'animate-pulse text-amber-500' : ''}`} />
+              {testingGroup === groupKey ? '测速中...' : '整体测速'}
+            </button>
+            <span className="text-xs font-mono text-neutral-600 dark:text-neutral-400 bg-neutral-100 dark:bg-surface-2 px-2.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-800">
+              {servers.length} 个节点
+            </span>
+          </div>
         </div>
 
         <div className="space-y-2.5">
           {servers.map((addr) => {
-            const score = getLatencyScore(addr);
+            const score = getLatencyScore(groupKey, addr);
+            const isTestingThis = testingSingleKey === `${groupKey}:${addr}`;
             const { uri, hostName, proxy, proto } = parseUpstreamEntry(addr);
             const isDoh = proto === 'DoH';
             const isTcp = proto === 'TCP';
@@ -467,11 +512,11 @@ export const UpstreamsPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => handleTestSingle(groupKey, addr)}
-                    disabled={testingSingleAddr === addr}
+                    disabled={isTestingThis || testing || testingGroup === groupKey}
                     className="text-neutral-400 hover:text-cyan-500 transition-colors disabled:opacity-50"
                     title="单独测试此节点"
                   >
-                    <Play className={`w-3.5 h-3.5 align-icon ${testingSingleAddr === addr ? 'animate-spin text-cyan-500' : ''}`} />
+                    <Play className={`w-3.5 h-3.5 align-icon ${isTestingThis ? 'animate-spin text-cyan-500' : ''}`} />
                   </button>
 
                   {/* 单项编辑按钮 */}

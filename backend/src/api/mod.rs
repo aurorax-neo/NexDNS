@@ -89,6 +89,7 @@ pub fn create_web_router(state: AppState) -> Router {
         .route("/api/v1/rules/quick-add", post(quick_add_rule))
         .route("/api/v1/upstreams", get(get_upstreams))
         .route("/api/v1/upstreams/test", post(test_upstreams))
+        .route("/api/v1/upstreams/test-group", post(test_group_upstreams))
         .route("/api/v1/upstreams/test-single", post(test_single_upstream))
         .route("/api/v1/upstreams/add", post(add_upstream))
         .route("/api/v1/upstreams/edit", post(edit_upstream))
@@ -1004,6 +1005,42 @@ struct UpstreamTestItem {
     ok: bool,
 }
 
+async fn probe_upstream_latency(
+    group: String,
+    addr: String,
+    proxy_cfg: crate::config::ProxyConfig,
+) -> UpstreamTestItem {
+    let start = std::time::Instant::now();
+    let server = crate::pipeline::plugins::upstream::UpstreamServer::parse(&group, &addr);
+    let mut ok = false;
+    let mut rtt = None;
+
+    if let Some(mut s) = server {
+        let proxy_mode = s.proxy.clone().unwrap_or_else(|| {
+            if group == "mainland" || group == "bootstrap" { "none".to_string() } else { "default".to_string() }
+        });
+        s.set_proxy(proxy_cfg.find_proxy_addr(&proxy_mode));
+        let mut req = hickory_proto::op::Message::query();
+        req.add_query(hickory_proto::op::Query::query(
+            hickory_proto::rr::Name::from_ascii("example.com.").unwrap(),
+            hickory_proto::rr::RecordType::A,
+        ));
+        if let Ok(bytes) = req.to_vec() {
+            if s.query(&bytes, std::time::Duration::from_millis(3500)).await.is_ok() {
+                ok = true;
+                rtt = Some((start.elapsed().as_micros() as f64) / 1000.0);
+            }
+        }
+    }
+
+    UpstreamTestItem {
+        addr,
+        group,
+        latency_ms: rtt,
+        ok,
+    }
+}
+
 async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestItem>> {
     let (bootstrap, mainland, gfw, overseas, proxy_cfg) = {
         let cfg = state.config.read();
@@ -1015,50 +1052,74 @@ async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestI
             cfg.proxy.clone(),
         )
     };
-    let mut results = Vec::new();
 
     let groups = [
-        ("bootstrap", &bootstrap),
-        ("mainland", &mainland),
-        ("gfw", &gfw),
-        ("overseas", &overseas),
+        ("bootstrap", bootstrap),
+        ("mainland", mainland),
+        ("gfw", gfw),
+        ("overseas", overseas),
     ];
 
+    let mut tasks = Vec::new();
     for (group_name, list) in groups {
         for addr in list {
-            let start = std::time::Instant::now();
-            let server = crate::pipeline::plugins::upstream::UpstreamServer::parse("test", addr);
-            let mut ok = false;
-            let mut rtt = None;
+            let g = group_name.to_string();
+            let p = proxy_cfg.clone();
+            tasks.push(tokio::spawn(async move {
+                probe_upstream_latency(g, addr, p).await
+            }));
+        }
+    }
 
-            if let Some(mut s) = server {
-                let proxy_mode = s.proxy.clone().unwrap_or_else(|| {
-                    if group_name == "mainland" || group_name == "bootstrap" { "none".to_string() } else { "default".to_string() }
-                });
-                s.set_proxy(proxy_cfg.find_proxy_addr(&proxy_mode));
-                let mut req = hickory_proto::op::Message::query();
-                req.add_query(hickory_proto::op::Query::query(
-                    hickory_proto::rr::Name::from_ascii("example.com.").unwrap(),
-                    hickory_proto::rr::RecordType::A,
-                ));
-                if let Ok(bytes) = req.to_vec() {
-                    if s.query(&bytes, std::time::Duration::from_millis(3500)).await.is_ok() {
-                        ok = true;
-                        rtt = Some((start.elapsed().as_micros() as f64) / 1000.0);
-                    }
-                }
-            }
-
-            results.push(UpstreamTestItem {
-                addr: addr.clone(),
-                group: group_name.to_string(),
-                latency_ms: rtt,
-                ok,
-            });
+    let mut results = Vec::new();
+    for t in tasks {
+        if let Ok(item) = t.await {
+            results.push(item);
         }
     }
 
     Json(results)
+}
+
+#[derive(Deserialize)]
+struct GroupUpstreamTestPayload {
+    group: String,
+}
+
+async fn test_group_upstreams(
+    State(state): State<AppState>,
+    Json(payload): Json<GroupUpstreamTestPayload>,
+) -> Result<Json<Vec<UpstreamTestItem>>, (StatusCode, String)> {
+    let (servers, proxy_cfg) = {
+        let cfg = state.config.read();
+        let s = match payload.group.as_str() {
+            "bootstrap" => cfg.upstreams.bootstrap_dns.clone(),
+            "mainland" => cfg.upstreams.mainland.clone(),
+            "gfw" => cfg.upstreams.gfw.clone(),
+            "overseas" => cfg.upstreams.overseas.clone(),
+            _ => return Err((StatusCode::BAD_REQUEST, "未知上游分组".to_string())),
+        };
+        (s, cfg.proxy.clone())
+    };
+
+    let group_name = payload.group;
+    let mut tasks = Vec::new();
+    for addr in servers {
+        let g = group_name.clone();
+        let p = proxy_cfg.clone();
+        tasks.push(tokio::spawn(async move {
+            probe_upstream_latency(g, addr, p).await
+        }));
+    }
+
+    let mut results = Vec::new();
+    for t in tasks {
+        if let Ok(item) = t.await {
+            results.push(item);
+        }
+    }
+
+    Ok(Json(results))
 }
 
 async fn get_rewrites(State(state): State<AppState>) -> Result<Json<Vec<DnsRewriteRecord>>, (StatusCode, String)> {

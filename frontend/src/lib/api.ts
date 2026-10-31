@@ -396,6 +396,16 @@ export const api = {
     return res.json();
   },
 
+  async testGroupUpstreams(group: string): Promise<UpstreamTestItem[]> {
+    const res = await authFetch('/api/v1/upstreams/test-group', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group }),
+    });
+    if (!res.ok) throw new Error('分组测速失败');
+    return res.json();
+  },
+
   async getRewrites(): Promise<DnsRewriteRecord[]> {
     const res = await authFetch('/api/v1/rewrites');
     return res.json();

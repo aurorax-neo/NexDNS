@@ -15,6 +15,11 @@ permissions:
   contents: write
   packages: write
 
+# 关键：开启并发控制，重推 Tag 或修复时自动取消前序挂起任务，杜绝 Actions 额度浪费
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-frontend:
     name: Build Frontend UI
@@ -150,6 +155,53 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ── 约束 1：Tag 必须符合 SemVer ──────────────────────────
+      - name: Validate tag format (SemVer)
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' 不符合 SemVer（应为 vX.Y.Z 或 vX.Y.Z-pre）"
+            exit 1
+          fi
+
+      # ── 约束 2：源码版本号与 Tag 一致 ─────────────────────────
+      - name: Verify version matches Tag
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"; VER="${TAG#v}"
+          SRC_VER=$(grep -m1 '^version' backend/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+          if [ "$SRC_VER" != "$VER" ]; then
+            echo "::error::backend/Cargo.toml version=$SRC_VER 与 Tag=$VER 不一致"
+            exit 1
+          fi
+
+      # ── 约束 3：CHANGELOG 必须包含当前版本段落且非空 ─────────
+      - name: Verify CHANGELOG entry
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"; VER="${TAG#v}"
+          if ! grep -qE "^##\s*\[?${VER}\]?" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md 缺少版本 $VER 的条目，请先补充后重推 Tag"
+            exit 1
+          fi
+
+      - name: Extract release body from CHANGELOG
+        id: changelog
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"; VER="${TAG#v}"
+          BODY=$(awk -v ver="$VER" '
+            $0 ~ "^## \\[?"ver"\\]?" {flag=1; next}
+            flag && /^## / {exit}
+            flag && NF {print}
+          ' CHANGELOG.md)
+          if [ -z "${BODY//[[:space:]]/}" ]; then
+            echo "::error::CHANGELOG 中版本 $VER 内容为空"
+            exit 1
+          fi
+          { echo "body<<__EOF__"; echo "$BODY"; echo "__EOF__"; } >> "$GITHUB_OUTPUT"
+
       - name: Download all package artifacts
         uses: actions/download-artifact@v4
         with:
@@ -171,9 +223,10 @@ jobs:
         with:
           files: release-assets/*
           tag_name: ${{ inputs.tag || github.ref_name }}
-          generate_release_notes: true
+          body: ${{ steps.changelog.outputs.body }}
+          generate_release_notes: false
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   docker:
     name: Publish Multi-arch Docker Image to GHCR
@@ -238,3 +291,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 记录镜像 digest 到 Job Summary，保证发布可追溯
+      - name: Record image digest
+        shell: bash
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/nexdns"
+          TAG="${{ inputs.tag || github.ref_name }}"
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${TAG#v}" --format '{{json .Manifest}}' \
+                   | jq -r '.digest' 2>/dev/null || echo "unknown")
+          {
+            echo "### 📦 Multi-arch image published"
+            echo "- Image: \`${IMAGE}:${TAG#v}\`"
+            echo "- Digest: \`${DIGEST}\`"
+            echo "- Platforms: linux/amd64, linux/arm64"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -12,6 +12,7 @@ import {
 import { api, MetricsSnapshot, StatusResponse } from '../lib/api';
 import { ActivityChart } from '../components/ui/ActivityChart';
 import { DnsCacheStatusTable } from '../components/ui/DnsCacheStatusTable';
+import { isPrivateIp } from '../lib/net';
 
 export interface OverviewPageProps {
   onNavigate: (tab: string) => void;
@@ -353,7 +354,6 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                     <span className="text-[11px] font-normal text-neutral-400 font-mono">前 {Math.min(list.length, MAX_TOP_LIMIT)} 项</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-neutral-400 mr-1">内网来源</span>
                     {totalPages > 1 && (
                       <div className="flex items-center gap-1 text-xs text-neutral-500 font-mono">
                         <button
@@ -381,11 +381,23 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                   {pagedList.length > 0 ? (
                     pagedList.map(([client, count], idx) => {
                       const pct = Math.round((count / maxCount) * 100);
+                      const privateSource = isPrivateIp(client);
                       return (
                         <div key={client} className="group">
                           <div className="flex items-center justify-between text-xs mb-1">
-                            <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate max-w-[190px]">
-                              {baseIdx + idx + 1}. {client}
+                            <span className="flex items-center gap-1.5 min-w-0">
+                              <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate max-w-[190px]">
+                                {baseIdx + idx + 1}. {client}
+                              </span>
+                              <span
+                                className={`shrink-0 px-1 py-0.5 text-[10px] rounded border ${
+                                  privateSource
+                                    ? 'bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-400 border-sky-200 dark:border-sky-800/40'
+                                    : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/40'
+                                }`}
+                              >
+                                {privateSource ? '内网' : '公网'}
+                              </span>
                             </span>
                             <span className="text-neutral-500 font-mono tabular-nums">{count}</span>
                           </div>

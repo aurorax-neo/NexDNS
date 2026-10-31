@@ -240,7 +240,9 @@ impl MetricsCollector {
             true
         };
 
-        if sample {
+        // 高频查询域名只统计真实解析流量；被拦截的域名已单独计入 blocked_counts，
+        // 否则广告/追踪域名会因为查询量大而长期霸占"高频查询域名"榜单。
+        if sample && !matches!(ctx.status, QueryStatus::Blocked) {
             let inc = if is_cached { 10 } else { 1 };
             let mut w = self.domain_counts.write();
             *w.entry(ctx.qname.clone()).or_insert(0) += inc;

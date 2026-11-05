@@ -106,18 +106,18 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({ classN
       <div className="overflow-x-auto rounded border border-neutral-200 dark:border-neutral-800">
         <table className="w-full text-xs text-left border-collapse">
           <thead>
-            <tr className="bg-[#4a5568] dark:bg-neutral-800 text-white font-medium">
-              <th className="py-2.5 px-4 w-28"></th>
+            <tr className="bg-neutral-100/70 dark:bg-surface-2 border-b border-neutral-200 dark:border-neutral-800 text-neutral-600 dark:text-neutral-400 font-medium">
+              <th className="py-2.5 px-4 w-28 text-center text-neutral-600 dark:text-neutral-400 font-medium"></th>
               <th
-                className="py-2.5 px-4 text-center font-normal cursor-help"
+                className="py-2.5 px-4 text-center font-medium cursor-help text-neutral-600 dark:text-neutral-400"
                 title="仅统计实际进入缓存路径的查询；私有域名拒绝、规则拦截与本地重写不计入"
               >
                 缓存查询次数
               </th>
-              <th className="py-2.5 px-4 text-center font-normal">缓存命中次数</th>
-              <th className="py-2.5 px-4 text-center font-normal">未命中次数</th>
+              <th className="py-2.5 px-4 text-center font-medium text-neutral-600 dark:text-neutral-400">缓存命中次数</th>
+              <th className="py-2.5 px-4 text-center font-medium text-neutral-600 dark:text-neutral-400">未命中次数</th>
               <th
-                className="py-2.5 px-4 text-center font-normal cursor-help"
+                className="py-2.5 px-4 text-center font-medium cursor-help text-neutral-600 dark:text-neutral-400"
                 title="缓存命中次数 ÷ 缓存查询次数"
               >
                 命中比例

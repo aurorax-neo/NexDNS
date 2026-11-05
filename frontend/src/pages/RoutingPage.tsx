@@ -640,12 +640,12 @@ export const RoutingPage: React.FC = () => {
 
           {searchLine ? (
             <div className="space-y-1.5">
-              <div className="text-[11px] text-neutral-500 font-mono">
+              <div className="text-[11px] text-neutral-500 dark:text-neutral-400 font-mono">
                 匹配到 {filteredLines.length} 行:
               </div>
-              <div className="max-h-[520px] overflow-y-auto p-3 font-mono text-xs rounded-md bg-neutral-900 text-neutral-100 border border-neutral-800 space-y-1">
+              <div className="max-h-[520px] overflow-y-auto p-3 font-mono text-xs rounded-md bg-neutral-50 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-100 border border-neutral-200 dark:border-neutral-800 space-y-1">
                 {filteredLines.slice(0, 300).map((l, idx) => (
-                  <div key={idx} className="hover:bg-neutral-800 px-1 py-0.5 rounded">
+                  <div key={idx} className="hover:bg-neutral-200/50 dark:hover:bg-neutral-800 px-1.5 py-0.5 rounded transition-colors">
                     {l}
                   </div>
                 ))}
@@ -660,7 +660,7 @@ export const RoutingPage: React.FC = () => {
                 rows={20}
                 value={fileContent}
                 onChange={(e) => setFileContent(e.target.value)}
-                className="w-full p-3 font-mono text-xs bg-neutral-900 text-neutral-100 border border-neutral-800 rounded-md focus:outline-none focus:border-cyan-500 leading-relaxed resize-y"
+                className="w-full p-3 font-mono text-xs bg-neutral-50 dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 border border-neutral-300 dark:border-neutral-800 rounded-md focus:outline-none focus:border-cyan-500 leading-relaxed resize-y shadow-2xs"
               />
             </div>
           )}

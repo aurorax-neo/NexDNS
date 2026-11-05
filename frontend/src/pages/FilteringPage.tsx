@@ -484,27 +484,27 @@ export const FilteringPage: React.FC = () => {
                 rows={22}
                 value={drawerContent}
                 onChange={(e) => setDrawerContent(e.target.value)}
-                className="w-full p-3 font-mono text-xs bg-neutral-900 text-neutral-100 border border-neutral-800 rounded-md focus:outline-none focus:border-rose-500 leading-relaxed resize-y"
+                className="w-full p-3 font-mono text-xs bg-neutral-50 dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 border border-neutral-300 dark:border-neutral-800 rounded-md focus:outline-none focus:border-rose-500 leading-relaxed resize-y shadow-2xs"
                 placeholder="在此直接修改或输入规则..."
               />
             ) : (
-              <div className="max-h-[560px] overflow-y-auto p-3 font-mono text-xs rounded-md bg-neutral-900 text-neutral-100 border border-neutral-800 space-y-1">
+              <div className="max-h-[560px] overflow-y-auto p-3 font-mono text-xs rounded-md bg-neutral-50 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-100 border border-neutral-200 dark:border-neutral-800 space-y-1">
                 {drawerContent
                   .split('\n')
                   .filter((l) => !drawerSearch || l.toLowerCase().includes(drawerSearch.toLowerCase()))
                   .slice(0, 500)
                   .map((line, idx) => (
-                    <div key={idx} className="flex gap-3 hover:bg-neutral-800/60 px-1 py-0.5 rounded">
-                      <span className="text-neutral-600 select-none text-right w-10 shrink-0 font-mono text-[11px]">
+                    <div key={idx} className="flex gap-3 hover:bg-neutral-200/50 dark:hover:bg-neutral-800/60 px-1 py-0.5 rounded transition-colors">
+                      <span className="text-neutral-400 dark:text-neutral-600 select-none text-right w-10 shrink-0 font-mono text-[11px]">
                         {idx + 1}
                       </span>
                       <span
                         className={`break-all ${
                           line.startsWith('!') || line.startsWith('#')
-                            ? 'text-neutral-500 italic'
+                            ? 'text-neutral-400 dark:text-neutral-500 italic'
                             : line.startsWith('@@')
-                            ? 'text-emerald-400 font-semibold'
-                            : 'text-neutral-200'
+                            ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                            : 'text-neutral-700 dark:text-neutral-200'
                         }`}
                       >
                         {line || ' '}
@@ -512,7 +512,7 @@ export const FilteringPage: React.FC = () => {
                     </div>
                   ))}
                 {drawerContent.split('\n').length > 500 && !drawerSearch && (
-                  <div className="text-center py-2 text-neutral-500 text-[11px] border-t border-neutral-800 mt-2">
+                  <div className="text-center py-2 text-neutral-400 dark:text-neutral-500 text-[11px] border-t border-neutral-200 dark:border-neutral-800 mt-2">
                     已预览前 500 行，使用上方搜索栏可精确定位全文规则
                   </div>
                 )}

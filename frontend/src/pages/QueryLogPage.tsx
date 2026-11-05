@@ -436,16 +436,16 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
       {/* 查询日志主表格 */}
       <div className="rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] text-left text-xs table-fixed">
+          <table className="w-full min-w-[1080px] text-left text-xs table-fixed">
             <thead className="bg-neutral-50 dark:bg-surface-2/60 border-b border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 uppercase font-medium">
               <tr>
-                <th className="py-3 px-4 w-[95px]">请求时间</th>
-                <th className="py-3 px-4 w-[95px]">状态</th>
-                <th className="py-3 px-4 min-w-[260px]">查询域名与类型</th>
-                <th className="py-3 px-4 w-[115px]">客户端 IP</th>
+                <th className="py-3 px-4 w-[92px]">请求时间</th>
+                <th className="py-3 px-4 w-[88px]">状态</th>
+                <th className="py-3 px-4 min-w-[240px]">查询域名与类型</th>
+                <th className="py-3 px-4 w-[180px]">客户端 IP</th>
                 <th className="py-3 px-4 w-[170px]">分流 / 匹配规则</th>
-                <th className="py-3 px-4 w-[170px]">响应结果</th>
-                <th className="py-3 px-4 w-[90px] text-right">解析时延</th>
+                <th className="py-3 px-4 w-[180px]">响应结果</th>
+                <th className="py-3 px-4 w-[88px] text-right">解析时延</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800/60 font-normal bg-white dark:bg-surface-1">
@@ -472,7 +472,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                       <td className="py-2.5 px-4 overflow-hidden">
                         <div className="flex items-center gap-2 min-w-0">
                           <span
-                            className="font-mono text-neutral-800 dark:text-neutral-200 font-medium truncate block max-w-full whitespace-nowrap"
+                            className="font-mono text-neutral-800 dark:text-neutral-200 font-medium truncate block max-w-full"
                             title={cleanQname}
                           >
                             {cleanQname}
@@ -482,27 +482,35 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                           </span>
                         </div>
                       </td>
-                      <td className="py-2.5 px-4 font-mono text-neutral-600 dark:text-neutral-300 tabular-nums whitespace-nowrap">
-                        {log.client_ip}
+                      <td className="py-2.5 px-4 font-mono text-neutral-600 dark:text-neutral-300 tabular-nums overflow-hidden">
+                        <span className="truncate block max-w-full" title={log.client_ip}>
+                          {log.client_ip}
+                        </span>
                       </td>
-                      <td className="py-2.5 px-4 text-neutral-500 dark:text-neutral-400 truncate">
+                      <td className="py-2.5 px-4 text-neutral-500 dark:text-neutral-400 overflow-hidden">
                         {log.matched_rule ? (
-                          <span className="text-rose-600 dark:text-rose-400 font-mono truncate block" title={log.matched_rule}>
+                          <span className="text-rose-600 dark:text-rose-400 font-mono truncate block max-w-full" title={log.matched_rule}>
                             {log.matched_rule}
                           </span>
                         ) : log.routing_group ? (
-                          <span className="text-cyan-600 dark:text-cyan-400 font-mono">组: {log.routing_group}</span>
+                          <span className="text-cyan-600 dark:text-cyan-400 font-mono truncate block max-w-full" title={`组: ${log.routing_group}`}>
+                            组: {log.routing_group}
+                          </span>
                         ) : (
-                          '-'
+                          <span className="text-neutral-400">-</span>
                         )}
                       </td>
-                      <td className="py-2.5 px-4 font-mono text-neutral-700 dark:text-neutral-300 tabular-nums truncate">
+                      <td className="py-2.5 px-4 font-mono text-neutral-700 dark:text-neutral-300 tabular-nums overflow-hidden">
                         {log.response_ip ? (
-                          <span className="truncate block" title={log.response_ip}>{log.response_ip}</span>
+                          <span className="truncate block max-w-full" title={log.response_ip}>
+                            {log.response_ip}
+                          </span>
                         ) : log.rcode === 'No Error' ? (
-                          <span className="text-neutral-400">无记录 (NODATA)</span>
+                          <span className="text-neutral-400 truncate block max-w-full">无记录 (NODATA)</span>
                         ) : (
-                          <span className="text-rose-500 font-medium">{log.rcode}</span>
+                          <span className="text-rose-500 font-medium truncate block max-w-full" title={log.rcode}>
+                            {log.rcode}
+                          </span>
                         )}
                       </td>
                       <td className="py-2.5 px-4 text-right font-mono tabular-nums text-neutral-700 dark:text-neutral-300 whitespace-nowrap">

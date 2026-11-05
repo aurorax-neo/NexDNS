@@ -1,11 +1,9 @@
 services:
   nexdns:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: nexdns:latest
+    image: dx.aorz.kdns.fr/ghcr.io/aurorax-neo/nexdns:0.1.4
     container_name: nexdns
     restart: unless-stopped
+    network_mode: bridge
     ports:
       - "53:53/udp"
       - "53:53/tcp"

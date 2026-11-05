@@ -21,7 +21,7 @@ export function SegmentedControl<T extends string>({
 }: SegmentedControlProps<T>) {
   return (
     <div
-      className={`inline-flex items-center p-1 bg-surface-2 border border-neutral-800 rounded-lg ${className}`}
+      className={`inline-flex items-center p-1 bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 rounded-lg ${className}`}
     >
       {options.map((opt) => {
         const isActive = opt.value === value;
@@ -32,8 +32,8 @@ export function SegmentedControl<T extends string>({
             onClick={() => onChange(opt.value)}
             className={`inline-flex items-center gap-1.5 min-h-[32px] px-3 text-xs font-medium rounded-md transition-all ${
               isActive
-                ? 'bg-neutral-800 text-neutral-100 shadow-sm border border-neutral-700/60'
-                : 'text-neutral-400 hover:text-neutral-200 hover:bg-surface-3/50'
+                ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-xs border border-neutral-200 dark:border-neutral-700/60'
+                : 'text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200 hover:bg-neutral-200/50 dark:hover:bg-surface-3/50'
             }`}
           >
             {opt.icon}

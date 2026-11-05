@@ -1,6 +1,6 @@
 services:
   nexdns:
-    image: dx.aorz.kdns.fr/ghcr.io/aurorax-neo/nexdns:0.1.4
+    image: dx.aorz.kdns.fr/ghcr.io/aurorax-neo/nexdns:latest
     container_name: nexdns
     restart: unless-stopped
     network_mode: bridge
@@ -10,6 +10,6 @@ services:
       - "3000:3000/tcp"
       - "8053:8053/tcp"
     volumes:
-      - ./data:/app/data
+      - /opt/docker/nexdns/data:/app/data
     environment:
       - TZ=Asia/Shanghai

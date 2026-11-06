@@ -176,23 +176,43 @@ impl PipelineEngine {
     pub async fn process(&self, ctx: &mut QueryContext) {
         ctx.record_timing("start");
 
-        // 1. Private domain check
-        if self.domain_registry.matches("domain_private", &ctx.qname) {
+        // 1. 畸形域名/URL 拦截与 RFC 本地特殊发现域响应 (_dns.resolver.arpa / ipv4only.arpa)
+        let qname_lower = ctx.qname.to_ascii_lowercase();
+        if qname_lower.contains(':') || qname_lower.contains('/') || qname_lower.contains('\\') || qname_lower.contains(' ') {
             let mut resp = Message::error_msg(
                 ctx.request.metadata.id,
                 ctx.request.metadata.op_code,
-                ResponseCode::Refused,
+                ResponseCode::NXDomain,
             );
+            resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
+            resp.metadata.recursion_available = true;
             resp.queries = ctx.request.queries.clone();
             ctx.response = Some(resp);
-            ctx.status = QueryStatus::Blocked;
-            ctx.matched_rule = Some("domain_private".to_string());
+            ctx.status = QueryStatus::Allowed;
+            ctx.routing_group = Some("local_rfc".to_string());
+            align_edns_response(ctx);
+            ctx.finish();
+            return;
+        }
+        if qname_lower == "_dns.resolver.arpa" || qname_lower == "ipv4only.arpa" {
+            let mut resp = Message::new(
+                ctx.request.metadata.id,
+                hickory_proto::op::MessageType::Response,
+                ctx.request.metadata.op_code,
+            );
+            resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
+            resp.metadata.recursion_available = true;
+            resp.metadata.response_code = ResponseCode::NoError;
+            resp.queries = ctx.request.queries.clone();
+            ctx.response = Some(resp);
+            ctx.status = QueryStatus::Allowed;
+            ctx.routing_group = Some("local_rfc".to_string());
             align_edns_response(ctx);
             ctx.finish();
             return;
         }
 
-        // 3. Local Rewrites / Hosts
+        // 2. Local Rewrites / Hosts（优先于拦截与私有域规则，支持将 tplinkac.tplogin.cn / nas.home 等重写到内网 IP）
         ctx.record_timing("rewrite");
         if self.rewrite.execute(ctx).await == crate::pipeline::plugin::PluginResult::Accept {
             align_edns_response(ctx);
@@ -299,7 +319,42 @@ impl PipelineEngine {
 
         // 6. Router & Dispatch (Routing pipeline)
         ctx.record_timing("route");
-        if !self.router_enabled.load(Ordering::Relaxed) {
+        if self.domain_registry.matches("domain_private", &ctx.qname) {
+            // 区分 RoutingRules private.txt 中的两类条目：
+            // (a) 需走大陆公网 DNS 解析出回环/内网直连 IP 的应用辅助域（如 localhost.weixin.qq.com、localhost.ptlogin2.qq.com、plex.direct、ts.net）
+            let is_public_direct_helper = qname_lower.ends_with(".qq.com")
+                || qname_lower.ends_with(".plex.direct")
+                || qname_lower.ends_with(".ts.net")
+                || qname_lower.ends_with(".kaspersky-labs.com")
+                || qname_lower.ends_with(".adguard.org")
+                || qname_lower.ends_with(".arubanetworks.com")
+                || qname_lower.ends_with(".h3c.com");
+
+            if is_public_direct_helper {
+                ctx.tags.insert("route:private_direct".to_string());
+                self.forward_mainland.execute(ctx).await;
+            } else {
+                // (b) RFC 6303 私有反向解析域 (*.in-addr.arpa / *.ip6.arpa)、单标签主机名及未配置重写的路由器/AP发现域 (如 tplinkac.tplogin.cn)：
+                // 本地直接返回标准 NXDomain（标记为 Allowed 并写入 60s 否定缓存），不向公网泄露，也不返回 Refused 触发客户端每秒死循环重试
+                let mut resp = Message::error_msg(
+                    ctx.request.metadata.id,
+                    ctx.request.metadata.op_code,
+                    ResponseCode::NXDomain,
+                );
+                resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
+                resp.metadata.recursion_available = true;
+                resp.queries = ctx.request.queries.clone();
+                if self.cache_enabled.load(Ordering::Relaxed) {
+                    self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
+                }
+                ctx.response = Some(resp);
+                ctx.status = QueryStatus::Allowed;
+                ctx.routing_group = Some("private_local".to_string());
+                align_edns_response(ctx);
+                ctx.finish();
+                return;
+            }
+        } else if !self.router_enabled.load(Ordering::Relaxed) {
             ctx.tags.insert("route:bypass_disabled".to_string());
             self.forward_mainland.execute(ctx).await;
         } else {
@@ -395,7 +450,9 @@ impl PipelineEngine {
             // 9. Cache storage
             if self.cache_enabled.load(Ordering::Relaxed) {
                 if let Some(ref resp) = ctx.response {
-                    if resp.metadata.response_code == ResponseCode::NoError {
+                    if resp.metadata.response_code == ResponseCode::NoError
+                        || resp.metadata.response_code == ResponseCode::NXDomain
+                    {
                         self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
                     }
                 }

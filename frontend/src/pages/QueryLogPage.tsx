@@ -608,17 +608,17 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
       {/* 全宽查询日志主表格 */}
       <div className="rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
         <div className="overflow-x-auto no-scrollbar">
-          <table className="w-full min-w-[860px] lg:min-w-0 text-left text-xs table-fixed">
+          <table className="w-full min-w-[1360px] text-left text-xs table-fixed">
             <thead className="bg-neutral-50 dark:bg-surface-2/60 border-b border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 uppercase font-medium">
               <tr>
-                <th className="py-2.5 px-3.5 w-[110px]">请求时间</th>
-                <th className="py-2.5 px-2.5 w-[80px]">状态</th>
-                <th className="py-2.5 px-3.5">查询域名与类型</th>
-                <th className="py-2.5 px-2.5 w-[18%]">客户端 IP</th>
-                <th className="py-2.5 px-2.5 w-[14%]">分流 / 匹配规则</th>
-                <th className="py-2.5 px-2.5 w-[20%]">响应结果</th>
-                <th className="py-2.5 px-2.5 w-[80px] text-right">时延</th>
-                <th className="py-2.5 px-3.5 w-[124px] text-right">就地操作</th>
+                <th className="py-3 pl-5 pr-3 w-[9.5%]">请求时间</th>
+                <th className="py-3 px-3 w-[7.5%]">状态</th>
+                <th className="py-3 px-3 w-[22%]">查询域名与类型</th>
+                <th className="py-3 px-3 w-[16.5%]">客户端 IP</th>
+                <th className="py-3 px-3 w-[10.5%]">分流 / 匹配规则</th>
+                <th className="py-3 px-3 w-[16.5%]">响应结果</th>
+                <th className="py-3 px-3 w-[6%]">时延</th>
+                <th className="py-3 pl-3 pr-5 w-[11.5%] text-right">就地操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800/60 font-normal bg-white dark:bg-surface-1">
@@ -639,15 +639,15 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                       }`}
                     >
                       <td
-                        className="py-2 px-3 font-mono text-[11px] text-neutral-500 dark:text-neutral-400 tabular-nums whitespace-nowrap"
+                        className="py-2.5 pl-5 pr-3 font-mono text-[11px] text-neutral-500 dark:text-neutral-400 tabular-nums whitespace-nowrap"
                         title={fullTimeDisplay}
                       >
                         {timeDisplay}
                       </td>
-                      <td className="py-2 px-2.5 whitespace-nowrap">
+                      <td className="py-2.5 px-3 whitespace-nowrap">
                         {getStatusBadge(log.status)}
                       </td>
-                      <td className="py-2 px-3 overflow-hidden">
+                      <td className="py-2.5 px-3 overflow-hidden">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <span
                             className="font-mono text-neutral-800 dark:text-neutral-200 font-medium truncate block max-w-full"
@@ -660,7 +660,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                           </span>
                         </div>
                       </td>
-                      <td className="py-2 px-2.5 font-mono text-[11px] text-neutral-600 dark:text-neutral-300 tabular-nums overflow-hidden">
+                      <td className="py-2.5 px-3 font-mono text-[11px] text-neutral-600 dark:text-neutral-300 tabular-nums overflow-hidden">
                         <button
                           type="button"
                           onClick={(e) => {
@@ -674,7 +674,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                           {log.client_ip}
                         </button>
                       </td>
-                      <td className="py-2 px-2.5 text-neutral-500 dark:text-neutral-400 overflow-hidden">
+                      <td className="py-2.5 px-3 text-neutral-500 dark:text-neutral-400 overflow-hidden">
                         {log.matched_rule ? (
                           <span className="text-rose-600 dark:text-rose-400 font-mono text-[11px] truncate block max-w-full" title={log.matched_rule}>
                             {log.matched_rule}
@@ -687,7 +687,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                           <span className="text-neutral-400 text-[11px]">本地直出</span>
                         )}
                       </td>
-                      <td className="py-2 px-2.5 font-mono text-[11px] text-neutral-700 dark:text-neutral-300 tabular-nums overflow-hidden">
+                      <td className="py-2.5 px-3 font-mono text-[11px] text-neutral-700 dark:text-neutral-300 tabular-nums overflow-hidden">
                         {log.response_ip ? (
                           <span className="truncate block max-w-full" title={log.response_ip}>
                             {log.response_ip}
@@ -700,18 +700,18 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                           </span>
                         )}
                       </td>
-                      <td className="py-2 px-2.5 text-right font-mono text-[11px] tabular-nums text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
+                      <td className="py-2.5 px-3 font-mono text-[11px] tabular-nums text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
                         {log.duration_ms < 1 ? '< 1 ms' : `${log.duration_ms.toFixed(1)} ms`}
                       </td>
                       <td
-                        className="py-2 px-3 text-right whitespace-nowrap"
+                        className="py-2.5 pl-3 pr-5 text-right whitespace-nowrap"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <div className="inline-flex items-center justify-end gap-1">
+                        <div className="flex items-center justify-end gap-1.5">
                           <button
                             type="button"
                             onClick={() => handleQuickRule(log.qname, 'block')}
-                            className="px-1.5 py-0.5 text-[11px] rounded border border-rose-200 dark:border-rose-900/50 bg-rose-50/70 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/60 transition-colors"
+                            className="px-2 py-0.5 text-[11px] rounded border border-rose-200 dark:border-rose-900/50 bg-rose-50/70 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/60 transition-colors shrink-0"
                             title="加入拦截黑名单"
                           >
                             拦截
@@ -719,7 +719,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                           <button
                             type="button"
                             onClick={() => handleQuickRule(log.qname, 'whitelist')}
-                            className="px-1.5 py-0.5 text-[11px] rounded border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/70 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-colors"
+                            className="px-2 py-0.5 text-[11px] rounded border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/70 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-colors shrink-0"
                             title="加入放行白名单"
                           >
                             放行
@@ -727,7 +727,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                           <button
                             type="button"
                             onClick={() => setExternalQuery({ domain: log.qname, qtype: log.qtype || 'A', trigger: Date.now() })}
-                            className="px-1.5 py-0.5 text-[11px] rounded border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-surface-2 text-neutral-600 dark:text-neutral-300 hover:border-cyan-400 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors"
+                            className="px-2 py-0.5 text-[11px] rounded border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-surface-2 text-neutral-600 dark:text-neutral-300 hover:border-cyan-400 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors shrink-0"
                             title="立即对此域名发起拨测"
                           >
                             拨测

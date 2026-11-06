@@ -187,29 +187,28 @@ impl DnsPlugin for SpeedCheckPlugin {
                 scored_records.push((ip, rec, cached_scores[i].1));
             }
         } else {
-            // Limit concurrent probing to top 3 IPs to prevent TCP socket explosion
+            // 非阻塞异步后台测速：首次冷查询直接按已知缓存分或原序极速返回（0ms 额外阻塞），
+            // 后台异步探测前 3 个候选 IP 写入测速评分缓存，杜绝无 IPv6 出口或不通节点拖慢 DNS 响应 200ms+
             let probe_limit = ip_records.len().min(3);
-            let (to_probe, remaining) = ip_records.split_at(probe_limit);
-
-            let mut tasks = Vec::new();
-            for (ip, record) in to_probe.iter().cloned() {
-                let cache = self.cache.clone();
-                let ports = self.target_ports.clone();
-                let p_timeout = probe_timeout.min(Duration::from_millis(200));
-                let c_ttl = cache_ttl;
-                tasks.push(tokio::spawn(async move {
-                    let rtt = probe_ip_rtt(cache, ip, &ports, p_timeout, c_ttl).await;
-                    (ip, record, rtt)
-                }));
-            }
-
-            for t in tasks {
-                if let Ok(res) = t.await {
-                    scored_records.push(res);
+            let ips_to_probe: Vec<IpAddr> = ip_records.iter().take(probe_limit).map(|(ip, _)| *ip).collect();
+            let cache = self.cache.clone();
+            let ports = self.target_ports.clone();
+            let p_timeout = probe_timeout.min(Duration::from_millis(180));
+            let c_ttl = cache_ttl;
+            tokio::spawn(async move {
+                for ip in ips_to_probe {
+                    let _ = probe_ip_rtt(cache.clone(), ip, &ports, p_timeout, c_ttl).await;
                 }
-            }
-            for (ip, rec) in remaining.iter().cloned() {
-                scored_records.push((ip, rec, 9999));
+            });
+
+            let r = self.cache.read();
+            for (idx, (ip, rec)) in ip_records.into_iter().enumerate() {
+                let rtt = r
+                    .get(&ip)
+                    .filter(|s| s.tested_at.elapsed() < cache_ttl)
+                    .map(|s| s.rtt_ms)
+                    .unwrap_or(5000 + idx as u64);
+                scored_records.push((ip, rec, rtt));
             }
         }
 

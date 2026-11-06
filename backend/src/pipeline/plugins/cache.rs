@@ -50,8 +50,10 @@ impl CachePlugin {
                 for ans in &mut resp.answers {
                     ans.ttl = remaining_ttl;
                 }
-                // 剩余 TTL 低于 20% 时 (即消耗超过 80%)，若开启 prefetch 且尚未预取过，触发异步预取
+                // 剩余 TTL 低于 20% 时 (即消耗超过 80%)，若开启 prefetch、为有效正向应答且尚未预取过，触发异步预取
                 let should_prefetch = self.prefetch.load(Ordering::Relaxed)
+                    && entry.message.metadata.response_code == hickory_proto::op::ResponseCode::NoError
+                    && !entry.message.answers.is_empty()
                     && (elapsed * 5 >= entry.ttl * 4)
                     && entry.prefetched.compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed).is_ok();
                 return Some((resp, should_prefetch));
@@ -81,7 +83,14 @@ impl CachePlugin {
                 record_ttl = found;
             }
         }
-        let effective_ttl = record_ttl.clamp(min_limit, max_limit);
+        // RFC 2308 否定缓存：NXDomain 或空记录 NODATA 缓存 60 秒，抑制客户端每秒高频重试风暴
+        let effective_ttl = if message.metadata.response_code == hickory_proto::op::ResponseCode::NXDomain
+            || message.answers.is_empty()
+        {
+            60u32.min(max_limit)
+        } else {
+            record_ttl.clamp(min_limit, max_limit)
+        };
 
         let key = (qname.to_lowercase(), qtype);
         let mut w = self.entries.write();

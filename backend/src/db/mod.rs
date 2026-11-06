@@ -375,13 +375,19 @@ impl Database {
 
         let resp_ip = ctx.fastest_ip.map(|ip| ip.to_string()).or_else(|| {
             if let Some(ref resp) = ctx.response {
+                // 优先提取最终解析出的 A / AAAA 真实 IP（DNS 应答中 CNAME 位于首部，避免被首条 CNAME 提前截断而丢失真实 IP）
                 for ans in &resp.answers {
                     if let hickory_proto::rr::RData::A(a) = &ans.data {
                         return Some(a.0.to_string());
                     } else if let hickory_proto::rr::RData::AAAA(aaaa) = &ans.data {
                         return Some(aaaa.0.to_string());
-                    } else if let hickory_proto::rr::RData::CNAME(cname) = &ans.data {
+                    }
+                }
+                for ans in &resp.answers {
+                    if let hickory_proto::rr::RData::CNAME(cname) = &ans.data {
                         return Some(format!("CNAME: {}", cname.to_utf8().trim_end_matches('.')));
+                    } else if let hickory_proto::rr::RData::PTR(ptr) = &ans.data {
+                        return Some(format!("PTR: {}", ptr.to_utf8().trim_end_matches('.')));
                     }
                 }
             }

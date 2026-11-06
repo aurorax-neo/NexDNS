@@ -54,8 +54,6 @@ export const UpstreamsPage: React.FC = () => {
   const [bootstrapList, setBootstrapList] = useState<string[]>(['223.5.5.5', '119.29.29.29']);
   const [newBootstrapIp, setNewBootstrapIp] = useState('');
   const [bootstrapIpError, setBootstrapIpError] = useState<string | null>(null);
-  const [timeoutMs, setTimeoutMs] = useState<number>(2000);
-  const [savingTimeout, setSavingTimeout] = useState<boolean>(false);
 
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
 
@@ -65,33 +63,13 @@ export const UpstreamsPage: React.FC = () => {
       if (res.bootstrap_dns && res.bootstrap_dns.length > 0) {
         setBootstrapList(res.bootstrap_dns);
       }
-      if (res.timeout_ms) {
-        setTimeoutMs(res.timeout_ms);
-      }
     }).catch(console.error);
     api.getSettings().then((s) => {
       if (s.proxy?.list) {
         setProxyList(s.proxy.list);
       }
-      if (s.upstreams?.timeout_ms) {
-        setTimeoutMs(s.upstreams.timeout_ms);
-      }
     }).catch(console.error);
   }, []);
-
-  const handleSaveTimeout = async () => {
-    const clamped = Math.max(200, Math.min(30000, Number(timeoutMs) || 2000));
-    setTimeoutMs(clamped);
-    setSavingTimeout(true);
-    try {
-      await api.updateUpstreamTimeout(clamped);
-      setSnackbarMessage(`上游查询超时已更新为 ${clamped} ms 并热生效`);
-    } catch (e: any) {
-      setSnackbarMessage(e.message || '更新上游超时失败');
-    } finally {
-      setSavingTimeout(false);
-    }
-  };
 
   // 引导 DNS 校验: 目标主机必须是纯 IP（支持纯 IP、DoT、DoH 及带 SNI 的 DoH）
   const validateBootstrapAddr = (val: string): boolean => {
@@ -587,33 +565,6 @@ export const UpstreamsPage: React.FC = () => {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex items-center gap-1.5 min-h-[38px] px-2.5 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 text-xs">
-            <span className="text-neutral-500 dark:text-neutral-400 whitespace-nowrap">查询超时</span>
-            <input
-              type="number"
-              min={200}
-              max={30000}
-              step={100}
-              value={timeoutMs}
-              onChange={(e) => setTimeoutMs(parseInt(e.target.value, 10) || 2000)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleSaveTimeout();
-                }
-              }}
-              className="w-18 px-1.5 py-1 font-mono text-xs text-right rounded bg-white dark:bg-surface-1 border border-neutral-300 dark:border-neutral-700 text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
-            />
-            <span className="font-mono text-[11px] text-neutral-400">ms</span>
-            <button
-              type="button"
-              onClick={handleSaveTimeout}
-              disabled={savingTimeout}
-              className="ml-1 px-2 py-1 text-[11px] font-medium rounded bg-cyan-600 hover:bg-cyan-500 text-white transition-colors disabled:opacity-50"
-            >
-              {savingTimeout ? '保存中' : '应用'}
-            </button>
-          </div>
           <button
             type="button"
             onClick={() => {

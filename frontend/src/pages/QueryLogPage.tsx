@@ -345,13 +345,6 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   ];
 
   const activeLog = selectedLog || (logs.length > 0 ? logs[0] : null);
-  const pageAllowedCount = logs.filter((l) => l.status === 'allowed').length;
-  const pageBlockedCount = logs.filter((l) => l.status === 'blocked').length;
-  const pageCachedCount = logs.filter((l) => l.status === 'cached').length;
-  const pageRewrittenCount = logs.filter((l) => l.status === 'rewritten').length;
-  const pageAvgMs = logs.length > 0
-    ? logs.reduce((acc, cur) => acc + cur.duration_ms, 0) / logs.length
-    : 0;
 
   const renderInspectorContent = (log: QueryLogItem) => (
     <div className="space-y-3 text-xs">
@@ -627,18 +620,18 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
       {/* 主从工作台布局：左侧高密度查询日志表 + 右侧常驻报文诊断与统计面板 */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-start">
       <div className="xl:col-span-8 2xl:col-span-9 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[920px] text-left text-xs table-fixed">
+        <div className="overflow-x-auto no-scrollbar">
+          <table className="w-full min-w-[760px] xl:min-w-0 text-left text-xs table-fixed">
             <thead className="bg-neutral-50 dark:bg-surface-2/60 border-b border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 uppercase font-medium">
               <tr>
-                <th className="py-2.5 px-3 w-[112px]">请求时间</th>
-                <th className="py-2.5 px-2.5 w-[78px]">状态</th>
-                <th className="py-2.5 px-3 w-[230px]">查询域名与类型</th>
-                <th className="py-2.5 px-2.5 w-[116px]">客户端 IP</th>
-                <th className="py-2.5 px-2.5 w-[132px]">分流 / 匹配规则</th>
-                <th className="py-2.5 px-2.5 w-[150px]">响应结果</th>
-                <th className="py-2.5 px-2.5 w-[78px] text-right">时延</th>
-                <th className="py-2.5 px-3 w-[118px] text-right">就地操作</th>
+                <th className="py-2.5 px-3 w-[104px]">请求时间</th>
+                <th className="py-2.5 px-2 w-[72px]">状态</th>
+                <th className="py-2.5 px-3">查询域名与类型</th>
+                <th className="py-2.5 px-2 w-[14%]">客户端 IP</th>
+                <th className="py-2.5 px-2 w-[13%]">分流 / 匹配规则</th>
+                <th className="py-2.5 px-2 w-[16%]">响应结果</th>
+                <th className="py-2.5 px-2 w-[72px] text-right">时延</th>
+                <th className="py-2.5 px-3 w-[116px] text-right">就地操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800/60 font-normal bg-white dark:bg-surface-1">
@@ -647,7 +640,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                   const timeDisplay = formatShortDateTime(log.timestamp);
                   const fullTimeDisplay = formatDateTime(log.timestamp);
                   const cleanQname = (log.qname || '').replace(/[\r\n\t]+/g, ' ');
-                  const isSelected = activeLog?.id === log.id;
+                  const isSelected = selectedLog?.id === log.id;
                   return (
                     <tr
                       key={log.id}
@@ -657,7 +650,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                           setMobileDrawerOpen(true);
                         }
                       }}
-                      className={`cursor-pointer select-none transition-colors ${
+                      className={`cursor-pointer select-none ${
                         isSelected
                           ? 'bg-cyan-50/60 dark:bg-cyan-950/25'
                           : 'hover:bg-neutral-100/60 dark:hover:bg-white/[0.04]'
@@ -822,37 +815,8 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
         </div>
       </div>
 
-      {/* 右侧常驻主从详情与本页概览面板 (xl 及以上桌面端常驻显示，消除大屏空白) */}
+      {/* 右侧常驻主从详情面板 (xl 及以上桌面端常驻显示) */}
       <div className="hidden xl:block xl:col-span-4 2xl:col-span-3 space-y-3 sticky top-4">
-        <div className="p-3.5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-3">
-          <div className="flex items-center justify-between pb-2 border-b border-neutral-200 dark:border-neutral-800">
-            <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">
-              当前页分布概览 ({logs.length} 条)
-            </span>
-            <span className="font-mono text-[11px] text-cyan-600 dark:text-cyan-400 tabular-nums">
-              均值 {pageAvgMs.toFixed(1)} ms
-            </span>
-          </div>
-          <div className="grid grid-cols-4 gap-1.5 text-center font-mono text-xs">
-            <div className="p-2 rounded bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/60 dark:border-emerald-900/40">
-              <div className="text-[10px] text-neutral-500 dark:text-neutral-400">放行</div>
-              <div className="font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">{pageAllowedCount}</div>
-            </div>
-            <div className="p-2 rounded bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200/60 dark:border-rose-900/40">
-              <div className="text-[10px] text-neutral-500 dark:text-neutral-400">拦截</div>
-              <div className="font-bold text-rose-600 dark:text-rose-400 tabular-nums">{pageBlockedCount}</div>
-            </div>
-            <div className="p-2 rounded bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/40">
-              <div className="text-[10px] text-neutral-500 dark:text-neutral-400">缓存</div>
-              <div className="font-bold text-amber-600 dark:text-amber-400 tabular-nums">{pageCachedCount}</div>
-            </div>
-            <div className="p-2 rounded bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/60 dark:border-indigo-900/40">
-              <div className="text-[10px] text-neutral-500 dark:text-neutral-400">重写</div>
-              <div className="font-bold text-indigo-600 dark:text-indigo-400 tabular-nums">{pageRewrittenCount}</div>
-            </div>
-          </div>
-        </div>
-
         <div className="p-3.5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-3">
           <div className="flex items-center justify-between pb-2 border-b border-neutral-200 dark:border-neutral-800">
             <div>

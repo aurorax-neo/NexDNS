@@ -41,7 +41,6 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   const [clientFilter, setClientFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedLog, setSelectedLog] = useState<QueryLogItem | null>(null);
-  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [externalQuery, setExternalQuery] = useState<{ domain: string; qtype?: string; trigger: number } | null>(null);
   const [isClearAlertOpen, setIsClearAlertOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -92,15 +91,6 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
       setTotal(res.total);
       if (res.disk) {
         setDiskStatus(res.disk);
-      }
-      if (res.items.length > 0) {
-        setSelectedLog((prev) => {
-          if (!prev) return res.items[0];
-          const found = res.items.find((i) => i.id === prev.id);
-          return found || res.items[0];
-        });
-      } else {
-        setSelectedLog(null);
       }
     } catch (e) {
       console.error('Failed to load logs', e);
@@ -344,8 +334,6 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
     { value: 'rewritten', label: '本地重写' },
   ];
 
-  const activeLog = selectedLog || (logs.length > 0 ? logs[0] : null);
-
   const renderInspectorContent = (log: QueryLogItem) => (
     <div className="space-y-3 text-xs">
       {/* 快捷操作按钮组 */}
@@ -379,7 +367,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
           onClick={() => {
             setSearch(log.qname);
             setPage(1);
-            setMobileDrawerOpen(false);
+            setSelectedLog(null);
           }}
           className="inline-flex items-center justify-center gap-1.5 min-h-[32px] px-2.5 text-xs text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-surface-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors"
         >
@@ -617,21 +605,20 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
         </div>
       </div>
 
-      {/* 主从工作台布局：左侧高密度查询日志表 + 右侧常驻报文诊断与统计面板 */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-start">
-      <div className="xl:col-span-8 2xl:col-span-9 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
+      {/* 全宽查询日志主表格 */}
+      <div className="rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
         <div className="overflow-x-auto no-scrollbar">
-          <table className="w-full min-w-[760px] xl:min-w-0 text-left text-xs table-fixed">
+          <table className="w-full min-w-[860px] lg:min-w-0 text-left text-xs table-fixed">
             <thead className="bg-neutral-50 dark:bg-surface-2/60 border-b border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 uppercase font-medium">
               <tr>
-                <th className="py-2.5 px-3 w-[104px]">请求时间</th>
-                <th className="py-2.5 px-2 w-[72px]">状态</th>
-                <th className="py-2.5 px-3">查询域名与类型</th>
-                <th className="py-2.5 px-2 w-[14%]">客户端 IP</th>
-                <th className="py-2.5 px-2 w-[13%]">分流 / 匹配规则</th>
-                <th className="py-2.5 px-2 w-[16%]">响应结果</th>
-                <th className="py-2.5 px-2 w-[72px] text-right">时延</th>
-                <th className="py-2.5 px-3 w-[116px] text-right">就地操作</th>
+                <th className="py-2.5 px-3.5 w-[110px]">请求时间</th>
+                <th className="py-2.5 px-2.5 w-[80px]">状态</th>
+                <th className="py-2.5 px-3.5">查询域名与类型</th>
+                <th className="py-2.5 px-2.5 w-[18%]">客户端 IP</th>
+                <th className="py-2.5 px-2.5 w-[14%]">分流 / 匹配规则</th>
+                <th className="py-2.5 px-2.5 w-[20%]">响应结果</th>
+                <th className="py-2.5 px-2.5 w-[80px] text-right">时延</th>
+                <th className="py-2.5 px-3.5 w-[124px] text-right">就地操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800/60 font-normal bg-white dark:bg-surface-1">
@@ -644,12 +631,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                   return (
                     <tr
                       key={log.id}
-                      onClick={() => {
-                        setSelectedLog(log);
-                        if (window.innerWidth < 1280) {
-                          setMobileDrawerOpen(true);
-                        }
-                      }}
+                      onClick={() => setSelectedLog(log)}
                       className={`cursor-pointer select-none ${
                         isSelected
                           ? 'bg-cyan-50/60 dark:bg-cyan-950/25'
@@ -815,36 +797,10 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
         </div>
       </div>
 
-      {/* 右侧常驻主从详情面板 (xl 及以上桌面端常驻显示) */}
-      <div className="hidden xl:block xl:col-span-4 2xl:col-span-3 space-y-3 sticky top-4">
-        <div className="p-3.5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-3">
-          <div className="flex items-center justify-between pb-2 border-b border-neutral-200 dark:border-neutral-800">
-            <div>
-              <h4 className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">
-                DNS 报文级深度诊断
-              </h4>
-              {activeLog && (
-                <p className="font-mono text-[10px] text-neutral-400 truncate max-w-[220px]">
-                  ID: {activeLog.id}
-                </p>
-              )}
-            </div>
-          </div>
-          {activeLog ? (
-            renderInspectorContent(activeLog)
-          ) : (
-            <div className="py-8 text-center text-xs text-neutral-400">
-              点击任意日志行查看完整报文与分流决策详情
-            </div>
-          )}
-        </div>
-      </div>
-      </div>
-
-      {/* 小屏/平板端日志详情 Drawer */}
+      {/* 点击日志行按需滑出详情 Drawer */}
       <Drawer
-        isOpen={mobileDrawerOpen && !!selectedLog}
-        onClose={() => setMobileDrawerOpen(false)}
+        isOpen={!!selectedLog}
+        onClose={() => setSelectedLog(null)}
         title="DNS 报文级深度诊断"
         subtitle={`请求 ID: ${selectedLog?.id}`}
       >

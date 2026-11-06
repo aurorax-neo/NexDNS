@@ -209,6 +209,7 @@ impl DnsPlugin for AdblockPlugin {
                     resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
                     resp.metadata.recursion_available = true;
                     resp.queries = ctx.request.queries.clone();
+                    crate::pipeline::engine::attach_negative_soa(&mut resp, &ctx.qname, current_ttl);
                     ctx.response = Some(resp);
                     PluginResult::Accept
                 }
@@ -238,6 +239,8 @@ impl DnsPlugin for AdblockPlugin {
                         } else if ctx.qtype == RecordType::AAAA {
                             let record = Record::from_rdata(name, current_ttl, RData::AAAA(AAAA(Ipv6Addr::UNSPECIFIED)));
                             resp.answers.push(record);
+                        } else {
+                            crate::pipeline::engine::attach_negative_soa(&mut resp, &ctx.qname, current_ttl);
                         }
                     }
 

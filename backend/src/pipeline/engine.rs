@@ -176,7 +176,7 @@ impl PipelineEngine {
     pub async fn process(&self, ctx: &mut QueryContext) {
         ctx.record_timing("start");
 
-        // 1. 畸形域名/URL 拦截与 RFC 本地特殊发现域响应 (_dns.resolver.arpa / ipv4only.arpa)
+        // 1. 畸形域名拦截及 RFC 6761 / RFC 6303 / RFC 9462 / RFC 7050 特殊标准域前置本地响应
         let qname_lower = ctx.qname.to_ascii_lowercase();
         if qname_lower.contains(':') || qname_lower.contains('/') || qname_lower.contains('\\') || qname_lower.contains(' ') {
             let mut resp = Message::error_msg(
@@ -187,6 +187,7 @@ impl PipelineEngine {
             resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
             resp.metadata.recursion_available = true;
             resp.queries = ctx.request.queries.clone();
+            attach_negative_soa(&mut resp, &qname_lower, 300);
             ctx.response = Some(resp);
             ctx.status = QueryStatus::Allowed;
             ctx.routing_group = Some("local_rfc".to_string());
@@ -194,16 +195,115 @@ impl PipelineEngine {
             ctx.finish();
             return;
         }
-        if qname_lower == "_dns.resolver.arpa" || qname_lower == "ipv4only.arpa" {
+
+        // RFC 6761 Section 6.3: localhost 与 *.localhost 必须本地直接解析为 127.0.0.1 / ::1，严禁外发公网
+        if qname_lower == "localhost" || qname_lower.ends_with(".localhost") {
+            use std::str::FromStr;
             let mut resp = Message::new(
                 ctx.request.metadata.id,
                 hickory_proto::op::MessageType::Response,
                 ctx.request.metadata.op_code,
             );
+            resp.metadata.authoritative = true;
             resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
             resp.metadata.recursion_available = true;
             resp.metadata.response_code = ResponseCode::NoError;
             resp.queries = ctx.request.queries.clone();
+            if let Ok(name) = hickory_proto::rr::Name::from_str(&format!("{}.", ctx.qname)) {
+                match ctx.qtype {
+                    RecordType::A => {
+                        resp.answers.push(hickory_proto::rr::Record::from_rdata(
+                            name,
+                            300,
+                            RData::A(hickory_proto::rr::rdata::A(std::net::Ipv4Addr::LOCALHOST)),
+                        ));
+                    }
+                    RecordType::AAAA => {
+                        resp.answers.push(hickory_proto::rr::Record::from_rdata(
+                            name,
+                            300,
+                            RData::AAAA(hickory_proto::rr::rdata::AAAA(std::net::Ipv6Addr::LOCALHOST)),
+                        ));
+                    }
+                    _ => {
+                        attach_negative_soa(&mut resp, "localhost", 300);
+                    }
+                }
+            }
+            ctx.response = Some(resp);
+            ctx.status = QueryStatus::Allowed;
+            ctx.routing_group = Some("local_rfc".to_string());
+            align_edns_response(ctx);
+            ctx.finish();
+            return;
+        }
+
+        // RFC 6303 Section 4.1 / 4.2: 127.0.0.1 与 ::1 回环地址反向 PTR 本地直接返回 localhost.
+        if qname_lower == "1.0.0.127.in-addr.arpa"
+            || qname_lower == "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa"
+        {
+            use std::str::FromStr;
+            let mut resp = Message::new(
+                ctx.request.metadata.id,
+                hickory_proto::op::MessageType::Response,
+                ctx.request.metadata.op_code,
+            );
+            resp.metadata.authoritative = true;
+            resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
+            resp.metadata.recursion_available = true;
+            resp.metadata.response_code = ResponseCode::NoError;
+            resp.queries = ctx.request.queries.clone();
+            if ctx.qtype == RecordType::PTR {
+                if let (Ok(name), Ok(target)) = (
+                    hickory_proto::rr::Name::from_str(&format!("{}.", ctx.qname)),
+                    hickory_proto::rr::Name::from_str("localhost."),
+                ) {
+                    resp.answers.push(hickory_proto::rr::Record::from_rdata(
+                        name,
+                        300,
+                        RData::PTR(hickory_proto::rr::rdata::PTR(target)),
+                    ));
+                }
+            } else {
+                attach_negative_soa(&mut resp, &qname_lower, 300);
+            }
+            ctx.response = Some(resp);
+            ctx.status = QueryStatus::Allowed;
+            ctx.routing_group = Some("local_rfc".to_string());
+            align_edns_response(ctx);
+            ctx.finish();
+            return;
+        }
+
+        // RFC 9462 (_dns.resolver.arpa) 与 RFC 7050 / RFC 8880 (ipv4only.arpa) 本地合成应答（附带 SOA 供客户端缓存）
+        if qname_lower == "_dns.resolver.arpa" || qname_lower == "ipv4only.arpa" {
+            use std::str::FromStr;
+            let mut resp = Message::new(
+                ctx.request.metadata.id,
+                hickory_proto::op::MessageType::Response,
+                ctx.request.metadata.op_code,
+            );
+            resp.metadata.authoritative = true;
+            resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
+            resp.metadata.recursion_available = true;
+            resp.metadata.response_code = ResponseCode::NoError;
+            resp.queries = ctx.request.queries.clone();
+            if qname_lower == "ipv4only.arpa" && ctx.qtype == RecordType::A {
+                if let Ok(name) = hickory_proto::rr::Name::from_str("ipv4only.arpa.") {
+                    resp.answers.push(hickory_proto::rr::Record::from_rdata(
+                        name.clone(),
+                        300,
+                        RData::A(hickory_proto::rr::rdata::A(std::net::Ipv4Addr::new(192, 0, 0, 170))),
+                    ));
+                    resp.answers.push(hickory_proto::rr::Record::from_rdata(
+                        name,
+                        300,
+                        RData::A(hickory_proto::rr::rdata::A(std::net::Ipv4Addr::new(192, 0, 0, 171))),
+                    ));
+                }
+            } else {
+                attach_negative_soa(&mut resp, &qname_lower, 300);
+            }
             ctx.response = Some(resp);
             ctx.status = QueryStatus::Allowed;
             ctx.routing_group = Some("local_rfc".to_string());
@@ -248,6 +348,7 @@ impl PipelineEngine {
                 resp.metadata.recursion_available = true;
                 resp.metadata.response_code = ResponseCode::NoError;
                 resp.queries = ctx.request.queries.clone();
+                attach_negative_soa(&mut resp, &qname_lower, 300);
                 ctx.response = Some(resp);
                 ctx.status = QueryStatus::Allowed;
                 ctx.tags.insert(format!("response_mode_filtered:{}", mode));
@@ -319,7 +420,9 @@ impl PipelineEngine {
 
         // 6. Router & Dispatch (Routing pipeline)
         ctx.record_timing("route");
-        if self.domain_registry.matches("domain_private", &ctx.qname) {
+        if self.domain_registry.matches("domain_private", &ctx.qname)
+            || is_rfc_locally_served_domain(&qname_lower)
+        {
             // 区分 RoutingRules private.txt 中的两类条目：
             // (a) 需走大陆公网 DNS 解析出回环/内网直连 IP 的应用辅助域（如 localhost.weixin.qq.com、localhost.ptlogin2.qq.com、plex.direct、ts.net）
             let is_public_direct_helper = qname_lower.ends_with(".qq.com")
@@ -344,6 +447,7 @@ impl PipelineEngine {
                 resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
                 resp.metadata.recursion_available = true;
                 resp.queries = ctx.request.queries.clone();
+                attach_negative_soa(&mut resp, &qname_lower, 300);
                 if self.cache_enabled.load(Ordering::Relaxed) {
                     self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
                 }
@@ -507,4 +611,85 @@ pub fn align_edns_response(ctx: &mut QueryContext) {
             resp.edns = None;
         }
     }
+}
+
+/// RFC 2308 Section 3 & Section 5: 为本地生成的 NXDOMAIN / NODATA 否定应答注入 Authority SOA 记录，
+/// 使下游操作系统、路由器与无线 AP 解析器读取 SOA MINIMUM TTL 并执行本地否定缓存，避免重复刷屏请求。
+pub fn attach_negative_soa(resp: &mut Message, qname: &str, ttl: u32) {
+    use std::str::FromStr;
+    resp.metadata.authoritative = true;
+    if !resp.authorities.is_empty() {
+        return;
+    }
+    let zone_str = if let Some(idx) = qname.find('.') {
+        format!("{}.", &qname[idx + 1..].trim_end_matches('.'))
+    } else {
+        format!("{}.", qname.trim_end_matches('.'))
+    };
+    let zone = hickory_proto::rr::Name::from_str(&zone_str)
+        .or_else(|_| hickory_proto::rr::Name::from_str("."))
+        .unwrap();
+    let mname = hickory_proto::rr::Name::from_str("ns.local.").unwrap();
+    let rname = hickory_proto::rr::Name::from_str("hostmaster.local.").unwrap();
+    let soa = hickory_proto::rr::rdata::SOA::new(
+        mname,
+        rname,
+        1,
+        3600,
+        600,
+        86400,
+        ttl,
+    );
+    resp.authorities.push(hickory_proto::rr::Record::from_rdata(
+        zone,
+        ttl,
+        RData::SOA(soa),
+    ));
+}
+
+/// RFC 6303 (Locally Served DNS Zones) + RFC 6761 / RFC 6762 / RFC 6763 / RFC 7686 / RFC 8375 特殊与保留域判定：
+/// 补齐 private.txt 未覆盖的标准保留反向域、特殊顶级域及局域网 DNS-SD 服务发现后缀，防止泄露至公网 DNS
+pub fn is_rfc_locally_served_domain(qname_lower: &str) -> bool {
+    // 1. 单标签无点主机名 (如 tekiair5 / workgroup / wpad)
+    if !qname_lower.contains('.') {
+        return true;
+    }
+    // 2. RFC 6761 / 2606 / 6762 / 7686 / 8375 保留与私有顶级域
+    const SPECIAL_TLDS: &[&str] = &[
+        ".test",
+        ".invalid",
+        ".local",
+        ".home.arpa",
+        ".internal",
+        ".lan",
+        ".home",
+        ".corp",
+        ".localdomain",
+        ".onion",
+    ];
+    if SPECIAL_TLDS.iter().any(|tld| qname_lower.ends_with(tld)) {
+        return true;
+    }
+    // 3. RFC 6763 DNS-SD 局域网浏览域 (b._dns-sd._udp.<domain>, lb._dns-sd._udp.<domain>, db._dns-sd._udp.<domain>)
+    if qname_lower.contains("._dns-sd._udp.") {
+        return true;
+    }
+    // 4. RFC 6303 / RFC 6890 私有与特殊 IPv4/IPv6 反向解析区补齐 (0.in-addr.arpa, 0.0.192, 18/19.198, c.f.ip6.arpa, ::/128)
+    const EXTRA_RFC6303_ZONES: &[&str] = &[
+        ".0.in-addr.arpa",
+        ".0.0.192.in-addr.arpa",
+        ".18.198.in-addr.arpa",
+        ".19.198.in-addr.arpa",
+        ".c.f.ip6.arpa",
+        ".d.f.ip6.arpa",
+    ];
+    if qname_lower == "0.in-addr.arpa"
+        || qname_lower == "c.f.ip6.arpa"
+        || qname_lower == "d.f.ip6.arpa"
+        || qname_lower == "0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa"
+        || EXTRA_RFC6303_ZONES.iter().any(|z| qname_lower.ends_with(z))
+    {
+        return true;
+    }
+    false
 }

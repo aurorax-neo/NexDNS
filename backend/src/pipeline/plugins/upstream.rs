@@ -204,9 +204,14 @@ impl UpstreamServer {
             }
             Err(_) => {
                 let cnt = self.fail_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if cnt >= 5 {
+                if cnt >= 2 {
+                    let cooldown_secs = match cnt {
+                        2..=3 => 10,
+                        4..=7 => 30,
+                        _ => 60,
+                    };
                     let mut w = self.cooldown_until.write();
-                    *w = Instant::now() + Duration::from_secs(3);
+                    *w = Instant::now() + Duration::from_secs(cooldown_secs);
                 }
             }
         }
@@ -454,7 +459,7 @@ async fn connect_via_proxy_or_direct(
 pub struct UpstreamGroup {
     pub name: String,
     pub upstreams: parking_lot::RwLock<Vec<UpstreamServer>>,
-    pub timeout: Duration,
+    pub timeout_ms: std::sync::atomic::AtomicU64,
 }
 
 impl UpstreamGroup {
@@ -462,12 +467,26 @@ impl UpstreamGroup {
         Self {
             name: name.to_string(),
             upstreams: parking_lot::RwLock::new(upstreams),
-            timeout: Duration::from_millis(timeout_ms),
+            timeout_ms: std::sync::atomic::AtomicU64::new(timeout_ms.max(200)),
         }
     }
 
     pub fn set_servers(&self, servers: Vec<UpstreamServer>) {
         *self.upstreams.write() = servers;
+    }
+
+    pub fn set_timeout_ms(&self, timeout_ms: u64) {
+        let clamped = timeout_ms.max(200);
+        let prev = self.timeout_ms.swap(clamped, std::sync::atomic::Ordering::SeqCst);
+        if prev != clamped {
+            for s in self.upstreams.read().iter() {
+                *s.doh_client.write() = None;
+            }
+        }
+    }
+
+    pub fn timeout_duration(&self) -> Duration {
+        Duration::from_millis(self.timeout_ms.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     pub async fn query_parallel(&self, req_bytes: &[u8]) -> Result<Message, String> {
@@ -477,33 +496,45 @@ impl UpstreamGroup {
         }
 
         let now = Instant::now();
-        let any_alive = servers.iter().any(|s| now >= *s.cooldown_until.read());
+        let alive_servers: Vec<UpstreamServer> = servers
+            .iter()
+            .filter(|s| now >= *s.cooldown_until.read())
+            .cloned()
+            .collect();
+        let group_timeout = self.timeout_duration();
+
+        // 若该分组所有节点均处于熔断冷却中（例如未开启代理时的境外分组），仅用短超时探测单个节点并快速失败，
+        // 避免 first_batch + overflow_batch 连环阻塞 4~8 秒拖垮解析流水线
+        if alive_servers.is_empty() {
+            let probe_server = servers[0].clone();
+            let fast_probe_timeout = group_timeout.min(Duration::from_millis(800));
+            let res = probe_server.query_internal(req_bytes, fast_probe_timeout).await;
+            if res.is_ok() {
+                probe_server.fail_count.store(0, std::sync::atomic::Ordering::Relaxed);
+                *probe_server.cooldown_until.write() = Instant::now();
+            } else {
+                let cnt = probe_server.fail_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let cooldown_secs = if cnt >= 8 { 60 } else { 30 };
+                *probe_server.cooldown_until.write() = Instant::now() + Duration::from_secs(cooldown_secs);
+            }
+            return res.map_err(|e| format!("All upstreams in '{}' in cooldown (probe failed: {})", self.name, e));
+        }
 
         // 限制首轮出站并发数最多 4 个节点，避免无界连接风暴
         let max_parallel = 4;
-        let (first_batch, overflow_batch) = if servers.len() > max_parallel {
-            servers.split_at(max_parallel)
+        let (first_batch, overflow_batch) = if alive_servers.len() > max_parallel {
+            alive_servers.split_at(max_parallel)
         } else {
-            (servers.as_slice(), [].as_slice())
+            (alive_servers.as_slice(), [].as_slice())
         };
 
         let mut futures = Vec::new();
-        for (idx, s) in first_batch.iter().enumerate() {
+        for s in first_batch.iter() {
             let bytes_vec = req_bytes.to_vec();
-            let dur = self.timeout;
-            let force_probe = !any_alive && idx == 0;
+            let dur = group_timeout;
             let s_clone = s.clone();
             futures.push(Box::pin(async move {
-                if force_probe {
-                    let res = s_clone.query_internal(&bytes_vec, dur).await;
-                    if res.is_ok() {
-                        s_clone.fail_count.store(0, std::sync::atomic::Ordering::Relaxed);
-                        *s_clone.cooldown_until.write() = Instant::now();
-                    }
-                    res
-                } else {
-                    s_clone.query(&bytes_vec, dur).await
-                }
+                s_clone.query(&bytes_vec, dur).await
             }));
         }
 
@@ -514,7 +545,7 @@ impl UpstreamGroup {
                     let mut fallback_futures = Vec::new();
                     for s in overflow_batch {
                         let bytes_vec = req_bytes.to_vec();
-                        let dur = self.timeout;
+                        let dur = group_timeout;
                         let s_clone = s.clone();
                         fallback_futures.push(Box::pin(async move {
                             s_clone.query(&bytes_vec, dur).await

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use async_trait::async_trait;
+use futures_util::future::select_ok;
 use parking_lot::RwLock;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -19,8 +20,8 @@ struct IpScore {
 
 pub struct SpeedCheckPlugin {
     cache: Arc<RwLock<HashMap<IpAddr, IpScore>>>,
-    cache_ttl: Duration,
-    probe_timeout: Duration,
+    cache_ttl_secs: AtomicU64,
+    probe_timeout_ms: AtomicU64,
     target_ports: Vec<u16>,
     pub enabled: AtomicBool,
 }
@@ -29,8 +30,8 @@ impl SpeedCheckPlugin {
     pub fn new(enabled: bool, timeout_ms: u64, cache_mins: u64) -> Self {
         Self {
             cache: Arc::new(RwLock::new(HashMap::new())),
-            cache_ttl: Duration::from_secs(cache_mins * 60),
-            probe_timeout: Duration::from_millis(timeout_ms),
+            cache_ttl_secs: AtomicU64::new(cache_mins.max(1) * 60),
+            probe_timeout_ms: AtomicU64::new(timeout_ms.max(50)),
             target_ports: vec![80, 443],
             enabled: AtomicBool::new(enabled),
         }
@@ -40,14 +41,20 @@ impl SpeedCheckPlugin {
         self.enabled.store(val, Ordering::SeqCst);
     }
 
+    pub fn update_config(&self, enabled: bool, timeout_ms: u64, cache_mins: u64) {
+        self.enabled.store(enabled, Ordering::SeqCst);
+        self.probe_timeout_ms.store(timeout_ms.max(50), Ordering::SeqCst);
+        self.cache_ttl_secs.store(cache_mins.max(1) * 60, Ordering::SeqCst);
+    }
+
     #[allow(dead_code)]
     async fn test_ip(&self, ip: IpAddr) -> u64 {
         probe_ip_rtt(
             self.cache.clone(),
             ip,
             &self.target_ports,
-            self.probe_timeout,
-            self.cache_ttl,
+            Duration::from_millis(self.probe_timeout_ms.load(Ordering::Relaxed)),
+            Duration::from_secs(self.cache_ttl_secs.load(Ordering::Relaxed)),
         ).await
     }
 }
@@ -69,17 +76,27 @@ async fn probe_ip_rtt(
         }
     }
 
-    let mut best_rtt = 9999u64;
-    for port in ports {
-        let socket_addr = SocketAddr::new(ip, *port);
-        let start = Instant::now();
-        if let Ok(Ok(_)) = timeout(probe_timeout, TcpStream::connect(socket_addr)).await {
-            let rtt = start.elapsed().as_millis() as u64;
-            if rtt < best_rtt {
-                best_rtt = rtt;
+    // 并发竞速探测 80 / 443 端口：任一端口率先完成 TCP 握手即刻返回，避免目标仅开放 443 时在 80 端口白白阻塞超时
+    let mut port_probes = Vec::with_capacity(ports.len());
+    for &port in ports {
+        let socket_addr = SocketAddr::new(ip, port);
+        port_probes.push(Box::pin(async move {
+            let start = Instant::now();
+            match timeout(probe_timeout, TcpStream::connect(socket_addr)).await {
+                Ok(Ok(_stream)) => Ok((start.elapsed().as_millis() as u64).max(1)),
+                _ => Err(()),
             }
-        }
+        }));
     }
+
+    let best_rtt = if port_probes.is_empty() {
+        9999u64
+    } else {
+        match select_ok(port_probes).await {
+            Ok((rtt, _)) => rtt,
+            Err(_) => 9999u64,
+        }
+    };
 
     // Cache result
     {
@@ -143,13 +160,15 @@ impl DnsPlugin for SpeedCheckPlugin {
         }
 
         // Fast path: check in-memory cache first without spawning tasks
+        let cache_ttl = Duration::from_secs(self.cache_ttl_secs.load(Ordering::Relaxed));
+        let probe_timeout = Duration::from_millis(self.probe_timeout_ms.load(Ordering::Relaxed));
         let mut all_cached = true;
         let mut cached_scores = Vec::new();
         {
             let r = self.cache.read();
             for (ip, _) in &ip_records {
                 if let Some(score) = r.get(ip) {
-                    if score.tested_at.elapsed() < self.cache_ttl {
+                    if score.tested_at.elapsed() < cache_ttl {
                         cached_scores.push((*ip, score.rtt_ms));
                     } else {
                         all_cached = false;
@@ -176,8 +195,8 @@ impl DnsPlugin for SpeedCheckPlugin {
             for (ip, record) in to_probe.iter().cloned() {
                 let cache = self.cache.clone();
                 let ports = self.target_ports.clone();
-                let p_timeout = self.probe_timeout.min(Duration::from_millis(200));
-                let c_ttl = self.cache_ttl;
+                let p_timeout = probe_timeout.min(Duration::from_millis(200));
+                let c_ttl = cache_ttl;
                 tasks.push(tokio::spawn(async move {
                     let rtt = probe_ip_rtt(cache, ip, &ports, p_timeout, c_ttl).await;
                     (ip, record, rtt)

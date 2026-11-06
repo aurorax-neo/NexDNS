@@ -1,6 +1,33 @@
 use std::fs;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
+use crate::db::{AdblockRuleRecord, DnsRewriteRecord};
+use crate::pipeline::rule_files::RuleFileInfo;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    #[serde(default = "default_admin_username")]
+    pub username: String,
+    #[serde(default = "default_admin_password", alias = "password_hash")]
+    pub password: String,
+}
+
+fn default_admin_username() -> String {
+    "admin".to_string()
+}
+
+fn default_admin_password() -> String {
+    crate::db::auth::hash_password("admin1234").unwrap_or_else(|_| "admin1234".to_string())
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            username: default_admin_username(),
+            password: default_admin_password(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyItem {
@@ -76,6 +103,7 @@ impl Default for ProxyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DnsConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -144,6 +172,7 @@ fn default_block_ttl() -> u32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WebConfig {
     pub port: u16,
 }
@@ -155,6 +184,7 @@ impl Default for WebConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CacheConfig {
     pub size: usize,
     pub prefetch: bool,
@@ -184,6 +214,7 @@ fn default_max_ttl() -> u32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SpeedCheckConfig {
     pub enabled: bool,
     pub timeout_ms: u64,
@@ -208,6 +239,7 @@ fn default_speed_mode() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UpstreamsConfig {
     #[serde(default = "default_bootstrap_dns")]
     pub bootstrap_dns: Vec<String>,
@@ -261,7 +293,20 @@ fn default_retention_mins() -> u32 {
     60
 }
 
+fn default_max_disk_usage_percent() -> u8 {
+    90
+}
+
+fn default_min_free_disk_mb() -> u64 {
+    512
+}
+
+fn default_max_db_size_mb() -> u64 {
+    512
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RoutingConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
@@ -281,19 +326,29 @@ impl Default for RoutingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
+    #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_retention_mins")]
+    #[serde(default)]
     pub retention_mins: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing)]
     pub retention_days: Option<u32>,
+    #[serde(default = "default_max_disk_usage_percent")]
+    pub max_disk_usage_percent: u8,
+    #[serde(default = "default_min_free_disk_mb")]
+    pub min_free_disk_mb: u64,
+    #[serde(default = "default_max_db_size_mb")]
+    pub max_db_size_mb: u64,
 }
 
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            retention_mins: 60,
+            enabled: true,
+            retention_mins: default_retention_mins(),
             retention_days: None,
+            max_disk_usage_percent: default_max_disk_usage_percent(),
+            min_free_disk_mb: default_min_free_disk_mb(),
+            max_db_size_mb: default_max_db_size_mb(),
         }
     }
 }
@@ -326,6 +381,8 @@ impl Default for RulesUpdateConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
+    pub auth: AuthConfig,
+    #[serde(default)]
     pub dns: DnsConfig,
     #[serde(default)]
     pub web: WebConfig,
@@ -345,11 +402,18 @@ pub struct AppConfig {
     pub rules_update: RulesUpdateConfig,
     #[serde(default)]
     pub upstreams: UpstreamsConfig,
+    #[serde(default)]
+    pub rewrites: Vec<DnsRewriteRecord>,
+    #[serde(default)]
+    pub adblock_rules: Vec<AdblockRuleRecord>,
+    #[serde(default)]
+    pub routing_rules: Vec<RuleFileInfo>,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            auth: AuthConfig::default(),
             dns: DnsConfig::default(),
             web: WebConfig { port: 3000 },
             proxy: ProxyConfig::default(),
@@ -405,24 +469,59 @@ impl Default for AppConfig {
                 ],
                 timeout_ms: 2000,
             },
+            rewrites: Vec::new(),
+            adblock_rules: Vec::new(),
+            routing_rules: Vec::new(),
         }
     }
 }
 
 impl AppConfig {
+    pub fn normalize(&mut self) {
+        if let Some(days) = self.logging.retention_days.take() {
+            if self.logging.retention_mins == 0 {
+                self.logging.retention_mins = (days * 1440).max(1);
+            }
+        }
+        if self.logging.retention_mins == 0 {
+            self.logging.retention_mins = default_retention_mins();
+        }
+        self.logging.max_disk_usage_percent = self.logging.max_disk_usage_percent.clamp(50, 98);
+        if self.logging.min_free_disk_mb == 0 {
+            self.logging.min_free_disk_mb = default_min_free_disk_mb();
+        }
+        if self.logging.max_db_size_mb == 0 {
+            self.logging.max_db_size_mb = default_max_db_size_mb();
+        }
+        if self.upstreams.timeout_ms == 0 {
+            self.upstreams.timeout_ms = 2000;
+        }
+        self.dns.response_mode = match self.dns.response_mode.trim() {
+            "ipv4" | "ipv4_only" => "ipv4_only".to_string(),
+            "ipv6" | "ipv6_only" => "ipv6_only".to_string(),
+            _ => "dual".to_string(),
+        };
+        if self.auth.username.trim().is_empty() {
+            self.auth.username = default_admin_username();
+        }
+        if self.auth.password.trim().is_empty() {
+            self.auth.password = default_admin_password();
+        } else if !self.auth.password.starts_with("$argon2") {
+            if let Ok(hashed) = crate::db::auth::hash_password(self.auth.password.trim()) {
+                self.auth.password = hashed;
+            }
+        }
+    }
+
     pub fn load_or_create<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         if path.as_ref().exists() {
             let content = fs::read_to_string(&path)?;
             let mut config: Self = serde_yaml::from_str(&content)?;
-            // 平滑兼容历史旧配置: 若存在 retention_days 且 retention_mins 为 0，换算为分钟
-            if let Some(days) = config.logging.retention_days {
-                if config.logging.retention_mins == 0 {
-                    config.logging.retention_mins = days * 1440;
-                }
-            }
+            config.normalize();
             Ok(config)
         } else {
-            let default_cfg = Self::default();
+            let mut default_cfg = Self::default();
+            default_cfg.normalize();
             if let Some(parent) = path.as_ref().parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -433,7 +532,9 @@ impl AppConfig {
     }
 
     pub fn save<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
-        let content = serde_yaml::to_string(self)?;
+        let mut cloned = self.clone();
+        cloned.logging.retention_days = None;
+        let content = serde_yaml::to_string(&cloned)?;
         fs::write(path, content)?;
         Ok(())
     }

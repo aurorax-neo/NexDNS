@@ -12,17 +12,18 @@ import {
   Radio,
   Shield,
   Check,
-  User,
-  ExternalLink,
   ChevronLeft,
   ChevronRight,
+  HardDrive,
+  X,
+  Cpu,
 } from 'lucide-react';
-import { api, QueryLogItem } from '../lib/api';
+import { api, DiskStatus, QueryLogItem } from '../lib/api';
 import { Drawer } from '../components/ui/Drawer';
 import { AlertDialog } from '../components/ui/AlertDialog';
 import { CustomSelect } from '../components/ui/CustomSelect';
 import { Snackbar } from '../components/ui/Snackbar';
-import { formatTime, formatDateTime } from '../lib/time';
+import { formatShortDateTime, formatDateTime } from '../lib/time';
 import { QueryTool } from '../components/ui/QueryTool';
 
 export interface QueryLogPageProps {
@@ -31,13 +32,17 @@ export interface QueryLogPageProps {
 
 export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   const [logs, setLogs] = useState<QueryLogItem[]>([]);
+  const [diskStatus, setDiskStatus] = useState<DiskStatus | null>(null);
   const [loggingEnabled, setLoggingEnabled] = useState<boolean>(true);
   const [loadingSettings, setLoadingSettings] = useState<boolean>(true);
   const [isLive, setIsLive] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [search, setSearch] = useState('');
+  const [clientFilter, setClientFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedLog, setSelectedLog] = useState<QueryLogItem | null>(null);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [externalQuery, setExternalQuery] = useState<{ domain: string; qtype?: string; trigger: number } | null>(null);
   const [isClearAlertOpen, setIsClearAlertOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -49,7 +54,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   const bufferRef = useRef<QueryLogItem[]>([]);
   const batchTimeoutRef = useRef<number | null>(null);
   // SSE 连接存活期间读取最新筛选条件，但筛选变化不重建连接
-  const liveFiltersRef = useRef({ page, pageSize, search, statusFilter });
+  const liveFiltersRef = useRef({ page, pageSize, search, statusFilter, clientFilter });
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -60,8 +65,8 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   }, []);
 
   useEffect(() => {
-    liveFiltersRef.current = { page, pageSize, search, statusFilter };
-  }, [page, pageSize, search, statusFilter]);
+    liveFiltersRef.current = { page, pageSize, search, statusFilter, clientFilter };
+  }, [page, pageSize, search, statusFilter, clientFilter]);
 
   useEffect(() => {
     api.getSettings().then((s) => {
@@ -81,9 +86,22 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
         page_size: pageSize,
         search: search || undefined,
         status: statusFilter,
+        client: clientFilter || undefined,
       });
       setLogs(res.items);
       setTotal(res.total);
+      if (res.disk) {
+        setDiskStatus(res.disk);
+      }
+      if (res.items.length > 0) {
+        setSelectedLog((prev) => {
+          if (!prev) return res.items[0];
+          const found = res.items.find((i) => i.id === prev.id);
+          return found || res.items[0];
+        });
+      } else {
+        setSelectedLog(null);
+      }
     } catch (e) {
       console.error('Failed to load logs', e);
     } finally {
@@ -94,7 +112,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   useEffect(() => {
     if (!loggingEnabled) return;
     fetchLogs();
-  }, [search, statusFilter, page, pageSize, loggingEnabled]);
+  }, [search, statusFilter, clientFilter, page, pageSize, loggingEnabled]);
 
   const handleFilterChange = (val: string) => {
     setStatusFilter(val);
@@ -175,14 +193,15 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                 if (!dataStr) continue;
                 try {
                   const item: QueryLogItem = JSON.parse(dataStr);
-                  const { search: curSearch, statusFilter: curStatus } = liveFiltersRef.current;
+                  const { search: curSearch, statusFilter: curStatus, clientFilter: curClient } = liveFiltersRef.current;
                   const matchesStatus = curStatus === 'all' || item.status === curStatus;
+                  const matchesClient = !curClient || item.client_ip === curClient;
                   const searchTrimmed = curSearch.toLowerCase().trim();
                   const matchesSearch =
                     !searchTrimmed ||
                     item.qname.toLowerCase().includes(searchTrimmed) ||
                     item.client_ip.includes(searchTrimmed);
-                  if (matchesStatus && matchesSearch) {
+                  if (matchesStatus && matchesClient && matchesSearch) {
                     bufferRef.current.push(item);
                     if (!batchTimeoutRef.current) {
                       batchTimeoutRef.current = window.setTimeout(() => {
@@ -234,6 +253,9 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
     try {
       await api.clearQueryLogs();
       setLogs([]);
+      setTotal(0);
+      setSelectedLog(null);
+      await fetchLogs();
     } catch (e) {
       console.error('Failed to clear logs', e);
     }
@@ -322,6 +344,123 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
     { value: 'rewritten', label: '本地重写' },
   ];
 
+  const activeLog = selectedLog || (logs.length > 0 ? logs[0] : null);
+  const pageAllowedCount = logs.filter((l) => l.status === 'allowed').length;
+  const pageBlockedCount = logs.filter((l) => l.status === 'blocked').length;
+  const pageCachedCount = logs.filter((l) => l.status === 'cached').length;
+  const pageRewrittenCount = logs.filter((l) => l.status === 'rewritten').length;
+  const pageAvgMs = logs.length > 0
+    ? logs.reduce((acc, cur) => acc + cur.duration_ms, 0) / logs.length
+    : 0;
+
+  const renderInspectorContent = (log: QueryLogItem) => (
+    <div className="space-y-3 text-xs">
+      {/* 快捷操作按钮组 */}
+      <div className="grid grid-cols-2 gap-1.5">
+        <button
+          type="button"
+          onClick={() => handleQuickRule(log.qname, 'block')}
+          className="inline-flex items-center justify-center gap-1.5 min-h-[32px] px-2.5 text-xs font-medium bg-rose-600 hover:bg-rose-500 text-white rounded-md transition-colors"
+        >
+          <Shield className="w-3.5 h-3.5 align-icon" />
+          拦截此域名
+        </button>
+        <button
+          type="button"
+          onClick={() => handleQuickRule(log.qname, 'whitelist')}
+          className="inline-flex items-center justify-center gap-1.5 min-h-[32px] px-2.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors"
+        >
+          <Check className="w-3.5 h-3.5 align-icon" />
+          放行白名单
+        </button>
+        <button
+          type="button"
+          onClick={() => setExternalQuery({ domain: log.qname, qtype: log.qtype || 'A', trigger: Date.now() })}
+          className="inline-flex items-center justify-center gap-1.5 min-h-[32px] px-2.5 text-xs font-medium text-cyan-700 dark:text-cyan-300 bg-cyan-50 dark:bg-cyan-950/50 hover:bg-cyan-100 dark:hover:bg-cyan-900/60 border border-cyan-200 dark:border-cyan-800/60 rounded-md transition-colors"
+        >
+          <Cpu className="w-3.5 h-3.5 align-icon" />
+          立即拨测
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setSearch(log.qname);
+            setPage(1);
+            setMobileDrawerOpen(false);
+          }}
+          className="inline-flex items-center justify-center gap-1.5 min-h-[32px] px-2.5 text-xs text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-surface-3 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors"
+        >
+          <Search className="w-3.5 h-3.5 align-icon" />
+          筛选此域名
+        </button>
+      </div>
+
+      {/* 核心报文详情 */}
+      <div className="p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-2">
+        <div className="flex justify-between items-center gap-2">
+          <span className="text-neutral-500 dark:text-neutral-400 shrink-0">请求时间</span>
+          <span className="font-mono text-neutral-900 dark:text-neutral-100 tabular-nums">
+            {formatDateTime(log.timestamp)}
+          </span>
+        </div>
+        <div className="flex justify-between items-start gap-2">
+          <span className="text-neutral-500 dark:text-neutral-400 shrink-0">查询域名</span>
+          <span className="font-mono text-neutral-900 dark:text-neutral-100 font-semibold break-all text-right">
+            {log.qname}
+          </span>
+        </div>
+        <div className="flex justify-between items-center gap-2">
+          <span className="text-neutral-500 dark:text-neutral-400">记录类型 / 响应码</span>
+          <span className="font-mono text-neutral-800 dark:text-neutral-200">
+            {log.qtype} · {log.rcode}
+          </span>
+        </div>
+        <div className="flex justify-between items-center gap-2">
+          <span className="text-neutral-500 dark:text-neutral-400">处理状态</span>
+          <div>{getStatusBadge(log.status)}</div>
+        </div>
+        <div className="flex justify-between items-center gap-2">
+          <span className="text-neutral-500 dark:text-neutral-400">客户端 IP</span>
+          <button
+            type="button"
+            onClick={() => {
+              setClientFilter(log.client_ip === clientFilter ? '' : log.client_ip);
+              setPage(1);
+            }}
+            className="font-mono text-cyan-600 dark:text-cyan-400 hover:underline"
+            title="点击按此客户端 IP 过滤"
+          >
+            {log.client_ip}
+          </button>
+        </div>
+        <div className="flex justify-between items-center gap-2">
+          <span className="text-neutral-500 dark:text-neutral-400">全流程耗时</span>
+          <span className="font-mono text-cyan-600 dark:text-cyan-400 font-semibold tabular-nums">
+            {log.duration_ms.toFixed(2)} ms
+          </span>
+        </div>
+        <div className="flex justify-between items-center gap-2">
+          <span className="text-neutral-500 dark:text-neutral-400">调度上游组</span>
+          <span className="font-mono text-neutral-800 dark:text-neutral-200">
+            {log.routing_group || '本地直接响应'}
+          </span>
+        </div>
+        <div className="flex justify-between items-start gap-2">
+          <span className="text-neutral-500 dark:text-neutral-400 shrink-0">命中规则</span>
+          <span className="font-mono text-rose-600 dark:text-rose-400 break-all text-right">
+            {log.matched_rule || '-'}
+          </span>
+        </div>
+        <div className="pt-2 border-t border-neutral-200 dark:border-neutral-800 space-y-1">
+          <span className="text-neutral-500 dark:text-neutral-400 block">返回解析结果 (Response)</span>
+          <div className="font-mono text-xs text-emerald-600 dark:text-emerald-400 font-semibold bg-white dark:bg-surface-1 p-2 rounded border border-neutral-200 dark:border-neutral-800 break-all">
+            {log.response_ip || (log.rcode === 'No Error' ? '无记录 (NODATA)' : log.rcode)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
   if (!loggingEnabled && !loadingSettings) {
     return (
       <div className="p-12 text-center rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-5 max-w-lg mx-auto my-16 animate-in fade-in-50">
@@ -350,16 +489,16 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
   }
 
   return (
-    <div className="space-y-4 animate-in fade-in-50 duration-200">
-      {/* DNS 诊断查询工具 (常驻显示) */}
-      <QueryTool />
+    <div className="space-y-2.5 animate-in fade-in-50 duration-200">
+      {/* 紧凑单行 DNS 实时拨测工具条 */}
+      <QueryTool externalQuery={externalQuery} />
 
-      {/* 工具筛选栏 */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 sm:p-4 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-3 flex-1 w-full">
+      {/* 紧凑一体化筛选、状态快速切换与磁盘水位工具栏 */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5 p-2.5 px-3 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
+        <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[260px]">
           {/* 搜索框 */}
-          <div className="relative flex-1 w-full sm:max-w-sm">
-            <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2 align-icon" />
+          <div className="relative w-full sm:w-64">
+            <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2 align-icon" />
             <input
               type="text"
               value={search}
@@ -367,32 +506,84 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                 setSearch(e.target.value);
                 setPage(1);
               }}
-              placeholder="搜索域名..."
-              className="w-full min-h-[38px] pl-9 pr-3 text-xs bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700/80 rounded-md text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:border-cyan-500 transition-colors"
+              placeholder="搜索域名 / 客户端 IP / 规则..."
+              className="w-full min-h-[34px] pl-8 pr-7 text-xs bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700/80 rounded-md text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:border-cyan-500 transition-colors"
             />
+            {search && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearch('');
+                  setPage(1);
+                }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
+              >
+                <X className="w-3.5 h-3.5 align-icon" />
+              </button>
+            )}
           </div>
 
-          {/* 状态过滤 CustomSelect (100% 拒绝原生 Select) */}
-          <div className="w-full sm:w-auto">
-            <CustomSelect
-              options={statusOptions}
-              value={statusFilter}
-              onChange={handleFilterChange}
-            />
+          {/* 状态分段快捷过滤按钮组 */}
+          <div className="inline-flex items-center p-0.5 rounded-md bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 text-xs">
+            {statusOptions.map((opt) => {
+              const active = statusFilter === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => handleFilterChange(opt.value)}
+                  className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                    active
+                      ? 'bg-white dark:bg-surface-1 text-cyan-600 dark:text-cyan-400 shadow-2xs'
+                      : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
           </div>
+
+          {clientFilter && (
+            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-cyan-50 dark:bg-cyan-950/60 border border-cyan-200 dark:border-cyan-800/50 text-xs font-mono text-cyan-700 dark:text-cyan-300">
+              客户端: {clientFilter}
+              <button
+                type="button"
+                onClick={() => {
+                  setClientFilter('');
+                  setPage(1);
+                }}
+                className="hover:text-cyan-900 dark:hover:text-white"
+              >
+                <X className="w-3 h-3 align-icon" />
+              </button>
+            </span>
+          )}
         </div>
 
-        {/* 右侧动作按钮集合: 移动端采用等分网格，桌面端行内排列 */}
-        <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 w-full sm:w-auto pt-2.5 sm:pt-0 border-t sm:border-t-0 border-neutral-100 dark:border-neutral-800/60">
+        {/* 右侧磁盘水位指标与动作按钮集合 */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {diskStatus && (
+            <div
+              className="hidden md:inline-flex items-center gap-1.5 min-h-[34px] px-2.5 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 text-[11px] font-mono text-neutral-600 dark:text-neutral-300 tabular-nums"
+              title="后台每 15 秒自动巡检磁盘水位并在超限时淘汰旧日志释放空间"
+            >
+              <HardDrive className={`w-3.5 h-3.5 align-icon ${diskStatus.disk_used_percent >= 85 ? 'text-rose-500' : 'text-cyan-500'}`} />
+              <span>日志库 {(diskStatus.db_size_bytes / (1024 * 1024)).toFixed(1)}MB</span>
+              <span className="text-neutral-300 dark:text-neutral-700">|</span>
+              <span>磁盘 {diskStatus.disk_used_percent.toFixed(0)}% (余 {(diskStatus.disk_avail_bytes / (1024 * 1024 * 1024)).toFixed(1)}GB)</span>
+            </div>
+          )}
+
           <button
             type="button"
             onClick={async () => {
               setIsRefreshing(true);
               await fetchLogs();
-              setTimeout(() => setIsRefreshing(false), 500);
+              setTimeout(() => setIsRefreshing(false), 350);
             }}
             disabled={isRefreshing}
-            className="inline-flex items-center justify-center gap-1.5 min-h-[38px] px-3 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors active:scale-95 disabled:opacity-60"
+            className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2.5 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors active:scale-95 disabled:opacity-60"
             title="手动刷新日志"
           >
             <RefreshCw className={`w-3.5 h-3.5 align-icon ${isRefreshing ? 'animate-spin text-cyan-600 dark:text-cyan-400' : ''}`} />
@@ -402,21 +593,21 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
           <button
             type="button"
             onClick={() => setIsLive((prev) => !prev)}
-            className={`inline-flex items-center justify-center gap-1.5 min-h-[38px] px-3 text-xs rounded-md border transition-colors ${
+            className={`inline-flex items-center justify-center gap-1 min-h-[34px] px-2.5 text-xs rounded-md border transition-colors ${
               isLive
                 ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400'
                 : 'bg-neutral-100 dark:bg-surface-2 border-neutral-300 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400'
             }`}
           >
             {isLive ? <Radio className="w-3.5 h-3.5 animate-pulse align-icon" /> : <Play className="w-3.5 h-3.5 align-icon" />}
-            {isLive ? '实时流' : '已暂停'}
+            {isLive ? '实时流' : '实时跟踪'}
           </button>
 
           <button
             type="button"
             onClick={handleExportCsv}
             disabled={isExporting}
-            className="inline-flex items-center justify-center gap-1.5 min-h-[38px] px-3 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors disabled:opacity-50"
+            className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2.5 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors disabled:opacity-50"
           >
             <Download className="w-3.5 h-3.5 align-icon" />
             {isExporting ? '导出中...' : '导出 CSV'}
@@ -425,52 +616,64 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
           <button
             type="button"
             onClick={() => setIsClearAlertOpen(true)}
-            className="inline-flex items-center justify-center gap-1.5 min-h-[38px] px-3 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 bg-neutral-100 dark:bg-surface-2 border border-red-200 dark:border-red-900/40 rounded-md transition-colors"
+            className="inline-flex items-center justify-center gap-1 min-h-[34px] px-2.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 bg-neutral-100 dark:bg-surface-2 border border-red-200 dark:border-red-900/40 rounded-md transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5 align-icon" />
-            清空日志
+            清空
           </button>
         </div>
       </div>
 
-      {/* 查询日志主表格 */}
-      <div className="rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
+      {/* 主从工作台布局：左侧高密度查询日志表 + 右侧常驻报文诊断与统计面板 */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-start">
+      <div className="xl:col-span-8 2xl:col-span-9 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1080px] text-left text-xs table-fixed">
+          <table className="w-full min-w-[920px] text-left text-xs table-fixed">
             <thead className="bg-neutral-50 dark:bg-surface-2/60 border-b border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 uppercase font-medium">
               <tr>
-                <th className="py-3 px-4 w-[92px]">请求时间</th>
-                <th className="py-3 px-4 w-[88px]">状态</th>
-                <th className="py-3 px-4 min-w-[240px]">查询域名与类型</th>
-                <th className="py-3 px-4 w-[180px]">客户端 IP</th>
-                <th className="py-3 px-4 w-[170px]">分流 / 匹配规则</th>
-                <th className="py-3 px-4 w-[180px]">响应结果</th>
-                <th className="py-3 px-4 w-[88px] text-right">解析时延</th>
+                <th className="py-2.5 px-3 w-[112px]">请求时间</th>
+                <th className="py-2.5 px-2.5 w-[78px]">状态</th>
+                <th className="py-2.5 px-3 w-[230px]">查询域名与类型</th>
+                <th className="py-2.5 px-2.5 w-[116px]">客户端 IP</th>
+                <th className="py-2.5 px-2.5 w-[132px]">分流 / 匹配规则</th>
+                <th className="py-2.5 px-2.5 w-[150px]">响应结果</th>
+                <th className="py-2.5 px-2.5 w-[78px] text-right">时延</th>
+                <th className="py-2.5 px-3 w-[118px] text-right">就地操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800/60 font-normal bg-white dark:bg-surface-1">
               {logs.length > 0 ? (
                 logs.map((log) => {
-                  const timeDisplay = formatTime(log.timestamp);
+                  const timeDisplay = formatShortDateTime(log.timestamp);
                   const fullTimeDisplay = formatDateTime(log.timestamp);
                   const cleanQname = (log.qname || '').replace(/[\r\n\t]+/g, ' ');
+                  const isSelected = activeLog?.id === log.id;
                   return (
                     <tr
                       key={log.id}
-                      onClick={() => setSelectedLog(log)}
-                      className="cursor-pointer select-none hover:bg-neutral-100/60 dark:hover:bg-white/[0.04]"
+                      onClick={() => {
+                        setSelectedLog(log);
+                        if (window.innerWidth < 1280) {
+                          setMobileDrawerOpen(true);
+                        }
+                      }}
+                      className={`cursor-pointer select-none transition-colors ${
+                        isSelected
+                          ? 'bg-cyan-50/60 dark:bg-cyan-950/25'
+                          : 'hover:bg-neutral-100/60 dark:hover:bg-white/[0.04]'
+                      }`}
                     >
                       <td
-                        className="py-2.5 px-4 font-mono text-neutral-500 dark:text-neutral-400 tabular-nums whitespace-nowrap"
+                        className="py-2 px-3 font-mono text-[11px] text-neutral-500 dark:text-neutral-400 tabular-nums whitespace-nowrap"
                         title={fullTimeDisplay}
                       >
                         {timeDisplay}
                       </td>
-                      <td className="py-2.5 px-4 whitespace-nowrap">
+                      <td className="py-2 px-2.5 whitespace-nowrap">
                         {getStatusBadge(log.status)}
                       </td>
-                      <td className="py-2.5 px-4 overflow-hidden">
-                        <div className="flex items-center gap-2 min-w-0">
+                      <td className="py-2 px-3 overflow-hidden">
+                        <div className="flex items-center gap-1.5 min-w-0">
                           <span
                             className="font-mono text-neutral-800 dark:text-neutral-200 font-medium truncate block max-w-full"
                             title={cleanQname}
@@ -482,25 +685,34 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                           </span>
                         </div>
                       </td>
-                      <td className="py-2.5 px-4 font-mono text-neutral-600 dark:text-neutral-300 tabular-nums overflow-hidden">
-                        <span className="truncate block max-w-full" title={log.client_ip}>
+                      <td className="py-2 px-2.5 font-mono text-[11px] text-neutral-600 dark:text-neutral-300 tabular-nums overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setClientFilter(clientFilter === log.client_ip ? '' : log.client_ip);
+                            setPage(1);
+                          }}
+                          className="truncate block max-w-full hover:text-cyan-600 dark:hover:text-cyan-400 hover:underline text-left"
+                          title={`点击按客户端 ${log.client_ip} 筛选`}
+                        >
                           {log.client_ip}
-                        </span>
+                        </button>
                       </td>
-                      <td className="py-2.5 px-4 text-neutral-500 dark:text-neutral-400 overflow-hidden">
+                      <td className="py-2 px-2.5 text-neutral-500 dark:text-neutral-400 overflow-hidden">
                         {log.matched_rule ? (
-                          <span className="text-rose-600 dark:text-rose-400 font-mono truncate block max-w-full" title={log.matched_rule}>
+                          <span className="text-rose-600 dark:text-rose-400 font-mono text-[11px] truncate block max-w-full" title={log.matched_rule}>
                             {log.matched_rule}
                           </span>
                         ) : log.routing_group ? (
-                          <span className="text-cyan-600 dark:text-cyan-400 font-mono truncate block max-w-full" title={`组: ${log.routing_group}`}>
+                          <span className="text-cyan-600 dark:text-cyan-400 font-mono text-[11px] truncate block max-w-full" title={`组: ${log.routing_group}`}>
                             组: {log.routing_group}
                           </span>
                         ) : (
-                          <span className="text-neutral-400">-</span>
+                          <span className="text-neutral-400 text-[11px]">本地直出</span>
                         )}
                       </td>
-                      <td className="py-2.5 px-4 font-mono text-neutral-700 dark:text-neutral-300 tabular-nums overflow-hidden">
+                      <td className="py-2 px-2.5 font-mono text-[11px] text-neutral-700 dark:text-neutral-300 tabular-nums overflow-hidden">
                         {log.response_ip ? (
                           <span className="truncate block max-w-full" title={log.response_ip}>
                             {log.response_ip}
@@ -513,15 +725,46 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                           </span>
                         )}
                       </td>
-                      <td className="py-2.5 px-4 text-right font-mono tabular-nums text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
+                      <td className="py-2 px-2.5 text-right font-mono text-[11px] tabular-nums text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
                         {log.duration_ms < 1 ? '< 1 ms' : `${log.duration_ms.toFixed(1)} ms`}
+                      </td>
+                      <td
+                        className="py-2 px-3 text-right whitespace-nowrap"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="inline-flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleQuickRule(log.qname, 'block')}
+                            className="px-1.5 py-0.5 text-[11px] rounded border border-rose-200 dark:border-rose-900/50 bg-rose-50/70 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/60 transition-colors"
+                            title="加入拦截黑名单"
+                          >
+                            拦截
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleQuickRule(log.qname, 'whitelist')}
+                            className="px-1.5 py-0.5 text-[11px] rounded border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/70 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-colors"
+                            title="加入放行白名单"
+                          >
+                            放行
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setExternalQuery({ domain: log.qname, qtype: log.qtype || 'A', trigger: Date.now() })}
+                            className="px-1.5 py-0.5 text-[11px] rounded border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-surface-2 text-neutral-600 dark:text-neutral-300 hover:border-cyan-400 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors"
+                            title="立即对此域名发起拨测"
+                          >
+                            拨测
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-neutral-400">
+                  <td colSpan={8} className="py-10 text-center text-neutral-400">
                     {loading ? '正在加载日志...' : '暂无匹配的查询日志'}
                   </td>
                 </tr>
@@ -531,7 +774,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
         </div>
 
         {/* 分页控制栏 */}
-        <div className="px-4 py-3 border-t border-neutral-200 dark:border-neutral-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-neutral-500 dark:text-neutral-400">
+        <div className="px-3.5 py-2.5 border-t border-neutral-200 dark:border-neutral-800 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-neutral-500 dark:text-neutral-400">
           <div className="flex items-center gap-2 font-mono w-full sm:w-auto justify-between sm:justify-start">
             <span>共 {total.toLocaleString()} 条日志流水</span>
             <span className="text-neutral-300 dark:text-neutral-700">|</span>
@@ -579,117 +822,69 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
         </div>
       </div>
 
-      {/* 单条日志深度诊断 Drawer (带就地快捷动作) */}
+      {/* 右侧常驻主从详情与本页概览面板 (xl 及以上桌面端常驻显示，消除大屏空白) */}
+      <div className="hidden xl:block xl:col-span-4 2xl:col-span-3 space-y-3 sticky top-4">
+        <div className="p-3.5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-3">
+          <div className="flex items-center justify-between pb-2 border-b border-neutral-200 dark:border-neutral-800">
+            <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">
+              当前页分布概览 ({logs.length} 条)
+            </span>
+            <span className="font-mono text-[11px] text-cyan-600 dark:text-cyan-400 tabular-nums">
+              均值 {pageAvgMs.toFixed(1)} ms
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-1.5 text-center font-mono text-xs">
+            <div className="p-2 rounded bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/60 dark:border-emerald-900/40">
+              <div className="text-[10px] text-neutral-500 dark:text-neutral-400">放行</div>
+              <div className="font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">{pageAllowedCount}</div>
+            </div>
+            <div className="p-2 rounded bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200/60 dark:border-rose-900/40">
+              <div className="text-[10px] text-neutral-500 dark:text-neutral-400">拦截</div>
+              <div className="font-bold text-rose-600 dark:text-rose-400 tabular-nums">{pageBlockedCount}</div>
+            </div>
+            <div className="p-2 rounded bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/40">
+              <div className="text-[10px] text-neutral-500 dark:text-neutral-400">缓存</div>
+              <div className="font-bold text-amber-600 dark:text-amber-400 tabular-nums">{pageCachedCount}</div>
+            </div>
+            <div className="p-2 rounded bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/60 dark:border-indigo-900/40">
+              <div className="text-[10px] text-neutral-500 dark:text-neutral-400">重写</div>
+              <div className="font-bold text-indigo-600 dark:text-indigo-400 tabular-nums">{pageRewrittenCount}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-3.5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-3">
+          <div className="flex items-center justify-between pb-2 border-b border-neutral-200 dark:border-neutral-800">
+            <div>
+              <h4 className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">
+                DNS 报文级深度诊断
+              </h4>
+              {activeLog && (
+                <p className="font-mono text-[10px] text-neutral-400 truncate max-w-[220px]">
+                  ID: {activeLog.id}
+                </p>
+              )}
+            </div>
+          </div>
+          {activeLog ? (
+            renderInspectorContent(activeLog)
+          ) : (
+            <div className="py-8 text-center text-xs text-neutral-400">
+              点击任意日志行查看完整报文与分流决策详情
+            </div>
+          )}
+        </div>
+      </div>
+      </div>
+
+      {/* 小屏/平板端日志详情 Drawer */}
       <Drawer
-        isOpen={!!selectedLog}
-        onClose={() => setSelectedLog(null)}
+        isOpen={mobileDrawerOpen && !!selectedLog}
+        onClose={() => setMobileDrawerOpen(false)}
         title="DNS 报文级深度诊断"
         subtitle={`请求 ID: ${selectedLog?.id}`}
       >
-        {selectedLog && (
-          <div className="space-y-5 text-xs">
-            {/* 核心快捷就地操作栏 */}
-            <div className="p-3.5 rounded-lg bg-neutral-100 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-2">
-              <span className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider block">
-                对该域名的快捷动作
-              </span>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleQuickRule(selectedLog.qname, 'block')}
-                  className="inline-flex items-center gap-1.5 min-h-[34px] px-3 text-xs font-medium bg-rose-600 hover:bg-rose-500 text-white rounded-md transition-colors"
-                >
-                  <Shield className="w-3.5 h-3.5 align-icon" />
-                  拦截此域名 (Blacklist)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleQuickRule(selectedLog.qname, 'whitelist')}
-                  className="inline-flex items-center gap-1.5 min-h-[34px] px-3 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors"
-                >
-                  <Check className="w-3.5 h-3.5 align-icon" />
-                  放行白名单 (Whitelist)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearch(selectedLog.qname);
-                    setSelectedLog(null);
-                  }}
-                  className="inline-flex items-center gap-1.5 min-h-[34px] px-3 text-xs text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-surface-3 bg-white dark:bg-surface-1 border border-neutral-300 dark:border-neutral-700 rounded-md transition-colors"
-                >
-                  <Search className="w-3.5 h-3.5 align-icon" />
-                  筛选此域名
-                </button>
-              </div>
-            </div>
-
-            {/* 报文基础信息 */}
-            <div className="p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-neutral-500 dark:text-neutral-400">请求时间:</span>
-                <span className="font-mono text-neutral-900 dark:text-neutral-100 tabular-nums font-medium">
-                  {formatDateTime(selectedLog.timestamp)}
-                </span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-neutral-500 dark:text-neutral-400">查询域名:</span>
-                <span className="font-mono text-neutral-900 dark:text-neutral-100 font-semibold">{selectedLog.qname}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-neutral-500 dark:text-neutral-400">记录类型:</span>
-                <span className="font-mono text-neutral-900 dark:text-neutral-100">{selectedLog.qtype}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-neutral-500 dark:text-neutral-400">处理状态:</span>
-                <div>{getStatusBadge(selectedLog.status)}</div>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-neutral-500 dark:text-neutral-400">客户端来源:</span>
-                <span className="font-mono text-neutral-900 dark:text-neutral-100">{selectedLog.client_ip}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-neutral-500 dark:text-neutral-400">全流程时延:</span>
-                <span className="font-mono text-cyan-600 dark:text-cyan-400 font-semibold tabular-nums">
-                  {selectedLog.duration_ms.toFixed(2)} ms
-                </span>
-              </div>
-            </div>
-
-            {selectedLog.response_ip && (
-              <div className="p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-2">
-                <span className="text-neutral-500 dark:text-neutral-400 block font-semibold uppercase tracking-wider">
-                  首选返回 IP (TCP 测速优选)
-                </span>
-                <div className="font-mono text-sm text-emerald-600 dark:text-emerald-400 font-semibold bg-white dark:bg-surface-1 p-2.5 rounded border border-neutral-200 dark:border-neutral-800">
-                  {selectedLog.response_ip}
-                </div>
-              </div>
-            )}
-
-            {selectedLog.matched_rule && (
-              <div className="p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-2">
-                <span className="text-neutral-500 dark:text-neutral-400 block font-semibold uppercase tracking-wider">
-                  命中拦截规则
-                </span>
-                <div className="font-mono text-xs text-rose-600 dark:text-rose-400 bg-white dark:bg-surface-1 p-2.5 rounded border border-neutral-200 dark:border-neutral-800">
-                  {selectedLog.matched_rule}
-                </div>
-              </div>
-            )}
-
-            {selectedLog.routing_group && (
-              <div className="p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-2">
-                <span className="text-neutral-500 dark:text-neutral-400 block font-semibold uppercase tracking-wider">
-                  分流决策链路
-                </span>
-                <div className="font-mono text-xs text-cyan-600 dark:text-cyan-400 bg-white dark:bg-surface-1 p-2.5 rounded border border-neutral-200 dark:border-neutral-800">
-                  调度至上游组: {selectedLog.routing_group}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+        {selectedLog && renderInspectorContent(selectedLog)}
       </Drawer>
 
       {/* 快捷动作反馈 Snackbar */}

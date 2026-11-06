@@ -109,6 +109,12 @@ impl PipelineEngine {
         self.forward_overseas.group.set_servers(overseas);
     }
 
+    pub fn set_upstream_timeout_ms(&self, timeout_ms: u64) {
+        self.forward_mainland.group.set_timeout_ms(timeout_ms);
+        self.forward_gfw.group.set_timeout_ms(timeout_ms);
+        self.forward_overseas.group.set_timeout_ms(timeout_ms);
+    }
+
     pub fn has_china_ip(&self, resp: &Message) -> bool {
         for ans in &resp.answers {
             match &ans.data {
@@ -142,6 +148,29 @@ impl PipelineEngine {
             }
         }
         false
+    }
+
+    fn apply_response_mode(&self, ctx: &mut QueryContext) {
+        let mode = self.response_mode.read().clone();
+        if let Some(ref mut resp) = ctx.response {
+            match mode.as_str() {
+                "ipv4" | "ipv4_only" => {
+                    if ctx.qtype == RecordType::AAAA {
+                        resp.answers.clear();
+                    } else {
+                        resp.answers.retain(|ans| !matches!(ans.data, RData::AAAA(_)));
+                    }
+                }
+                "ipv6" | "ipv6_only" => {
+                    if ctx.qtype == RecordType::A {
+                        resp.answers.clear();
+                    } else {
+                        resp.answers.retain(|ans| !matches!(ans.data, RData::A(_)));
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     pub async fn process(&self, ctx: &mut QueryContext) {
@@ -181,6 +210,33 @@ impl PipelineEngine {
             }
         }
 
+        // 4.5. 下游单栈模式前置短路：若配置仅返回 IPv4 (或仅 IPv6)，直接对 AAAA (或 A) 返回空 NoError (NODATA)
+        // 避免无 IPv6 出口的楼层因缓存命中返回 AAAA 记录导致双栈 Happy Eyeballs 退避卡顿，同时节省 50% 无效回源
+        {
+            let mode = self.response_mode.read().clone();
+            let short_circuit = matches!(
+                (mode.as_str(), ctx.qtype),
+                ("ipv4" | "ipv4_only", RecordType::AAAA) | ("ipv6" | "ipv6_only", RecordType::A)
+            );
+            if short_circuit {
+                let mut resp = Message::new(
+                    ctx.request.metadata.id,
+                    hickory_proto::op::MessageType::Response,
+                    ctx.request.metadata.op_code,
+                );
+                resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
+                resp.metadata.recursion_available = true;
+                resp.metadata.response_code = ResponseCode::NoError;
+                resp.queries = ctx.request.queries.clone();
+                ctx.response = Some(resp);
+                ctx.status = QueryStatus::Allowed;
+                ctx.tags.insert(format!("response_mode_filtered:{}", mode));
+                align_edns_response(ctx);
+                ctx.finish();
+                return;
+            }
+        }
+
         // 5. Cache
         ctx.record_timing("cache");
         if self.cache_enabled.load(Ordering::Relaxed) {
@@ -190,12 +246,20 @@ impl PipelineEngine {
                 cached_resp.metadata.recursion_available = true;
 
                 ctx.response = Some(cached_resp);
+                self.apply_response_mode(ctx);
                 ctx.status = QueryStatus::Cached;
                 ctx.tags.insert("hit_cache".to_string());
 
                 if should_prefetch {
                     ctx.tags.insert("prefetch_triggered".to_string());
-                    let forward = self.forward_mainland.clone();
+                    let is_proxy_domain = self.router_enabled.load(Ordering::Relaxed)
+                        && self.domain_registry.matches("domain_proxy", &ctx.qname);
+                    let forward_primary = if is_proxy_domain {
+                        self.forward_gfw.clone()
+                    } else {
+                        self.forward_mainland.clone()
+                    };
+                    let forward_fallback = self.forward_mainland.clone();
                     let cache = self.cache.clone();
                     let qname = ctx.qname.clone();
                     let qtype = ctx.qtype;
@@ -208,7 +272,15 @@ impl PipelineEngine {
                                 std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
                                 req,
                             );
-                            forward.execute(&mut sub_ctx).await;
+                            forward_primary.execute(&mut sub_ctx).await;
+                            let ok = sub_ctx
+                                .response
+                                .as_ref()
+                                .map(|r| r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty())
+                                .unwrap_or(false);
+                            if !ok && is_proxy_domain {
+                                forward_fallback.execute(&mut sub_ctx).await;
+                            }
                             if let Some(resp) = sub_ctx.response {
                                 if resp.metadata.response_code == ResponseCode::NoError && !resp.answers.is_empty() {
                                     cache.insert(&qname, qtype, resp);
@@ -240,6 +312,28 @@ impl PipelineEngine {
         } else if is_proxy {
             ctx.tags.insert("route:proxy".to_string());
             self.forward_gfw.execute(ctx).await;
+
+            let gfw_ok = ctx
+                .response
+                .as_ref()
+                .map(|r| r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty())
+                .unwrap_or(false);
+
+            if !gfw_ok {
+                self.forward_overseas.execute(ctx).await;
+            }
+
+            let overseas_ok = ctx
+                .response
+                .as_ref()
+                .map(|r| r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty())
+                .unwrap_or(false);
+
+            // 容灾兜底：若代理未开启或境外上游不可达，自动降级至大陆上游解析，防止 proxy.txt 域名直接返回 ServFail 断网
+            if !overseas_ok {
+                ctx.tags.insert("fallback_restore_mainland".to_string());
+                self.forward_mainland.execute(ctx).await;
+            }
         } else {
             // Fallback pipeline: try mainland first
             ctx.tags.insert("route:fallback".to_string());
@@ -290,39 +384,20 @@ impl PipelineEngine {
 
         // 7. Speed Check (Fastest IP)
         if ctx.response.is_some() {
+            // 8. 先执行下游地址族过滤，再测速与写缓存，杜绝被过滤的 AAAA/A 记录污染缓存
+            self.apply_response_mode(ctx);
+
             if self.speed_check_enabled.load(Ordering::Relaxed) {
                 ctx.record_timing("speed_check");
                 self.speed_check.execute(ctx).await;
             }
 
-            // 8. Cache storage
+            // 9. Cache storage
             if self.cache_enabled.load(Ordering::Relaxed) {
                 if let Some(ref resp) = ctx.response {
                     if resp.metadata.response_code == ResponseCode::NoError {
                         self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
                     }
-                }
-            }
-
-            // 9. Downstream response filtering (IPv4 / IPv6 / Dual stack)
-            let mode = self.response_mode.read().clone();
-            if let Some(ref mut resp) = ctx.response {
-                match mode.as_str() {
-                    "ipv4" | "ipv4_only" => {
-                        if ctx.qtype == RecordType::AAAA {
-                            resp.answers.clear();
-                        } else {
-                            resp.answers.retain(|ans| !matches!(ans.data, RData::AAAA(_)));
-                        }
-                    }
-                    "ipv6" | "ipv6_only" => {
-                        if ctx.qtype == RecordType::A {
-                            resp.answers.clear();
-                        } else {
-                            resp.answers.retain(|ans| !matches!(ans.data, RData::A(_)));
-                        }
-                    }
-                    _ => {}
                 }
             }
         } else {
@@ -349,24 +424,26 @@ impl PipelineEngine {
 pub fn align_edns_response(ctx: &mut QueryContext) {
     if let Some(ref mut resp) = ctx.response {
         if let Some(ref req_edns) = ctx.request.edns {
+            let safe_payload = req_edns.max_payload().clamp(512, 1232);
             let client_cookie = req_edns
                 .options()
                 .get(hickory_proto::rr::rdata::opt::EdnsCode::Cookie)
                 .cloned();
 
             if let Some(ref mut resp_edns) = resp.edns {
+                resp_edns.set_max_payload(safe_payload);
                 resp_edns.options_mut().remove(hickory_proto::rr::rdata::opt::EdnsCode::Cookie);
                 if let Some(cookie) = client_cookie {
                     resp_edns.options_mut().insert(cookie);
                 }
             } else if let Some(cookie) = client_cookie {
                 let mut edns = hickory_proto::op::Edns::new();
-                edns.set_max_payload(req_edns.max_payload().clamp(512, 4096));
+                edns.set_max_payload(safe_payload);
                 edns.options_mut().insert(cookie);
                 resp.set_edns(edns);
             } else {
                 let mut edns = hickory_proto::op::Edns::new();
-                edns.set_max_payload(req_edns.max_payload().clamp(512, 4096));
+                edns.set_max_payload(safe_payload);
                 resp.set_edns(edns);
             }
         } else {

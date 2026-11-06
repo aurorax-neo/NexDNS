@@ -1,5 +1,4 @@
 use chrono::{Duration, Local};
-use rusqlite::{params, Connection};
 use sha2::Digest;
 use argon2::{
     password_hash::{phc::PasswordHash, PasswordHasher, PasswordVerifier},
@@ -9,6 +8,7 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use uuid::Uuid;
+use crate::config::AuthConfig;
 
 static SESSION_CACHE: LazyLock<RwLock<HashMap<String, (String, String)>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
@@ -42,6 +42,8 @@ pub fn verify_password(password: &str, stored_hash: &str, salt: &str) -> (bool, 
         let legacy_hex = format!("{:x}", sha2::Digest::finalize(hasher));
         if legacy_hex == stored_hash {
             (true, true) // 匹配成功，标记需自动平滑升级为 Argon2
+        } else if salt.is_empty() && password == stored_hash {
+            (true, true) // 支持配置文件中手写明文密码并自动升级为 Argon2
         } else {
             (false, false)
         }
@@ -51,47 +53,10 @@ pub fn verify_password(password: &str, stored_hash: &str, salt: &str) -> (bool, 
 pub struct AuthManager;
 
 impl AuthManager {
-    pub fn init_tables(conn: &Connection) -> rusqlite::Result<()> {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS users (
-                username TEXT PRIMARY KEY,
-                password_hash TEXT NOT NULL,
-                salt TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS sessions (
-                token TEXT PRIMARY KEY,
-                username TEXT NOT NULL,
-                expires_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);"
-        )?;
-
-        // Check if admin user exists; if not, create default admin / admin1234
-        let user_count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
-        if user_count == 0 {
-            let hash = hash_password("admin1234").map_err(|e| {
-                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)))
-            })?;
-            conn.execute(
-                "INSERT INTO users (username, password_hash, salt, created_at) VALUES (?1, ?2, ?3, ?4)",
-                params!["admin", hash, "", Local::now().format("%Y-%m-%d %H:%M:%S").to_string()],
-            )?;
-            tracing::info!("创建默认管理员账户: admin / admin1234 (采用 Argon2id 高安全性哈希，请在设置中及时修改密码)");
-        }
-
-        let _ = Self::cleanup_expired_sessions(conn);
-
-        Ok(())
-    }
-
-    pub fn cleanup_expired_sessions(conn: &Connection) -> rusqlite::Result<()> {
+    pub fn cleanup_expired_sessions() {
         let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        conn.execute("DELETE FROM sessions WHERE expires_at <= ?1", params![now])?;
         let mut w = SESSION_CACHE.write();
         w.retain(|_, (_, exp)| exp.as_str() > now.as_str());
-        Ok(())
     }
 
     pub fn check_rate_limit(client_ip: &str) -> Result<(), String> {
@@ -122,107 +87,78 @@ impl AuthManager {
         LOGIN_ATTEMPTS.write().remove(client_ip);
     }
 
-    pub fn authenticate(conn: &Connection, username: &str, password: &str) -> Result<Option<(String, String)>, String> {
-        let _ = Self::init_tables(conn);
-        let _ = Self::cleanup_expired_sessions(conn);
-        let mut stmt = conn
-            .prepare("SELECT password_hash, salt FROM users WHERE username = ?1")
-            .map_err(|e| e.to_string())?;
+    pub fn authenticate(
+        auth_cfg: &mut AuthConfig,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<(String, String, bool)>, String> {
+        Self::cleanup_expired_sessions();
+        if username.trim() != auth_cfg.username.trim() {
+            return Ok(None);
+        }
 
-        let res = stmt.query_row(params![username], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        });
-
-        match res {
-            Ok((stored_hash, salt)) => {
-                let (valid, should_upgrade) = verify_password(password, &stored_hash, &salt);
-                if valid {
-                    if should_upgrade {
-                        if let Ok(upgraded) = hash_password(password) {
-                            let _ = conn.execute(
-                                "UPDATE users SET password_hash = ?1, salt = '' WHERE username = ?2",
-                                params![upgraded, username],
-                            );
-                            tracing::info!("用户 [{}] 的密码哈希已自动平滑升级至 Argon2id 安全标准", username);
-                        }
-                    }
-                    let token = Uuid::new_v4().to_string();
-                    let expires_at = (Local::now() + Duration::days(7)).format("%Y-%m-%d %H:%M:%S").to_string();
-                    conn.execute(
-                        "INSERT INTO sessions (token, username, expires_at) VALUES (?1, ?2, ?3)",
-                        params![token, username, expires_at],
-                    ).map_err(|e| e.to_string())?;
-                    SESSION_CACHE.write().insert(token.clone(), (username.to_string(), expires_at.clone()));
-                    Ok(Some((token, expires_at)))
-                } else {
-                    Ok(None)
+        let (valid, should_upgrade) = verify_password(password, &auth_cfg.password, "");
+        if valid {
+            let mut upgraded_flag = false;
+            if should_upgrade {
+                if let Ok(upgraded) = hash_password(password) {
+                    auth_cfg.password = upgraded;
+                    upgraded_flag = true;
+                    tracing::info!("用户 [{}] 的密码哈希已自动平滑升级至 Argon2id 安全标准", username);
                 }
             }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    pub fn validate_token(conn: &Connection, token: &str) -> Option<String> {
-        let _ = Self::init_tables(conn);
-        let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        {
-            let r = SESSION_CACHE.read();
-            if let Some((user, exp)) = r.get(token) {
-                if *exp > now {
-                    return Some(user.clone());
-                }
-            }
-        }
-        let res: Option<(String, String)> = conn.query_row(
-            "SELECT username, expires_at FROM sessions WHERE token = ?1 AND expires_at > ?2",
-            params![token, now],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).ok();
-        if let Some((u, exp)) = res {
-            SESSION_CACHE.write().insert(token.to_string(), (u.clone(), exp));
-            Some(u)
+            let token = Uuid::new_v4().to_string();
+            let expires_at = (Local::now() + Duration::days(7)).format("%Y-%m-%d %H:%M:%S").to_string();
+            SESSION_CACHE
+                .write()
+                .insert(token.clone(), (auth_cfg.username.clone(), expires_at.clone()));
+            Ok(Some((token, expires_at, upgraded_flag)))
         } else {
-            None
+            Ok(None)
         }
     }
 
-    pub fn logout(conn: &Connection, token: &str) -> rusqlite::Result<()> {
-        SESSION_CACHE.write().remove(token);
-        conn.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
-        Ok(())
+    pub fn validate_token(token: &str) -> Option<String> {
+        let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let r = SESSION_CACHE.read();
+        if let Some((user, exp)) = r.get(token) {
+            if *exp > now {
+                return Some(user.clone());
+            }
+        }
+        None
     }
 
-    pub fn change_password(conn: &Connection, username: &str, old_pass: &str, new_pass: &str) -> Result<(), String> {
-        let _ = Self::init_tables(conn);
+    pub fn logout(token: &str) {
+        SESSION_CACHE.write().remove(token);
+    }
+
+    pub fn change_password(
+        auth_cfg: &mut AuthConfig,
+        new_username: Option<&str>,
+        old_pass: &str,
+        new_pass: &str,
+    ) -> Result<(), String> {
         if new_pass.len() < 6 {
             return Err("新密码长度不能少于 6 位".to_string());
         }
 
-        let mut stmt = conn
-            .prepare("SELECT password_hash, salt FROM users WHERE username = ?1")
-            .map_err(|e| e.to_string())?;
-
-        let (stored_hash, salt) = stmt.query_row(params![username], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        }).map_err(|_| "用户不存在".to_string())?;
-
-        let (valid, _) = verify_password(old_pass, &stored_hash, &salt);
+        let (valid, _) = verify_password(old_pass, &auth_cfg.password, "");
         if !valid {
             return Err("原密码错误".to_string());
         }
 
+        if let Some(nu) = new_username {
+            let trimmed = nu.trim();
+            if !trimmed.is_empty() {
+                auth_cfg.username = trimmed.to_string();
+            }
+        }
+
         let new_hash = hash_password(new_pass)?;
+        auth_cfg.password = new_hash;
 
-        conn.execute(
-            "UPDATE users SET password_hash = ?1, salt = '' WHERE username = ?2",
-            params![new_hash, username],
-        ).map_err(|e| e.to_string())?;
-
-        // Clear existing sessions for this user
-        SESSION_CACHE.write().retain(|_, (u, _)| u != username);
-        conn.execute("DELETE FROM sessions WHERE username = ?1", params![username])
-            .map_err(|e| e.to_string())?;
+        SESSION_CACHE.write().clear();
 
         Ok(())
     }

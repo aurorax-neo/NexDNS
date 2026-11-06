@@ -417,27 +417,96 @@ async fn test_cache_prefetch_trigger_under_20_percent_ttl() {
 
 #[test]
 fn test_change_password_execution() {
+    use nexdns::config::AuthConfig;
     use nexdns::db::auth::AuthManager;
-    use rusqlite::Connection;
 
-    let conn = Connection::open_in_memory().unwrap();
-    AuthManager::init_tables(&conn).unwrap();
+    let mut auth_cfg = AuthConfig::default();
 
     // Default admin user exists
-    let auth_res = AuthManager::authenticate(&conn, "admin", "admin1234").unwrap();
+    let auth_res = AuthManager::authenticate(&mut auth_cfg, "admin", "admin1234").unwrap();
     assert!(auth_res.is_some());
 
     // Change password from admin1234 to newpass123
-    let res = AuthManager::change_password(&conn, "admin", "admin1234", "newpass123");
+    let res = AuthManager::change_password(&mut auth_cfg, Some("admin"), "admin1234", "newpass123");
     assert!(res.is_ok(), "change_password should succeed: {:?}", res);
+    assert!(auth_cfg.password.starts_with("$argon2"));
 
     // Verify old password no longer works
-    let old_auth = AuthManager::authenticate(&conn, "admin", "admin1234").unwrap();
+    let old_auth = AuthManager::authenticate(&mut auth_cfg, "admin", "admin1234").unwrap();
     assert!(old_auth.is_none());
 
     // Verify new password works
-    let new_auth = AuthManager::authenticate(&conn, "admin", "newpass123").unwrap();
+    let new_auth = AuthManager::authenticate(&mut auth_cfg, "admin", "newpass123").unwrap();
     assert!(new_auth.is_some());
+}
+
+#[test]
+fn test_retention_days_migrated_and_stripped_from_yaml() {
+    use nexdns::config::AppConfig;
+
+    let yaml_with_legacy = r#"
+logging:
+  enabled: true
+  retention_days: 1
+"#;
+    let mut cfg: AppConfig = serde_yaml::from_str(yaml_with_legacy).unwrap();
+    cfg.normalize();
+    // 1 day -> 1440 mins, and retention_days cleared
+    assert_eq!(cfg.logging.retention_mins, 1440);
+    assert!(cfg.logging.retention_days.is_none());
+
+    let serialized = serde_yaml::to_string(&cfg).unwrap();
+    assert!(!serialized.contains("retention_days"));
+    assert!(serialized.contains("retention_mins: 1440"));
+    assert!(serialized.contains("auth:"));
+}
+
+#[tokio::test]
+async fn test_db_only_has_query_logs_and_cleans_up_expired_and_oversized_logs() {
+    use nexdns::db::Database;
+
+    let tmp_dir = std::env::temp_dir().join(format!("nexdns_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let db_path = tmp_dir.join("nexdns.db");
+    let db = Database::init(&db_path).unwrap();
+
+    // Verify ONLY query_logs table exists in SQLite (excluding sqlite_ internal tables)
+    {
+        let conn = db.get_conn().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(tables, vec!["query_logs".to_string()]);
+
+        // Insert an expired log (2 hours ago) and a fresh log (now)
+        let expired_ts = (chrono::Local::now() - chrono::Duration::minutes(120)).to_rfc3339();
+        let fresh_ts = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO query_logs (id, timestamp, client_ip, qname, qtype, status, rcode, duration_ms)
+             VALUES ('id-1', ?1, '127.0.0.1', 'old.example.com', 'A', 'allowed', 'NoError', 1.2)",
+            rusqlite::params![expired_ts],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO query_logs (id, timestamp, client_ip, qname, qtype, status, rcode, duration_ms)
+             VALUES ('id-2', ?1, '127.0.0.1', 'fresh.example.com', 'A', 'allowed', 'NoError', 1.0)",
+            rusqlite::params![fresh_ts],
+        )
+        .unwrap();
+    }
+
+    let deleted = db.cleanup_logs_older_than(60).unwrap();
+    assert_eq!(deleted, 1);
+    let (items, total) = db.query_logs(10, 0, None, None, None).unwrap();
+    assert_eq!(total, 1);
+    assert_eq!(items[0].qname, "fresh.example.com");
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
 #[test]
@@ -487,4 +556,180 @@ fn test_cache_hit_rate_only_counts_cache_path_queries() {
     assert_eq!(cache.today.hits, 2);
     assert_eq!(cache.today.misses, 3);
     assert!((cache.today.hit_rate - 40.0).abs() < 1e-9);
+}
+
+#[test]
+fn test_udp_truncation_and_safe_mtu_limit() {
+    use hickory_proto::op::{Message, MessageType, OpCode, Query};
+    use hickory_proto::rr::{RData, Record};
+    use nexdns::server::encode_udp_response;
+
+    let mut resp = Message::new(0x1234, MessageType::Response, OpCode::Query);
+    let qname = Name::from_str("cdn.heavy-records.example.com.").unwrap();
+    resp.add_query(Query::query(qname.clone(), RecordType::A));
+
+    for i in 0..80u8 {
+        resp.add_answer(Record::from_rdata(
+            qname.clone(),
+            60,
+            RData::A(hickory_proto::rr::rdata::A::new(10, 0, 0, i)),
+        ));
+    }
+
+    // 1. 无 EDNS 客户端：限制在 512 字节以内并标记 TC=1
+    let legacy_bytes = encode_udp_response(&resp, None).unwrap();
+    assert!(legacy_bytes.len() <= 512, "legacy UDP size was {}", legacy_bytes.len());
+    let legacy_decoded = Message::from_vec(&legacy_bytes).unwrap();
+    assert!(legacy_decoded.metadata.truncation);
+
+    // 2. 携带 EDNS 4096 的客户端：限制在 1232 字节安全 MTU 以内并标记 TC=1
+    let edns_bytes = encode_udp_response(&resp, Some(4096)).unwrap();
+    assert!(edns_bytes.len() <= 1232, "EDNS UDP size was {}", edns_bytes.len());
+    let edns_decoded = Message::from_vec(&edns_bytes).unwrap();
+    assert!(edns_decoded.metadata.truncation);
+}
+
+#[tokio::test]
+async fn test_response_mode_ipv4_only_short_circuits_and_filters_cache() {
+    use std::net::Ipv6Addr;
+    use std::sync::Arc;
+    use hickory_proto::op::{MessageType, OpCode, Query, ResponseCode};
+    use hickory_proto::rr::rdata::AAAA;
+    use nexdns::pipeline::context::QueryContext;
+    use nexdns::pipeline::engine::PipelineEngine;
+    use nexdns::pipeline::plugins::adblock::{AdblockPlugin, BlockType};
+    use nexdns::pipeline::plugins::cache::CachePlugin;
+    use nexdns::pipeline::plugins::domain_match::DomainListRegistry;
+    use nexdns::pipeline::plugins::ip_match::IpListRegistry;
+    use nexdns::pipeline::plugins::rewrite::RewritePlugin;
+    use nexdns::pipeline::plugins::speed_check::SpeedCheckPlugin;
+    use nexdns::pipeline::plugins::upstream::{ForwardPlugin, UpstreamGroup};
+
+    let cache = Arc::new(CachePlugin::new(100, false, 60, 300));
+    let qname = Name::from_str("dualstack.example.com.").unwrap();
+
+    // 预置一条同时含 A 和 AAAA 的缓存响应，验证缓存命中路径同样执行 ipv4_only 过滤
+    let mut cached_msg = Message::new(1, MessageType::Response, OpCode::Query);
+    cached_msg.metadata.response_code = ResponseCode::NoError;
+    cached_msg.add_query(Query::query(qname.clone(), RecordType::A));
+    cached_msg.add_answer(Record::from_rdata(
+        qname.clone(),
+        60,
+        RData::A(A(Ipv4Addr::new(1, 2, 3, 4))),
+    ));
+    cached_msg.add_answer(Record::from_rdata(
+        qname.clone(),
+        60,
+        RData::AAAA(AAAA(Ipv6Addr::new(0x2400, 0x3200, 0, 0, 0, 0, 0, 1))),
+    ));
+    cache.insert("dualstack.example.com", RecordType::A, cached_msg.clone());
+    cache.insert("dualstack.example.com", RecordType::AAAA, cached_msg);
+
+    let engine = PipelineEngine::new(
+        Arc::new(RewritePlugin::new()),
+        Arc::new(AdblockPlugin::new(BlockType::ZeroIp, 60)),
+        cache,
+        Arc::new(DomainListRegistry::new()),
+        Arc::new(IpListRegistry::new()),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("mainland", vec![], 500)))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("gfw", vec![], 500)))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("overseas", vec![], 500)))),
+        Arc::new(SpeedCheckPlugin::new(false, 200, 5)),
+        false,
+        false,
+        "ipv4_only".to_string(),
+    );
+
+    // 1. AAAA 查询在 ipv4_only 下前置短路为空 NoError (NODATA)，绝不返回缓存里的 AAAA
+    let mut req_aaaa = Message::query();
+    req_aaaa.add_query(Query::query(qname.clone(), RecordType::AAAA));
+    let mut ctx_aaaa = QueryContext::new("127.0.0.1".parse().unwrap(), req_aaaa);
+    engine.process(&mut ctx_aaaa).await;
+    let resp_aaaa = ctx_aaaa.response.unwrap();
+    assert_eq!(resp_aaaa.metadata.response_code, ResponseCode::NoError);
+    assert!(resp_aaaa.answers.is_empty(), "ipv4_only 下 AAAA 查询应返回空 Answer");
+
+    // 2. A 查询命中缓存时自动剥离混入的 AAAA 记录，只保留 A 记录
+    let mut req_a = Message::query();
+    req_a.add_query(Query::query(qname, RecordType::A));
+    let mut ctx_a = QueryContext::new("127.0.0.1".parse().unwrap(), req_a);
+    engine.process(&mut ctx_a).await;
+    let resp_a = ctx_a.response.unwrap();
+    assert_eq!(resp_a.answers.len(), 1);
+    assert!(matches!(resp_a.answers[0].data, RData::A(_)));
+}
+
+#[tokio::test]
+async fn test_proxy_route_fallback_to_mainland_when_gfw_unreachable() {
+    use std::sync::Arc;
+    use tokio::net::UdpSocket;
+    use hickory_proto::op::{MessageType, OpCode, Query, ResponseCode};
+    use nexdns::pipeline::context::QueryContext;
+    use nexdns::pipeline::engine::PipelineEngine;
+    use nexdns::pipeline::plugins::adblock::{AdblockPlugin, BlockType};
+    use nexdns::pipeline::plugins::cache::CachePlugin;
+    use nexdns::pipeline::plugins::domain_match::{DomainListRegistry, DomainMatcher};
+    use nexdns::pipeline::plugins::ip_match::IpListRegistry;
+    use nexdns::pipeline::plugins::rewrite::RewritePlugin;
+    use nexdns::pipeline::plugins::speed_check::SpeedCheckPlugin;
+    use nexdns::pipeline::plugins::upstream::{ForwardPlugin, UpstreamGroup, UpstreamServer};
+
+    // 启动本地模拟大陆 UDP DNS 上游
+    let mock_mainland = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let mainland_addr = mock_mainland.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 512];
+        loop {
+            if let Ok((len, src)) = mock_mainland.recv_from(&mut buf).await {
+                if let Ok(req) = Message::from_vec(&buf[..len]) {
+                    let mut resp = Message::new(req.metadata.id, MessageType::Response, OpCode::Query);
+                    resp.metadata.response_code = ResponseCode::NoError;
+                    resp.queries = req.queries.clone();
+                    if let Some(q) = req.queries.first() {
+                        resp.add_answer(Record::from_rdata(
+                            q.name().clone(),
+                            60,
+                            RData::A(A(Ipv4Addr::new(104, 16, 1, 1))),
+                        ));
+                    }
+                    let _ = mock_mainland.send_to(&resp.to_vec().unwrap(), src).await;
+                }
+            }
+        }
+    });
+
+    let domain_reg = Arc::new(DomainListRegistry::new());
+    let mut proxy_matcher = DomainMatcher::new("domain_proxy");
+    proxy_matcher.load_from_text("github.com");
+    domain_reg.register(proxy_matcher);
+
+    let mainland_srv = UpstreamServer::parse("mainland", &format!("udp://{}", mainland_addr)).unwrap();
+    // 指向未监听的本地 TCP 端口模拟境外上游不可达（立即 Connection refused）
+    let dead_gfw = UpstreamServer::parse("gfw", "tcp://127.0.0.1:1").unwrap();
+    let dead_overseas = UpstreamServer::parse("overseas", "tcp://127.0.0.1:2").unwrap();
+
+    let engine = PipelineEngine::new(
+        Arc::new(RewritePlugin::new()),
+        Arc::new(AdblockPlugin::new(BlockType::ZeroIp, 60)),
+        Arc::new(CachePlugin::new(100, false, 60, 300)),
+        domain_reg,
+        Arc::new(IpListRegistry::new()),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("mainland", vec![mainland_srv], 300)))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("gfw", vec![dead_gfw], 300)))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("overseas", vec![dead_overseas], 300)))),
+        Arc::new(SpeedCheckPlugin::new(false, 200, 5)),
+        true,
+        true,
+        "dual".to_string(),
+    );
+
+    let mut req = Message::query();
+    req.add_query(Query::query(Name::from_str("github.com.").unwrap(), RecordType::A));
+    let mut ctx = QueryContext::new("127.0.0.1".parse().unwrap(), req);
+    engine.process(&mut ctx).await;
+
+    let resp = ctx.response.expect("response should exist");
+    assert_eq!(resp.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(resp.answers.len(), 1);
+    assert!(ctx.tags.contains("fallback_restore_mainland"));
 }

@@ -1,10 +1,21 @@
+use std::ffi::CString;
 use std::path::Path;
 use std::sync::Arc;
 use rusqlite::{params, params_from_iter, types::Value, Connection};
 use tokio::sync::{broadcast, mpsc};
+use crate::config::AppConfig;
 use crate::pipeline::context::{QueryContext, QueryStatus};
+use crate::pipeline::rule_files::RuleFileInfo;
 
 pub mod auth;
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DiskStatus {
+    pub db_size_bytes: u64,
+    pub disk_total_bytes: u64,
+    pub disk_avail_bytes: u64,
+    pub disk_used_percent: f64,
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QueryLogItem {
@@ -86,6 +97,12 @@ impl Database {
 
         let conn = Connection::open(&path_str)?;
         let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
+
+        let auto_vac: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0)).unwrap_or(0);
+        if auto_vac != 2 {
+            let _ = conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;");
+        }
+
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
@@ -108,45 +125,8 @@ impl Database {
              );
              CREATE INDEX IF NOT EXISTS idx_query_logs_time ON query_logs(timestamp DESC);
              CREATE INDEX IF NOT EXISTS idx_query_logs_qname ON query_logs(qname);
-             CREATE INDEX IF NOT EXISTS idx_query_logs_status ON query_logs(status);
-
-             CREATE TABLE IF NOT EXISTS adblock_rules (
-                 id TEXT PRIMARY KEY,
-                 name TEXT NOT NULL,
-                 url TEXT NOT NULL,
-                 enabled INTEGER NOT NULL,
-                 rule_count INTEGER NOT NULL,
-                 updated_at TEXT NOT NULL,
-                 content TEXT
-             );
-
-             CREATE TABLE IF NOT EXISTS dns_rewrites (
-                 id TEXT PRIMARY KEY,
-                 domain TEXT NOT NULL,
-                 record_type TEXT NOT NULL,
-                 value TEXT NOT NULL,
-                 enabled INTEGER NOT NULL
-             );
-
-             CREATE TABLE IF NOT EXISTS system_settings (
-                 key TEXT PRIMARY KEY,
-                 value TEXT NOT NULL
-             );
-
-             CREATE TABLE IF NOT EXISTS routing_rule_files (
-                 id TEXT PRIMARY KEY,
-                 name TEXT NOT NULL,
-                 file_name TEXT NOT NULL UNIQUE,
-                 group_type TEXT NOT NULL,
-                 url TEXT,
-                 enabled INTEGER NOT NULL,
-                 line_count INTEGER NOT NULL,
-                 size_bytes INTEGER NOT NULL,
-                 updated_at TEXT NOT NULL
-             );"
+             CREATE INDEX IF NOT EXISTS idx_query_logs_status ON query_logs(status);"
         )?;
-
-        auth::AuthManager::init_tables(&conn)?;
 
         let (log_tx, mut log_rx) = mpsc::channel::<QueryLogItem>(10000);
         let (ws_broadcast_tx, _) = broadcast::channel::<QueryLogItem>(1000);
@@ -203,6 +183,140 @@ impl Database {
         }))
     }
 
+    /// 平滑将旧版 SQLite 中的非日志配置（用户密码、DNS 重写、拦截规则、分流规则）迁移至 config.yaml 与规则目录，
+    /// 随后彻底删除所有非日志表，确保数据库仅记录查询日志。
+    pub fn migrate_legacy_tables_to_config(&self, cfg: &mut AppConfig, rules_dir: &Path) -> bool {
+        let Ok(conn) = self.get_conn() else {
+            return false;
+        };
+        let _ = std::fs::create_dir_all(rules_dir);
+        let mut migrated = false;
+
+        let table_exists = |name: &str| -> bool {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap_or(false)
+        };
+
+        // 1. 迁移 users 表中的用户名与密码哈希
+        if table_exists("users") {
+            if let Ok((username, password_hash)) = conn.query_row(
+                "SELECT username, password_hash FROM users LIMIT 1",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            ) {
+                if !username.trim().is_empty() && !password_hash.trim().is_empty() {
+                    // 若当前配置仍是默认 admin1234，则采用数据库里已修改的凭据
+                    let (is_default_pass, _) = auth::verify_password("admin1234", &cfg.auth.password, "");
+                    if is_default_pass {
+                        cfg.auth.username = username;
+                        cfg.auth.password = password_hash;
+                    }
+                }
+            }
+            migrated = true;
+        }
+
+        // 2. 迁移 dns_rewrites 表
+        if table_exists("dns_rewrites") {
+            if cfg.rewrites.is_empty() {
+                if let Ok(mut stmt) = conn.prepare("SELECT id, domain, record_type, value, enabled FROM dns_rewrites ORDER BY domain ASC") {
+                    if let Ok(rows) = stmt.query_map([], |r| {
+                        Ok(DnsRewriteRecord {
+                            id: r.get(0)?,
+                            domain: r.get(1)?,
+                            record_type: r.get(2)?,
+                            value: r.get(3)?,
+                            enabled: r.get::<_, i32>(4)? == 1,
+                        })
+                    }) {
+                        for item in rows.flatten() {
+                            cfg.rewrites.push(item);
+                        }
+                    }
+                }
+            }
+            migrated = true;
+        }
+
+        // 3. 迁移 adblock_rules 表及规则正文文件
+        if table_exists("adblock_rules") {
+            if cfg.adblock_rules.is_empty() {
+                if let Ok(mut stmt) = conn.prepare("SELECT id, name, url, enabled, rule_count, updated_at, coalesce(content, '') FROM adblock_rules ORDER BY updated_at DESC") {
+                    if let Ok(rows) = stmt.query_map([], |r| {
+                        Ok((
+                            AdblockRuleRecord {
+                                id: r.get(0)?,
+                                name: r.get(1)?,
+                                url: r.get(2)?,
+                                enabled: r.get::<_, i32>(3)? == 1,
+                                rule_count: r.get::<_, i64>(4)? as usize,
+                                updated_at: r.get(5)?,
+                            },
+                            r.get::<_, String>(6)?,
+                        ))
+                    }) {
+                        for (rec, content) in rows.flatten() {
+                            let file_path = rules_dir.join(format!("adblock_{}.txt", rec.id));
+                            let _ = std::fs::write(file_path, content);
+                            cfg.adblock_rules.push(rec);
+                        }
+                    }
+                }
+            }
+            migrated = true;
+        }
+
+        // 4. 迁移 routing_rule_files 表
+        if table_exists("routing_rule_files") {
+            if cfg.routing_rules.is_empty() {
+                if let Ok(mut stmt) = conn.prepare("SELECT id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at FROM routing_rule_files ORDER BY group_type ASC, name ASC") {
+                    if let Ok(rows) = stmt.query_map([], |r| {
+                        Ok(RuleFileInfo {
+                            id: r.get(0)?,
+                            name: r.get(1)?,
+                            file_name: r.get(2)?,
+                            group_type: r.get(3)?,
+                            url: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                            enabled: r.get::<_, i32>(5)? == 1,
+                            count: r.get::<_, i64>(6)? as usize,
+                            size_bytes: r.get::<_, i64>(7)? as u64,
+                            updated_at: r.get(8)?,
+                        })
+                    }) {
+                        for item in rows.flatten() {
+                            cfg.routing_rules.push(item);
+                        }
+                    }
+                }
+            }
+            migrated = true;
+        }
+
+        if table_exists("sessions") || table_exists("system_settings") {
+            migrated = true;
+        }
+
+        if migrated {
+            let _ = conn.execute_batch(
+                "DROP TABLE IF EXISTS users;
+                 DROP TABLE IF EXISTS sessions;
+                 DROP TABLE IF EXISTS adblock_rules;
+                 DROP TABLE IF EXISTS dns_rewrites;
+                 DROP TABLE IF EXISTS routing_rule_files;
+                 DROP TABLE IF EXISTS system_settings;"
+            );
+            drop(conn);
+            self.reclaim_space(true);
+            tracing::info!("已将旧版数据库中的非日志配置平滑迁移至 config.yaml，并清理非日志表");
+        }
+
+        migrated
+    }
+
     fn flush_batch(conn: &mut Connection, batch: &mut Vec<QueryLogItem>) {
         if batch.is_empty() {
             return;
@@ -217,7 +331,7 @@ impl Database {
         };
 
         {
-            let mut stmt = match tx.prepare_cached(
+            let mut stmt = match tx.prepare(
                 "INSERT INTO query_logs (id, timestamp, client_ip, client_name, qname, qtype, status, rcode, matched_rule, routing_group, response_ip, duration_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
             ) {
@@ -276,7 +390,7 @@ impl Database {
 
         let item = QueryLogItem {
             id: ctx.id.to_string(),
-            timestamp: ctx.timestamp.to_rfc3339(),
+            timestamp: ctx.timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
             client_ip: ctx.client_ip.to_string(),
             client_name: ctx.client_name.clone(),
             qname: ctx.qname.clone(),
@@ -354,7 +468,7 @@ impl Database {
 
         let total: usize = conn.query_row(&count_sql, params_from_iter(count_params.iter()), |r| r.get(0))?;
 
-        sql.push_str(" ORDER BY timestamp DESC LIMIT ? OFFSET ?");
+        sql.push_str(" ORDER BY rowid DESC LIMIT ? OFFSET ?");
         let mut query_params = count_params;
         query_params.push(Value::Integer(limit as i64));
         query_params.push(Value::Integer(offset as i64));
@@ -386,122 +500,165 @@ impl Database {
     }
 
     pub fn clear_logs(&self) -> rusqlite::Result<()> {
-        let conn = self.get_conn()?;
-        conn.execute("DELETE FROM query_logs", [])?;
-        let _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", []);
-        let _ = conn.execute("VACUUM", []);
-        let _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", []);
+        {
+            let conn = self.get_conn()?;
+            conn.execute("DELETE FROM query_logs", [])?;
+        }
+        self.reclaim_space(true);
         Ok(())
+    }
+
+    pub fn reclaim_space(&self, full_vacuum: bool) {
+        self.pool.lock().clear();
+        if let Ok(conn) = Connection::open(&self.db_path) {
+            let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+            if full_vacuum {
+                let _ = conn.execute_batch("VACUUM;");
+            } else {
+                let _ = conn.execute_batch("PRAGMA incremental_vacuum(2000);");
+            }
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        }
     }
 
     pub fn cleanup_logs_older_than(&self, mins: u32) -> rusqlite::Result<usize> {
         let mins = mins.max(1);
-        let cutoff = (chrono::Local::now() - chrono::Duration::minutes(mins as i64)).to_rfc3339();
-        let conn = self.get_conn()?;
-        let deleted = conn.execute(
-            "DELETE FROM query_logs WHERE timestamp < ?1",
-            rusqlite::params![cutoff],
-        )?;
+        let cutoff_dt = chrono::Local::now() - chrono::Duration::minutes(mins as i64);
+        let cutoff_str = cutoff_dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
+        let cutoff_epoch = cutoff_dt.timestamp();
+
+        let deleted = {
+            let conn = self.get_conn()?;
+            conn.execute(
+                "DELETE FROM query_logs
+                 WHERE timestamp < ?1
+                    OR COALESCE(unixepoch(timestamp), 0) < ?2",
+                rusqlite::params![cutoff_str, cutoff_epoch],
+            )?
+        };
+
         if deleted > 0 {
-            let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
+            self.reclaim_space(deleted >= 5000);
         }
         Ok(deleted)
     }
 
-    pub fn get_rules(&self) -> rusqlite::Result<Vec<AdblockRuleRecord>> {
-        let conn = self.get_conn()?;
-        let mut stmt = conn.prepare("SELECT id, name, url, enabled, rule_count, updated_at FROM adblock_rules ORDER BY updated_at DESC")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(AdblockRuleRecord {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                url: r.get(2)?,
-                enabled: r.get::<_, i32>(3)? == 1,
-                rule_count: r.get::<_, i64>(4)? as usize,
-                updated_at: r.get(5)?,
-            })
-        })?;
-        let mut res = Vec::new();
-        for r in rows {
-            res.push(r?);
+    pub fn get_disk_status(&self) -> DiskStatus {
+        let mut db_size_bytes = 0u64;
+        for suffix in ["", "-wal", "-shm"] {
+            let p = format!("{}{}", self.db_path, suffix);
+            if let Ok(meta) = std::fs::metadata(&p) {
+                db_size_bytes = db_size_bytes.saturating_add(meta.len());
+            }
         }
-        Ok(res)
-    }
 
-    pub fn save_rule(&self, rule: &AdblockRuleRecord, content: &str) -> rusqlite::Result<()> {
-        let conn = self.get_conn()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO adblock_rules (id, name, url, enabled, rule_count, updated_at, content)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                rule.id,
-                rule.name,
-                rule.url,
-                if rule.enabled { 1 } else { 0 },
-                rule.rule_count as i64,
-                rule.updated_at,
-                content,
-            ],
-        )?;
-        Ok(())
-    }
+        let check_dir = Path::new(&self.db_path)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
 
-    pub fn delete_rule(&self, id: &str) -> rusqlite::Result<()> {
-        let conn = self.get_conn()?;
-        conn.execute("DELETE FROM adblock_rules WHERE id = ?1", params![id])?;
-        Ok(())
-    }
+        let (disk_total_bytes, disk_avail_bytes, disk_used_percent) = query_filesystem_space(check_dir);
 
-    pub fn get_rewrites(&self) -> rusqlite::Result<Vec<DnsRewriteRecord>> {
-        let conn = self.get_conn()?;
-        let mut stmt = conn.prepare("SELECT id, domain, record_type, value, enabled FROM dns_rewrites ORDER BY domain ASC")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(DnsRewriteRecord {
-                id: r.get(0)?,
-                domain: r.get(1)?,
-                record_type: r.get(2)?,
-                value: r.get(3)?,
-                enabled: r.get::<_, i32>(4)? == 1,
-            })
-        })?;
-        let mut res = Vec::new();
-        for r in rows {
-            res.push(r?);
+        DiskStatus {
+            db_size_bytes,
+            disk_total_bytes,
+            disk_avail_bytes,
+            disk_used_percent,
         }
-        Ok(res)
     }
 
-    pub fn save_rewrite(&self, rec: &DnsRewriteRecord) -> rusqlite::Result<()> {
-        let conn = self.get_conn()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO dns_rewrites (id, domain, record_type, value, enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![rec.id, rec.domain, rec.record_type, rec.value, if rec.enabled { 1 } else { 0 }],
-        )?;
-        Ok(())
-    }
+    /// 磁盘与日志数据库容量巡检：当磁盘使用率超阈值、剩余空间不足或日志库体积超上限时，
+    /// 自动分批淘汰最旧的查询日志并执行 TRUNCATE + VACUUM 释放磁盘空间，防止日志撑爆机器。
+    pub fn enforce_disk_and_db_limits(
+        &self,
+        max_disk_usage_percent: u8,
+        min_free_disk_mb: u64,
+        max_db_size_mb: u64,
+    ) -> rusqlite::Result<usize> {
+        let max_pct = max_disk_usage_percent.clamp(50, 98) as f64;
+        let min_free_bytes = min_free_disk_mb.max(64).saturating_mul(1024 * 1024);
+        let max_db_bytes = max_db_size_mb.max(32).saturating_mul(1024 * 1024);
 
-    pub fn delete_rewrite(&self, id: &str) -> rusqlite::Result<()> {
-        let conn = self.get_conn()?;
-        conn.execute("DELETE FROM dns_rewrites WHERE id = ?1", params![id])?;
-        Ok(())
-    }
+        let mut total_deleted = 0usize;
 
-    pub fn get_system_setting(&self, key: &str) -> Option<String> {
-        let conn = self.get_conn().ok()?;
-        conn.query_row(
-            "SELECT value FROM system_settings WHERE key = ?1",
-            params![key],
-            |r| r.get(0),
-        ).ok()
-    }
+        for _pass in 0..4 {
+            let status = self.get_disk_status();
+            let low_free_space = status.disk_total_bytes > 0 && status.disk_avail_bytes <= min_free_bytes;
+            let high_disk_pct = status.disk_total_bytes > 0
+                && status.disk_used_percent >= max_pct
+                && status.db_size_bytes >= 8 * 1024 * 1024;
+            let disk_pressure = low_free_space || high_disk_pct;
+            let db_pressure = status.db_size_bytes >= max_db_bytes;
 
-    pub fn set_system_setting(&self, key: &str, val: &str) -> anyhow::Result<()> {
-        let conn = self.get_conn()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?1, ?2)",
-            params![key, val],
-        )?;
-        Ok(())
+            if !disk_pressure && !db_pressure {
+                break;
+            }
+
+            // 若磁盘已极度告警（>=95% 且日志库 >=8MB，或剩余空间不足 128MB），直接清空全部日志保命
+            let critical_disk = status.disk_total_bytes > 0
+                && ((status.disk_used_percent >= 95.0 && status.db_size_bytes >= 8 * 1024 * 1024)
+                    || status.disk_avail_bytes < 128 * 1024 * 1024);
+
+            let deleted_this_pass = {
+                let conn = self.get_conn()?;
+                let row_count: usize = conn.query_row("SELECT COUNT(*) FROM query_logs", [], |r| r.get(0)).unwrap_or(0);
+                if row_count == 0 {
+                    0
+                } else if critical_disk {
+                    conn.execute("DELETE FROM query_logs", [])?
+                } else {
+                    let batch_to_delete = (row_count / 3).max(5000);
+                    conn.execute(
+                        "DELETE FROM query_logs WHERE rowid IN (
+                            SELECT rowid FROM query_logs ORDER BY rowid ASC LIMIT ?1
+                        )",
+                        params![batch_to_delete as i64],
+                    )?
+                }
+            };
+
+            total_deleted += deleted_this_pass;
+            self.reclaim_space(true);
+
+            if deleted_this_pass == 0 {
+                break;
+            }
+        }
+
+        Ok(total_deleted)
     }
+}
+
+#[cfg(unix)]
+fn query_filesystem_space(path: &Path) -> (u64, u64, f64) {
+    let path_str = path.to_string_lossy();
+    let Ok(c_path) = CString::new(path_str.as_bytes()) else {
+        return (0, 0, 0.0);
+    };
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
+            let block_size = if stat.f_frsize > 0 {
+                stat.f_frsize as u64
+            } else {
+                stat.f_bsize as u64
+            };
+            let total = (stat.f_blocks as u64).saturating_mul(block_size);
+            let avail = (stat.f_bavail as u64).saturating_mul(block_size);
+            let used = total.saturating_sub(avail);
+            let pct = if total > 0 {
+                ((used as f64 / total as f64) * 1000.0).round() / 10.0
+            } else {
+                0.0
+            };
+            return (total, avail, pct);
+        }
+    }
+    (0, 0, 0.0)
+}
+
+#[cfg(not(unix))]
+fn query_filesystem_space(_path: &Path) -> (u64, u64, f64) {
+    (0, 0, 0.0)
 }

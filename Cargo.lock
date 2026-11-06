@@ -1140,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "nexdns"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1152,6 +1152,7 @@ dependencies = [
  "futures-util",
  "hickory-proto",
  "ipnet",
+ "libc",
  "mime_guess",
  "parking_lot",
  "regex",

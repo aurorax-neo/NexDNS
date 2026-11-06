@@ -60,6 +60,26 @@ impl AppState {
             Some(s)
         }).collect();
         self.engine.reload_upstreams(mainland, gfw, overseas);
+        self.engine.set_upstream_timeout_ms(cfg.upstreams.timeout_ms);
+    }
+
+    pub fn reload_engine_rewrites(&self) {
+        let rewrites = self.config.read().rewrites.clone();
+        let mut map = std::collections::HashMap::new();
+        for r in rewrites {
+            if r.enabled {
+                if let Ok(ip) = r.value.parse::<std::net::IpAddr>() {
+                    map.entry(r.domain).or_insert_with(Vec::new).push(
+                        crate::pipeline::plugins::rewrite::RewriteTarget::Ip(ip),
+                    );
+                } else {
+                    map.entry(r.domain).or_insert_with(Vec::new).push(
+                        crate::pipeline::plugins::rewrite::RewriteTarget::Cname(r.value),
+                    );
+                }
+            }
+        }
+        self.engine.rewrite.set_records(map);
     }
 }
 
@@ -96,6 +116,7 @@ pub fn create_web_router(state: AppState) -> Router {
         .route("/api/v1/upstreams/reorder", post(reorder_upstreams))
         .route("/api/v1/upstreams/remove", post(remove_upstream))
         .route("/api/v1/upstreams/bootstrap", post(update_bootstrap_dns))
+        .route("/api/v1/upstreams/timeout", post(update_upstream_timeout))
         .route("/api/v1/routing/rules", get(get_routing_rules))
         .route("/api/v1/routing/rules/update", post(update_routing_rules))
         .route("/api/v1/routing/rules/add", post(add_routing_rule))
@@ -145,7 +166,7 @@ pub fn create_router(state: AppState) -> Router {
     create_web_router(state)
 }
 async fn auth_middleware(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     req: Request,
     next: axum::middleware::Next,
 ) -> Result<Response, (StatusCode, &'static str)> {
@@ -180,10 +201,8 @@ async fn auth_middleware(
         });
 
     if let Some(t) = token {
-        if let Ok(conn) = state.db.get_conn() {
-            if AuthManager::validate_token(&conn, &t).is_some() {
-                return Ok(next.run(req).await);
-            }
+        if AuthManager::validate_token(&t).is_some() {
+            return Ok(next.run(req).await);
         }
     }
 
@@ -212,9 +231,15 @@ async fn login_handler(
     if let Err(e) = AuthManager::check_rate_limit(&client_ip) {
         return Err((StatusCode::TOO_MANY_REQUESTS, e));
     }
-    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    match AuthManager::authenticate(&conn, &payload.username, &payload.password) {
-        Ok(Some((token, expires_at))) => {
+    let auth_res = {
+        let mut cfg = state.config.write();
+        AuthManager::authenticate(&mut cfg.auth, &payload.username, &payload.password)
+    };
+    match auth_res {
+        Ok(Some((token, expires_at, upgraded))) => {
+            if upgraded {
+                let _ = state.config.read().save(&state.config_path);
+            }
             AuthManager::reset_login_attempts(&client_ip);
             Ok(Json(LoginResponse {
                 token,
@@ -236,12 +261,10 @@ struct LogoutPayload {
 }
 
 async fn logout_handler(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(payload): Json<LogoutPayload>,
 ) -> StatusCode {
-    if let Ok(conn) = state.db.get_conn() {
-        let _ = AuthManager::logout(&conn, &payload.token);
-    }
+    let _ = AuthManager::logout(&payload.token);
     StatusCode::OK
 }
 
@@ -252,7 +275,7 @@ struct AuthMeResponse {
 }
 
 async fn auth_me_handler(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     request: Request,
 ) -> Json<AuthMeResponse> {
     let token = request
@@ -262,10 +285,8 @@ async fn auth_me_handler(
         .and_then(|h| h.strip_prefix("Bearer "));
 
     if let Some(t) = token {
-        if let Ok(conn) = state.db.get_conn() {
-            if let Some(username) = AuthManager::validate_token(&conn, t) {
-                return Json(AuthMeResponse { username, authenticated: true });
-            }
+        if let Some(username) = AuthManager::validate_token(t) {
+            return Json(AuthMeResponse { username, authenticated: true });
         }
     }
 
@@ -278,6 +299,8 @@ async fn auth_me_handler(
 #[derive(Deserialize)]
 struct ChangePasswordPayload {
     username: String,
+    #[serde(default)]
+    new_username: Option<String>,
     old_password: String,
     new_password: String,
 }
@@ -286,9 +309,17 @@ async fn change_password_handler(
     State(state): State<AppState>,
     Json(payload): Json<ChangePasswordPayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    AuthManager::change_password(&conn, &payload.username, &payload.old_password, &payload.new_password)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let mut cfg = state.config.write();
+    let next_user = payload.new_username.as_deref().or(Some(payload.username.as_str()));
+    AuthManager::change_password(
+        &mut cfg.auth,
+        next_user,
+        &payload.old_password,
+        &payload.new_password,
+    )
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    cfg.save(&state.config_path)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(StatusCode::OK)
 }
 
@@ -331,7 +362,11 @@ fn apply_config_to_runtime(state: &AppState, payload: &AppConfig) {
     state.engine.anti_pollution_enabled.store(payload.anti_pollution, Ordering::SeqCst);
     state.engine.router_enabled.store(payload.routing.enabled, Ordering::SeqCst);
     state.engine.speed_check_enabled.store(payload.speed_check.enabled, Ordering::SeqCst);
-    state.engine.speed_check.set_enabled(payload.speed_check.enabled);
+    state.engine.speed_check.update_config(
+        payload.speed_check.enabled,
+        payload.speed_check.timeout_ms,
+        payload.speed_check.cache_mins,
+    );
     state.engine.cache.min_ttl.store(payload.cache.min_ttl, Ordering::SeqCst);
     state.engine.cache.max_ttl.store(payload.cache.max_ttl, Ordering::SeqCst);
     state.engine.cache.prefetch.store(payload.cache.prefetch, Ordering::SeqCst);
@@ -344,12 +379,41 @@ fn apply_config_to_runtime(state: &AppState, payload: &AppConfig) {
 
     *state.config.write() = payload.clone();
     state.reload_engine_upstreams();
+    state.reload_engine_rewrites();
+
+    if payload.logging.retention_mins > 0 {
+        let _ = state.db.cleanup_logs_older_than(payload.logging.retention_mins);
+    }
+    let _ = state.db.enforce_disk_and_db_limits(
+        payload.logging.max_disk_usage_percent,
+        payload.logging.min_free_disk_mb,
+        payload.logging.max_db_size_mb,
+    );
 }
 
 async fn update_settings(
     State(state): State<AppState>,
-    Json(payload): Json<AppConfig>,
+    Json(mut payload): Json<AppConfig>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    {
+        let current = state.config.read();
+        if payload.auth.username.trim().is_empty() {
+            payload.auth.username = current.auth.username.clone();
+        }
+        if payload.auth.password.trim().is_empty() {
+            payload.auth.password = current.auth.password.clone();
+        }
+        if payload.rewrites.is_empty() && !current.rewrites.is_empty() {
+            payload.rewrites = current.rewrites.clone();
+        }
+        if payload.adblock_rules.is_empty() && !current.adblock_rules.is_empty() {
+            payload.adblock_rules = current.adblock_rules.clone();
+        }
+        if payload.routing_rules.is_empty() && !current.routing_rules.is_empty() {
+            payload.routing_rules = current.routing_rules.clone();
+        }
+    }
+    payload.normalize();
     validate_config_safety(&payload)?;
     payload.save(&state.config_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     apply_config_to_runtime(&state, &payload);
@@ -572,6 +636,7 @@ struct StatusResponse {
     cache_entries: usize,
     adblock_rules_count: usize,
     anti_pollution: bool,
+    disk: crate::db::DiskStatus,
 }
 
 async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
@@ -587,6 +652,7 @@ async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
         cache_entries: state.engine.cache.size(),
         adblock_rules_count: state.engine.adblock.rule_count(),
         anti_pollution: state.engine.anti_pollution_enabled.load(Ordering::Relaxed),
+        disk: state.db.get_disk_status(),
     })
 }
 
@@ -600,10 +666,6 @@ async fn get_cache_stats(State(state): State<AppState>) -> Json<crate::metrics::
 
 async fn clear_cache_stats(State(state): State<AppState>) -> StatusCode {
     state.metrics.cache_stats.clear();
-    let snap = state.metrics.cache_stats.snapshot();
-    if let Ok(json) = serde_json::to_string(&snap) {
-        let _ = state.db.set_system_setting("dns_cache_stats", &json);
-    }
     StatusCode::OK
 }
 
@@ -622,6 +684,7 @@ struct QueryLogResponse {
     total: usize,
     page: usize,
     page_size: usize,
+    disk: crate::db::DiskStatus,
 }
 
 async fn get_query_logs(
@@ -629,12 +692,14 @@ async fn get_query_logs(
     Query(params): Query<QueryLogParams>,
 ) -> Result<Json<QueryLogResponse>, (StatusCode, String)> {
     let logging_enabled = state.config.read().logging.enabled;
+    let disk = state.db.get_disk_status();
     if !logging_enabled {
         return Ok(Json(QueryLogResponse {
             items: vec![],
             total: 0,
             page: 1,
             page_size: params.page_size.unwrap_or(30),
+            disk,
         }));
     }
 
@@ -658,6 +723,7 @@ async fn get_query_logs(
         total,
         page,
         page_size,
+        disk,
     }))
 }
 
@@ -799,11 +865,7 @@ async fn toggle_pipeline_stage(
 }
 
 async fn get_rules(State(state): State<AppState>) -> Result<Json<Vec<AdblockRuleRecord>>, (StatusCode, String)> {
-    let rules = state
-        .db
-        .get_rules()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(rules))
+    Ok(Json(state.config.read().adblock_rules.clone()))
 }
 
 #[derive(Deserialize)]
@@ -839,7 +901,8 @@ async fn add_rule(
 
     // 智能规则源重名处理: 若已有同名规则源，自动附加序号避免混淆
     let mut safe_name = payload.name.trim().to_string();
-    if let Ok(existing_rules) = state.db.get_rules() {
+    {
+        let existing_rules = &state.config.read().adblock_rules;
         let mut idx = 1;
         while existing_rules.iter().any(|r| r.name == safe_name) {
             safe_name = format!("{} ({})", payload.name.trim(), idx);
@@ -848,7 +911,7 @@ async fn add_rule(
     }
 
     let record = AdblockRuleRecord {
-        id,
+        id: id.clone(),
         name: safe_name,
         url: payload.url,
         enabled: true,
@@ -856,10 +919,15 @@ async fn add_rule(
         updated_at: Local::now().to_rfc3339(),
     };
 
-    state
-        .db
-        .save_rule(&record, &rule_content)
+    let rule_path = state.rule_manager.rules_dir().join(format!("adblock_{}.txt", id));
+    std::fs::write(&rule_path, &rule_content)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    {
+        let mut cfg = state.config.write();
+        cfg.adblock_rules.push(record);
+        cfg.save(&state.config_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
 
     // Reload all rules into engine
     reload_all_rules(&state).await;
@@ -871,10 +939,16 @@ async fn delete_rule(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    state
-        .db
-        .delete_rule(&id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    {
+        let mut cfg = state.config.write();
+        cfg.adblock_rules.retain(|r| r.id != id);
+        cfg.save(&state.config_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+    let rule_path = state.rule_manager.rules_dir().join(format!("adblock_{}.txt", id));
+    if rule_path.exists() {
+        let _ = std::fs::remove_file(&rule_path);
+    }
     reload_all_rules(&state).await;
     Ok(StatusCode::OK)
 }
@@ -883,12 +957,9 @@ async fn refresh_rule(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let rules = state
-        .db
-        .get_rules()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let rules = state.config.read().adblock_rules.clone();
 
-    let Some(mut r) = rules.into_iter().find(|item| item.id == id) else {
+    let Some(r) = rules.into_iter().find(|item| item.id == id) else {
         return Err((StatusCode::NOT_FOUND, "未找到指定的规则源".to_string()));
     };
 
@@ -910,42 +981,40 @@ async fn refresh_rule(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
 
-        let mut store = crate::pipeline::plugins::adblock::RuleStore::default();
-        store.parse_rules(&text);
-        r.rule_count = store.total_count;
-        r.updated_at = Local::now().to_rfc3339();
+    let mut store = crate::pipeline::plugins::adblock::RuleStore::default();
+    store.parse_rules(&text);
 
-        state
-            .db
-            .save_rule(&r, &text)
+    let rule_path = state.rule_manager.rules_dir().join(format!("adblock_{}.txt", id));
+    std::fs::write(&rule_path, &text)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    {
+        let mut cfg = state.config.write();
+        if let Some(target) = cfg.adblock_rules.iter_mut().find(|item| item.id == id) {
+            target.rule_count = store.total_count;
+            target.updated_at = Local::now().to_rfc3339();
+        }
+        cfg.save(&state.config_path)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
 
-        reload_all_rules(&state).await;
+    reload_all_rules(&state).await;
 
     Ok(StatusCode::OK)
 }
 
 pub async fn reload_all_rules(state: &AppState) {
-    if let Ok(rules) = state.db.get_rules() {
-        let mut combined = String::new();
-        let conn = match state.db.get_conn() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        for r in rules {
-            if r.enabled {
-                if let Ok(Some(c)) = conn.query_row(
-                    "SELECT content FROM adblock_rules WHERE id = ?1",
-                    rusqlite::params![r.id],
-                    |row| row.get::<_, Option<String>>(0),
-                ) {
-                    combined.push_str(&c);
-                    combined.push('\n');
-                }
+    let rules = state.config.read().adblock_rules.clone();
+    let mut combined = String::new();
+    for r in rules {
+        if r.enabled {
+            let rule_path = state.rule_manager.rules_dir().join(format!("adblock_{}.txt", r.id));
+            if let Ok(c) = std::fs::read_to_string(&rule_path) {
+                combined.push_str(&c);
+                combined.push('\n');
             }
         }
-        state.engine.adblock.load_rules_from_text(&combined);
     }
+    state.engine.adblock.load_rules_from_text(&combined);
 }
 
 #[derive(Deserialize)]
@@ -985,6 +1054,7 @@ struct UpstreamsResponse {
     mainland: Vec<String>,
     gfw: Vec<String>,
     overseas: Vec<String>,
+    timeout_ms: u64,
 }
 
 async fn get_upstreams(State(state): State<AppState>) -> Json<UpstreamsResponse> {
@@ -994,7 +1064,28 @@ async fn get_upstreams(State(state): State<AppState>) -> Json<UpstreamsResponse>
         mainland: cfg.upstreams.mainland.clone(),
         gfw: cfg.upstreams.gfw.clone(),
         overseas: cfg.upstreams.overseas.clone(),
+        timeout_ms: cfg.upstreams.timeout_ms,
     })
+}
+
+#[derive(Deserialize)]
+struct UpdateUpstreamTimeoutPayload {
+    timeout_ms: u64,
+}
+
+async fn update_upstream_timeout(
+    State(state): State<AppState>,
+    Json(payload): Json<UpdateUpstreamTimeoutPayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let clamped = payload.timeout_ms.clamp(200, 30000);
+    {
+        let mut cfg = state.config.write();
+        cfg.upstreams.timeout_ms = clamped;
+        cfg.save(&state.config_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+    state.engine.set_upstream_timeout_ms(clamped);
+    Ok(StatusCode::OK)
 }
 
 #[derive(Serialize)]
@@ -1123,11 +1214,7 @@ async fn test_group_upstreams(
 }
 
 async fn get_rewrites(State(state): State<AppState>) -> Result<Json<Vec<DnsRewriteRecord>>, (StatusCode, String)> {
-    let rewrites = state
-        .db
-        .get_rewrites()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(rewrites))
+    Ok(Json(state.config.read().rewrites.clone()))
 }
 
 #[derive(Deserialize)]
@@ -1150,29 +1237,15 @@ async fn add_rewrite(
         enabled: true,
     };
 
-    state
-        .db
-        .save_rewrite(&record)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    {
+        let mut cfg = state.config.write();
+        cfg.rewrites.push(record);
+        cfg.save(&state.config_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
 
     // Reload rewrites into engine
-    if let Ok(all) = state.db.get_rewrites() {
-        let mut map = std::collections::HashMap::new();
-        for r in all {
-            if r.enabled {
-                if let Ok(ip) = r.value.parse::<std::net::IpAddr>() {
-                    map.entry(r.domain).or_insert_with(Vec::new).push(
-                        crate::pipeline::plugins::rewrite::RewriteTarget::Ip(ip),
-                    );
-                } else {
-                    map.entry(r.domain).or_insert_with(Vec::new).push(
-                        crate::pipeline::plugins::rewrite::RewriteTarget::Cname(r.value),
-                    );
-                }
-            }
-        }
-        state.engine.rewrite.set_records(map);
-    }
+    state.reload_engine_rewrites();
 
     Ok(StatusCode::CREATED)
 }
@@ -1181,10 +1254,13 @@ async fn delete_rewrite(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    state
-        .db
-        .delete_rewrite(&id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    {
+        let mut cfg = state.config.write();
+        cfg.rewrites.retain(|r| r.id != id);
+        cfg.save(&state.config_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+    state.reload_engine_rewrites();
     Ok(StatusCode::OK)
 }
 
@@ -1217,11 +1293,14 @@ async fn toggle_rule(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    conn.execute(
-        "UPDATE adblock_rules SET enabled = (CASE WHEN enabled = 1 THEN 0 ELSE 1 END) WHERE id = ?1",
-        rusqlite::params![id],
-    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    {
+        let mut cfg = state.config.write();
+        if let Some(r) = cfg.adblock_rules.iter_mut().find(|item| item.id == id) {
+            r.enabled = !r.enabled;
+        }
+        cfg.save(&state.config_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
 
     reload_all_rules(&state).await;
     Ok(StatusCode::OK)
@@ -1248,28 +1327,44 @@ async fn quick_add_rule(
         format!("||{}^\n", domain)
     };
 
-    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    // Find or create "自定义规则" list
-    let existing_custom: Option<String> = conn.query_row(
-        "SELECT id FROM adblock_rules WHERE name = '自定义规则' LIMIT 1",
-        [],
-        |r| r.get(0),
-    ).ok();
+    let rule_id = {
+        let mut cfg = state.config.write();
+        if let Some(existing) = cfg.adblock_rules.iter().find(|r| r.name == "自定义规则") {
+            existing.id.clone()
+        } else {
+            let new_id = Uuid::new_v4().to_string();
+            cfg.adblock_rules.push(AdblockRuleRecord {
+                id: new_id.clone(),
+                name: "自定义规则".to_string(),
+                url: "custom-local".to_string(),
+                enabled: true,
+                rule_count: 0,
+                updated_at: Local::now().to_rfc3339(),
+            });
+            new_id
+        }
+    };
 
-    let rule_id = existing_custom.unwrap_or_else(|| {
-        let new_id = Uuid::new_v4().to_string();
-        let _ = conn.execute(
-            "INSERT INTO adblock_rules (id, name, url, enabled, rule_count, updated_at, content)
-             VALUES (?1, '自定义规则', 'custom-local', 1, 0, ?2, '')",
-            rusqlite::params![new_id, Local::now().to_rfc3339()],
-        );
-        new_id
-    });
+    let rule_path = state.rule_manager.rules_dir().join(format!("adblock_{}.txt", rule_id));
+    let mut content = std::fs::read_to_string(&rule_path).unwrap_or_default();
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(&line);
+    std::fs::write(&rule_path, &content)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    conn.execute(
-        "UPDATE adblock_rules SET content = coalesce(content, '') || ?1, updated_at = ?2, rule_count = rule_count + 1 WHERE id = ?3",
-        rusqlite::params![line, Local::now().to_rfc3339(), rule_id],
-    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut store = crate::pipeline::plugins::adblock::RuleStore::default();
+    store.parse_rules(&content);
+    {
+        let mut cfg = state.config.write();
+        if let Some(r) = cfg.adblock_rules.iter_mut().find(|r| r.id == rule_id) {
+            r.rule_count = store.total_count;
+            r.updated_at = Local::now().to_rfc3339();
+        }
+        cfg.save(&state.config_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
 
     reload_all_rules(&state).await;
     Ok(StatusCode::OK)
@@ -1584,13 +1679,12 @@ async fn get_rule_content(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<RuleContentResponse>, (StatusCode, String)> {
-    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let content: String = conn.query_row(
-        "SELECT coalesce(content, '') FROM adblock_rules WHERE id = ?1",
-        rusqlite::params![id],
-        |r| r.get(0),
-    ).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
-
+    let exists = state.config.read().adblock_rules.iter().any(|r| r.id == id);
+    if !exists {
+        return Err((StatusCode::NOT_FOUND, "未找到指定规则".to_string()));
+    }
+    let rule_path = state.rule_manager.rules_dir().join(format!("adblock_{}.txt", id));
+    let content = std::fs::read_to_string(&rule_path).unwrap_or_default();
     Ok(Json(RuleContentResponse { id, content }))
 }
 
@@ -1603,11 +1697,18 @@ async fn update_rule_content(
     store.parse_rules(&payload.content);
     let count = store.total_count;
 
-    let conn = state.db.get_conn().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    conn.execute(
-        "UPDATE adblock_rules SET content = ?1, rule_count = ?2, updated_at = ?3 WHERE id = ?4",
-        rusqlite::params![payload.content, count as i64, Local::now().to_rfc3339(), id],
-    ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let rule_path = state.rule_manager.rules_dir().join(format!("adblock_{}.txt", id));
+    std::fs::write(&rule_path, &payload.content)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    {
+        let mut cfg = state.config.write();
+        if let Some(r) = cfg.adblock_rules.iter_mut().find(|item| item.id == id) {
+            r.rule_count = count;
+            r.updated_at = Local::now().to_rfc3339();
+        }
+        cfg.save(&state.config_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
 
     reload_all_rules(&state).await;
     Ok(StatusCode::OK)
@@ -1653,6 +1754,7 @@ async fn update_routing_rule_content(
     validate_rule_filename(&file_name)?;
     let path = state.rule_manager.rules_dir().join(&file_name);
     std::fs::write(&path, &payload.content).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.rule_manager.refresh_file_stats(&file_name);
     state.rule_manager.load_local_rules();
     Ok(StatusCode::OK)
 }
@@ -1671,10 +1773,11 @@ async fn update_raw_config(
     State(state): State<AppState>,
     Json(payload): Json<UpdateRuleContentPayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let parsed: crate::config::AppConfig = serde_yaml::from_str(&payload.content)
+    let mut parsed: crate::config::AppConfig = serde_yaml::from_str(&payload.content)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid YAML: {}", e)))?;
+    parsed.normalize();
     validate_config_safety(&parsed)?;
-    std::fs::write(&state.config_path, &payload.content)
+    parsed.save(&state.config_path)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     apply_config_to_runtime(&state, &parsed);
     Ok(StatusCode::OK)

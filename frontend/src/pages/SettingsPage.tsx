@@ -14,7 +14,7 @@ import {
   Shield,
   Edit3,
 } from 'lucide-react';
-import { api, AppSettings } from '../lib/api';
+import { api, AppSettings, DiskStatus } from '../lib/api';
 import { Modal } from '../components/ui/Modal';
 import { Popconfirm } from '../components/ui/Popconfirm';
 import { Snackbar } from '../components/ui/Snackbar';
@@ -24,11 +24,13 @@ import { DnsCacheStatusTable } from '../components/ui/DnsCacheStatusTable';
 
 export const SettingsPage: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [diskStatus, setDiskStatus] = useState<DiskStatus | null>(null);
   const [initialLoaded, setInitialLoaded] = useState(false);
   const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
 
   // Password change state
+  const [adminUsername, setAdminUsername] = useState('admin');
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -49,12 +51,23 @@ export const SettingsPage: React.FC = () => {
 
   const loadData = async () => {
     try {
-      const settingsRes = await api.getSettings();
+      const [settingsRes, statusRes] = await Promise.all([
+        api.getSettings(),
+        api.getStatus().catch(() => null),
+      ]);
       if (settingsRes.cache.max_ttl === undefined || settingsRes.cache.max_ttl === null) {
         settingsRes.cache.max_ttl = 120;
       }
       if (!settingsRes.rules_update) {
         settingsRes.rules_update = { auto_update: true, interval_mins: 1440 };
+      }
+      if (settingsRes.auth?.username) {
+        setAdminUsername(settingsRes.auth.username);
+      } else {
+        setAdminUsername(localStorage.getItem('nexdns_user') || 'admin');
+      }
+      if (statusRes?.disk) {
+        setDiskStatus(statusRes.disk);
       }
       setSettings(settingsRes);
       setTimeout(() => setInitialLoaded(true), 200);
@@ -234,8 +247,8 @@ export const SettingsPage: React.FC = () => {
     setChangingPass(true);
     setPasswordMsg(null);
     try {
-      await api.changePassword(oldPassword, newPassword);
-      setPasswordMsg({ text: '密码修改成功，请牢记新密码', isError: false });
+      await api.changePassword(oldPassword, newPassword, adminUsername);
+      setPasswordMsg({ text: '管理员凭据已更新并持久化至 config.yaml', isError: false });
       setOldPassword('');
       setNewPassword('');
       setConfirmPassword('');
@@ -655,7 +668,29 @@ export const SettingsPage: React.FC = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
+                    上游查询超时 (timeout_ms)
+                  </label>
+                  <input
+                    type="number"
+                    min={200}
+                    max={30000}
+                    step={100}
+                    value={settings.upstreams?.timeout_ms ?? 2000}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        upstreams: {
+                          ...settings.upstreams,
+                          timeout_ms: Math.max(200, parseInt(e.target.value, 10) || 2000),
+                        },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
                 <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
                     探测超时阈值 (毫秒 ms)
@@ -912,25 +947,132 @@ export const SettingsPage: React.FC = () => {
                 </div>
                 <p className="text-[11px] text-neutral-400 mt-1">超过设定分钟数的历史日志将自动滚动清理并自动释放数据库空间</p>
               </div>
+
+              {/* 磁盘检测与防撑爆阈值设置 */}
+              <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 space-y-3">
+                {diskStatus && (
+                  <div className="p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-medium text-neutral-700 dark:text-neutral-300">
+                        磁盘与日志库实时状态
+                      </span>
+                      <span className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400 tabular-nums">
+                        日志库 {(diskStatus.db_size_bytes / (1024 * 1024)).toFixed(2)} MB · 磁盘已用 {diskStatus.disk_used_percent.toFixed(1)}% (剩余 {(diskStatus.disk_avail_bytes / (1024 * 1024 * 1024)).toFixed(1)} GB)
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                      <div
+                        className={`h-full transition-all ${
+                          diskStatus.disk_used_percent >= (settings.logging.max_disk_usage_percent ?? 85)
+                            ? 'bg-rose-500'
+                            : diskStatus.disk_used_percent >= 70
+                            ? 'bg-amber-500'
+                            : 'bg-cyan-500'
+                        }`}
+                        style={{ width: `${Math.min(100, Math.max(2, diskStatus.disk_used_percent))}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
+                      磁盘清理水位 (%)
+                    </label>
+                    <input
+                      type="number"
+                      min={50}
+                      max={98}
+                      value={settings.logging.max_disk_usage_percent ?? 85}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          logging: {
+                            ...settings.logging,
+                            max_disk_usage_percent: Math.min(98, Math.max(50, parseInt(e.target.value, 10) || 85)),
+                          },
+                        })
+                      }
+                      className="w-full min-h-[38px] px-3 font-mono text-xs rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
+                      最小剩余磁盘 (MB)
+                    </label>
+                    <input
+                      type="number"
+                      min={64}
+                      max={65536}
+                      value={settings.logging.min_free_disk_mb ?? 512}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          logging: {
+                            ...settings.logging,
+                            min_free_disk_mb: Math.max(64, parseInt(e.target.value, 10) || 512),
+                          },
+                        })
+                      }
+                      className="w-full min-h-[38px] px-3 font-mono text-xs rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
+                      日志库上限 (MB)
+                    </label>
+                    <input
+                      type="number"
+                      min={32}
+                      max={16384}
+                      value={settings.logging.max_db_size_mb ?? 512}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          logging: {
+                            ...settings.logging,
+                            max_db_size_mb: Math.max(32, parseInt(e.target.value, 10) || 512),
+                          },
+                        })
+                      }
+                      className="w-full min-h-[38px] px-3 font-mono text-xs rounded-md bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
             {/* 6. 管理员账户安全 */}
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
               <Lock className="w-4 h-4 text-indigo-600 dark:text-indigo-400 align-icon" />
-              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">修改管理员密码</h4>
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">管理员账号与密码 (YAML 持久化)</h4>
             </div>
             <form onSubmit={handleChangePassword} className="space-y-3 text-xs">
-              <div>
-                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">当前原密码</label>
-                <input
-                  type="password"
-                  value={oldPassword}
-                  onChange={(e) => setOldPassword(e.target.value)}
-                  required
-                  placeholder="请输入当前密码"
-                  className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">管理员用户名</label>
+                  <input
+                    type="text"
+                    value={adminUsername}
+                    onChange={(e) => setAdminUsername(e.target.value)}
+                    required
+                    placeholder="admin"
+                    className="w-full min-h-[38px] px-3 font-mono bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">当前原密码</label>
+                  <input
+                    type="password"
+                    value={oldPassword}
+                    onChange={(e) => setOldPassword(e.target.value)}
+                    required
+                    placeholder="请输入当前密码"
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100"
+                  />
+                </div>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>

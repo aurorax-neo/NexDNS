@@ -54,13 +54,6 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("启动 NexDNS 融合单内核服务...");
 
     let mut cfg = AppConfig::load_or_create(&cli.config)?;
-    if let Some(p) = cli.dns_port {
-        cfg.dns.port = p;
-    }
-    if let Some(p) = cli.web_port {
-        cfg.web.port = p;
-    }
-    let config = Arc::new(cfg);
 
     let db_path = cli.config
         .parent()
@@ -68,23 +61,61 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| std::path::PathBuf::from("data/nexdns.db"));
     let db_path_str = db_path.to_string_lossy().to_string();
 
+    let rules_dir = cli.config
+        .parent()
+        .map(|p| p.join("rules"))
+        .unwrap_or_else(|| std::path::PathBuf::from("data/rules"));
+    let _ = std::fs::create_dir_all(&rules_dir);
+
     // Init DB
     let db = Database::init(&db_path)?;
     tracing::info!("SQLite WAL 数据库初始化成功 ({})", db_path_str);
+
+    // 平滑迁移旧版 SQLite 中的非日志表到 config.yaml 与 data/rules/，并清理旧表
+    let _ = db.migrate_legacy_tables_to_config(&mut cfg, &rules_dir);
+
+    // 若拦截规则列表为空，初始化默认基础推荐拦截列表并写入文件与 YAML
+    if cfg.adblock_rules.is_empty() {
+        let default_ad_rules = "||adservice.google.com^\n||ads.youtube.com^\n||ad.doubleclick.net^\n||pagead2.googlesyndication.com^\n||analytics.google.com^\n||pos.baidu.com^\n||cpro.baidu.com^\n||eclick.baidu.com^\n||ad.xiaomi.com^\n||tracking.miui.com^\n0.0.0.0 telemetry.microsoft.com";
+        let seed_id = uuid::Uuid::new_v4().to_string();
+        let _ = std::fs::write(rules_dir.join(format!("adblock_{}.txt", seed_id)), default_ad_rules);
+        cfg.adblock_rules.push(db::AdblockRuleRecord {
+            id: seed_id,
+            name: "基础推荐拦截列表".to_string(),
+            url: "built-in".to_string(),
+            enabled: true,
+            rule_count: 11,
+            updated_at: chrono::Local::now().to_rfc3339(),
+        });
+    }
+
+    // 规范化并持久化配置 (清除历史遗留的 retention_days，确保 auth 等字段写入 YAML)
+    cfg.normalize();
+    let _ = cfg.save(&cli.config);
+
+    if let Some(p) = cli.dns_port {
+        cfg.dns.port = p;
+    }
+    if let Some(p) = cli.web_port {
+        cfg.web.port = p;
+    }
+
+    let config = Arc::new(cfg.clone());
+    let shared_config = Arc::new(parking_lot::RwLock::new(cfg));
 
     // Init Metrics
     let metrics = MetricsCollector::new();
 
     // 1. Plugins: Rewrite
     let rewrite = Arc::new(RewritePlugin::new());
-    if let Ok(rewrites) = db.get_rewrites() {
+    {
         let mut map = std::collections::HashMap::new();
-        for r in rewrites {
+        for r in &config.rewrites {
             if r.enabled {
                 if let Ok(ip) = r.value.parse::<std::net::IpAddr>() {
-                    map.entry(r.domain).or_insert_with(Vec::new).push(RewriteTarget::Ip(ip));
+                    map.entry(r.domain.clone()).or_insert_with(Vec::new).push(RewriteTarget::Ip(ip));
                 } else {
-                    map.entry(r.domain).or_insert_with(Vec::new).push(RewriteTarget::Cname(r.value));
+                    map.entry(r.domain.clone()).or_insert_with(Vec::new).push(RewriteTarget::Cname(r.value.clone()));
                 }
             }
         }
@@ -96,38 +127,18 @@ async fn main() -> anyhow::Result<()> {
     // 3. Plugins: Adblock
     let block_type = BlockType::from_str_name(&config.dns.block_type);
     let adblock = Arc::new(AdblockPlugin::new(block_type, config.dns.block_ttl));
-    // Seed default common ad rules if DB empty
-    if let Ok(existing_rules) = db.get_rules() {
-        if existing_rules.is_empty() {
-            let default_ad_rules = "||adservice.google.com^\n||ads.youtube.com^\n||ad.doubleclick.net^\n||pagead2.googlesyndication.com^\n||analytics.google.com^\n||pos.baidu.com^\n||cpro.baidu.com^\n||eclick.baidu.com^\n||ad.xiaomi.com^\n||tracking.miui.com^\n0.0.0.0 telemetry.microsoft.com";
-            let seed_rec = db::AdblockRuleRecord {
-                id: uuid::Uuid::new_v4().to_string(),
-                name: "基础推荐拦截列表".to_string(),
-                url: "built-in".to_string(),
-                enabled: true,
-                rule_count: 11,
-                updated_at: chrono::Local::now().to_rfc3339(),
-            };
-            let _ = db.save_rule(&seed_rec, default_ad_rules);
-            adblock.load_rules_from_text(default_ad_rules);
-        } else {
-            let mut combined = String::new();
-            if let Ok(conn) = db.get_conn() {
-                for r in existing_rules {
-                    if r.enabled {
-                        if let Ok(Some(c)) = conn.query_row(
-                            "SELECT content FROM adblock_rules WHERE id = ?1",
-                            rusqlite::params![r.id],
-                            |row| row.get::<_, Option<String>>(0),
-                        ) {
-                            combined.push_str(&c);
-                            combined.push('\n');
-                        }
-                    }
+    {
+        let mut combined = String::new();
+        for r in &config.adblock_rules {
+            if r.enabled {
+                let rule_path = rules_dir.join(format!("adblock_{}.txt", r.id));
+                if let Ok(c) = std::fs::read_to_string(&rule_path) {
+                    combined.push_str(&c);
+                    combined.push('\n');
                 }
             }
-            adblock.load_rules_from_text(&combined);
         }
+        adblock.load_rules_from_text(&combined);
     }
 
     // 4. Plugins: Cache
@@ -143,15 +154,11 @@ async fn main() -> anyhow::Result<()> {
     // 6. Plugins: IP Registry
     let ip_registry = Arc::new(IpListRegistry::new());
 
-    let rules_dir = cli.config
-        .parent()
-        .map(|p| p.join("rules"))
-        .unwrap_or_else(|| std::path::PathBuf::from("data/rules"));
-
     // Rule File Manager (loads direct.txt, proxy.txt, private.txt, ipv4_china.txt from data/rules)
     let rule_manager = Arc::new(RuleFileManager::new(
         rules_dir,
-        db.clone(),
+        shared_config.clone(),
+        cli.config.to_string_lossy().to_string(),
         domain_registry.clone(),
         ip_registry.clone(),
     ));
@@ -255,32 +262,25 @@ async fn main() -> anyhow::Result<()> {
     let dns_server_enabled = Arc::new(parking_lot::RwLock::new(config.dns.enabled));
     let logging_server_enabled = Arc::new(parking_lot::RwLock::new(config.logging.enabled));
 
-    // Load persisted cache stats if available
-    if let Some(stats_json) = db.get_system_setting("dns_cache_stats") {
-        metrics.cache_stats.load_from_json(&stats_json);
-    }
-    if let Some(hourly_json) = db.get_system_setting("dns_hourly_history") {
-        metrics.load_hourly_buckets_json(&hourly_json);
-    }
-
-    // 1-minute interval cache stats persistence task (更新频率: 1分钟)
-    let sync_metrics = metrics.clone();
-    let sync_db = db.clone();
     let cleanup_db = db.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-        loop {
-            interval.tick().await;
-            let snap = sync_metrics.cache_stats.snapshot();
-            if let Ok(json) = serde_json::to_string(&snap) {
-                let _ = sync_db.set_system_setting("dns_cache_stats", &json);
-            }
-            let hourly_json = sync_metrics.get_hourly_buckets_json();
-            if !hourly_json.is_empty() {
-                let _ = sync_db.set_system_setting("dns_hourly_history", &hourly_json);
+
+    // 启动时立即执行一次过期日志清理与磁盘水位保护
+    if config.logging.retention_mins > 0 {
+        if let Ok(deleted) = cleanup_db.cleanup_logs_older_than(config.logging.retention_mins) {
+            if deleted > 0 {
+                tracing::info!(
+                    "启动日志清理: 已清理 {} 条超过 {} 分钟的历史查询日志",
+                    deleted,
+                    config.logging.retention_mins
+                );
             }
         }
-    });
+    }
+    let _ = cleanup_db.enforce_disk_and_db_limits(
+        config.logging.max_disk_usage_percent,
+        config.logging.min_free_disk_mb,
+        config.logging.max_db_size_mb,
+    );
 
     let dns_server = DnsServer::new(
         config.dns.port,
@@ -293,23 +293,38 @@ async fn main() -> anyhow::Result<()> {
     );
     dns_server.start().await?;
 
-    let shared_config = Arc::new(parking_lot::RwLock::new((*config).clone()));
-
-    // 后台日志保留周期自动滚动清理任务 (以 min 为单位控制，默认 60 分钟)
+    // 后台日志保留周期滚动清理与磁盘防撑爆巡检任务 (每 15 秒检测一次)
     let retention_shared_cfg = shared_config.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
         loop {
             interval.tick().await;
-            let (logging_enabled, retention_mins) = {
+            let (retention_mins, max_disk_pct, min_free_mb, max_db_mb) = {
                 let c = retention_shared_cfg.read();
-                (c.logging.enabled, c.logging.retention_mins)
+                (
+                    c.logging.retention_mins,
+                    c.logging.max_disk_usage_percent,
+                    c.logging.min_free_disk_mb,
+                    c.logging.max_db_size_mb,
+                )
             };
-            if logging_enabled && retention_mins > 0 {
+            if retention_mins > 0 {
                 if let Ok(deleted) = cleanup_db.cleanup_logs_older_than(retention_mins) {
                     if deleted > 0 {
                         tracing::info!("后台日志滚动清理: 已清理 {} 条超过 {} 分钟的历史查询日志", deleted, retention_mins);
                     }
+                }
+            }
+            if let Ok(evicted) = cleanup_db.enforce_disk_and_db_limits(max_disk_pct, min_free_mb, max_db_mb) {
+                if evicted > 0 {
+                    let status = cleanup_db.get_disk_status();
+                    tracing::warn!(
+                        "磁盘/数据库水位保护已触发: 自动驱逐 {} 条旧日志 (当前磁盘占用 {:.1}%, 剩余 {} MB, 日志库 {:.2} MB)",
+                        evicted,
+                        status.disk_used_percent,
+                        status.disk_avail_bytes / (1024 * 1024),
+                        (status.db_size_bytes as f64) / (1024.0 * 1024.0)
+                    );
                 }
             }
         }
@@ -342,26 +357,37 @@ async fn main() -> anyhow::Result<()> {
             if enabled {
                 tracing::info!("后台调度: 开始自动更新在线规则文件 (间隔: {} min)...", interval_mins);
                 // 1. 更新拦截规则库中配置了在线 URL 的项
-                if let Ok(rules) = auto_update_state.db.get_rules() {
-                    for r in rules {
-                        if r.enabled && r.url.starts_with("http") {
-                            let client = reqwest::Client::builder()
-                                .timeout(std::time::Duration::from_secs(15))
-                                .build();
-                            if let Ok(client) = client {
-                                if let Ok(resp) = client.get(&r.url).send().await {
-                                    if let Ok(text) = resp.text().await {
-                                        let mut store = crate::pipeline::plugins::adblock::RuleStore::default();
-                                        store.parse_rules(&text);
-                                        let mut updated = r.clone();
-                                        updated.rule_count = store.total_count;
-                                        updated.updated_at = chrono::Local::now().to_rfc3339();
-                                        let _ = auto_update_state.db.save_rule(&updated, &text);
+                let rules = auto_update_state.config.read().adblock_rules.clone();
+                let mut any_updated = false;
+                for r in rules {
+                    if r.enabled && r.url.starts_with("http") {
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(15))
+                            .build();
+                        if let Ok(client) = client {
+                            if let Ok(resp) = client.get(&r.url).send().await {
+                                if let Ok(text) = resp.text().await {
+                                    let mut store = crate::pipeline::plugins::adblock::RuleStore::default();
+                                    store.parse_rules(&text);
+                                    let rule_path = auto_update_state
+                                        .rule_manager
+                                        .rules_dir()
+                                        .join(format!("adblock_{}.txt", r.id));
+                                    if std::fs::write(&rule_path, &text).is_ok() {
+                                        let mut cfg = auto_update_state.config.write();
+                                        if let Some(target) = cfg.adblock_rules.iter_mut().find(|item| item.id == r.id) {
+                                            target.rule_count = store.total_count;
+                                            target.updated_at = chrono::Local::now().to_rfc3339();
+                                        }
+                                        let _ = cfg.save(&auto_update_state.config_path);
+                                        any_updated = true;
                                     }
                                 }
                             }
                         }
                     }
+                }
+                if any_updated {
                     crate::api::reload_all_rules(&auto_update_state).await;
                 }
 

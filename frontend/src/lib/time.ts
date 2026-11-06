@@ -43,6 +43,18 @@ export function formatDateTime(timeStr?: string | null): string {
 }
 
 /**
+ * 紧凑日期时间: MM-DD HH:mm:ss
+ */
+export function formatShortDateTime(timeStr?: string | null): string {
+  if (!timeStr) return '-';
+  const full = formatDateTime(timeStr);
+  if (full.length >= 19 && full[4] === '-') {
+    return full.substring(5, 19);
+  }
+  return full;
+}
+
+/**
  * 仅日期: YYYY-MM-DD
  */
 export function formatDate(timeStr?: string | null): string {

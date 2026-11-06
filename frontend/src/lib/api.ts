@@ -1,3 +1,10 @@
+export interface DiskStatus {
+  db_size_bytes: number;
+  disk_total_bytes: number;
+  disk_avail_bytes: number;
+  disk_used_percent: number;
+}
+
 export interface StatusResponse {
   version: string;
   uptime_seconds: number;
@@ -6,6 +13,7 @@ export interface StatusResponse {
   cache_entries: number;
   adblock_rules_count: number;
   anti_pollution: boolean;
+  disk?: DiskStatus;
 }
 
 export interface HourlyMetric {
@@ -64,6 +72,7 @@ export interface QueryLogResponse {
   total: number;
   page: number;
   page_size: number;
+  disk?: DiskStatus;
 }
 
 export interface PipelineNode {
@@ -88,6 +97,7 @@ export interface UpstreamsResponse {
   mainland: string[];
   gfw: string[];
   overseas: string[];
+  timeout_ms: number;
 }
 
 export interface UpstreamTestItem {
@@ -172,6 +182,10 @@ export interface AppSettings {
   web: {
     port: number;
   };
+  auth?: {
+    username: string;
+    password?: string;
+  };
   proxy: ProxyConfig;
   cache: {
     size: number;
@@ -194,7 +208,9 @@ export interface AppSettings {
   logging: {
     enabled: boolean;
     retention_mins: number;
-    retention_days?: number;
+    max_disk_usage_percent?: number;
+    min_free_disk_mb?: number;
+    max_db_size_mb?: number;
   };
   rules_update?: {
     auto_update: boolean;
@@ -269,16 +285,24 @@ export const api = {
     return res.json();
   },
 
-  async changePassword(old_password: string, new_password: string): Promise<void> {
+  async changePassword(old_password: string, new_password: string, new_username?: string): Promise<void> {
     const username = localStorage.getItem('nexdns_user') || 'admin';
     const res = await authFetch('/api/v1/auth/password', {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ username, old_password, new_password }),
+      body: JSON.stringify({
+        username,
+        new_username: new_username?.trim() || username,
+        old_password,
+        new_password,
+      }),
     });
     if (!res.ok) {
       const err = await res.text();
       throw new Error(err || '修改密码失败');
+    }
+    if (new_username?.trim()) {
+      localStorage.setItem('nexdns_user', new_username.trim());
     }
   },
 
@@ -553,6 +577,18 @@ export const api = {
     if (!res.ok) {
       const err = await res.text();
       throw new Error(err || '更新引导 DNS 失败');
+    }
+  },
+
+  async updateUpstreamTimeout(timeout_ms: number): Promise<void> {
+    const res = await authFetch('/api/v1/upstreams/timeout', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ timeout_ms }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || '更新上游超时失败');
     }
   },
   async getRuleContent(id: string): Promise<{ id: string; content: string }> {

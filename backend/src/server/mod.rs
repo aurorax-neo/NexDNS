@@ -3,10 +3,48 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
 use hickory_proto::op::Message;
+use hickory_proto::rr::RecordType;
 use crate::db::Database;
 use crate::metrics::MetricsCollector;
 use crate::pipeline::context::QueryContext;
 use crate::pipeline::engine::PipelineEngine;
+
+/// RFC 8900 / DNS Flag Day 2020 安全 UDP 载荷上限 (1232 字节)，规避跨楼层/跨 VLAN 三层交换机丢弃 IP 分片包
+const SAFE_UDP_PAYLOAD_LIMIT: usize = 1232;
+/// RFC 1035 标准无 EDNS UDP 载荷上限 (512 字节)
+const LEGACY_UDP_PAYLOAD_LIMIT: usize = 512;
+
+pub fn encode_udp_response(resp_msg: &Message, req_edns_max: Option<u16>) -> Result<Vec<u8>, hickory_proto::ProtoError> {
+    let max_payload = req_edns_max
+        .map(|m| (m as usize).clamp(LEGACY_UDP_PAYLOAD_LIMIT, SAFE_UDP_PAYLOAD_LIMIT))
+        .unwrap_or(LEGACY_UDP_PAYLOAD_LIMIT);
+
+    let raw = resp_msg.to_vec()?;
+    if raw.len() <= max_payload {
+        return Ok(raw);
+    }
+
+    // 1. 优先剥离非必要的 Authority / Additional 记录（保留 OPT 伪记录）尝试装入单包
+    let mut trimmed = resp_msg.clone();
+    trimmed.authorities.clear();
+    trimmed.additionals.retain(|r| r.record_type() == RecordType::OPT);
+    let trimmed_bytes = trimmed.to_vec()?;
+    if trimmed_bytes.len() <= max_payload {
+        return Ok(trimmed_bytes);
+    }
+
+    // 2. 若仍超出跨网段安全 MTU，则标记 TC=1 (Truncated) 并逐条裁剪尾部 Answer，引导客户端无缝回退 TCP 53
+    trimmed.metadata.truncation = true;
+    while !trimmed.answers.is_empty() {
+        trimmed.answers.pop();
+        let candidate = trimmed.to_vec()?;
+        if candidate.len() <= max_payload {
+            return Ok(candidate);
+        }
+    }
+
+    trimmed.to_vec()
+}
 
 fn bind_udp_socket(addr: SocketAddr) -> std::io::Result<UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
@@ -132,11 +170,12 @@ impl DnsServer {
                                         tokio::spawn(async move {
                                             let _permit = permit;
                                             if let Ok(req_msg) = Message::from_vec(&req_bytes) {
+                                                let req_edns_max = req_msg.edns.as_ref().map(|e| e.max_payload());
                                                 let mut ctx = QueryContext::new(src.ip(), req_msg);
                                                 engine.process(&mut ctx).await;
 
                                                 if let Some(ref resp_msg) = ctx.response {
-                                                    if let Ok(resp_bytes) = resp_msg.to_vec() {
+                                                    if let Ok(resp_bytes) = encode_udp_response(resp_msg, req_edns_max) {
                                                         let _ = socket.send_to(&resp_bytes, src).await;
                                                     }
                                                 }

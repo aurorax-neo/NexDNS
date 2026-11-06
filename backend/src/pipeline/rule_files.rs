@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use crate::config::AppConfig;
 use crate::pipeline::plugins::domain_match::{DomainListRegistry, DomainMatcher};
 use crate::pipeline::plugins::ip_match::{IpListRegistry, IpMatcher};
 
@@ -22,7 +22,8 @@ pub struct RuleFileInfo {
 
 pub struct RuleFileManager {
     base_dir: PathBuf,
-    db: Arc<crate::db::Database>,
+    config: Arc<parking_lot::RwLock<AppConfig>>,
+    config_path: String,
     domain_registry: Arc<DomainListRegistry>,
     ip_registry: Arc<IpListRegistry>,
 }
@@ -30,7 +31,8 @@ pub struct RuleFileManager {
 impl RuleFileManager {
     pub fn new<P: AsRef<Path>>(
         base_dir: P,
-        db: Arc<crate::db::Database>,
+        config: Arc<parking_lot::RwLock<AppConfig>>,
+        config_path: String,
         domain_registry: Arc<DomainListRegistry>,
         ip_registry: Arc<IpListRegistry>,
     ) -> Self {
@@ -38,11 +40,12 @@ impl RuleFileManager {
         let _ = fs::create_dir_all(&p);
         let s = Self {
             base_dir: p,
-            db,
+            config,
+            config_path,
             domain_registry,
             ip_registry,
         };
-        let _ = s.init_db();
+        s.ensure_defaults();
         s
     }
 
@@ -50,30 +53,7 @@ impl RuleFileManager {
         &self.base_dir
     }
 
-    fn get_conn(&self) -> rusqlite::Result<crate::db::PooledConn<'_>> {
-        self.db.get_conn()
-    }
-
-    fn init_db(&self) -> rusqlite::Result<()> {
-        let conn = self.get_conn()?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS routing_rule_files (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                file_name TEXT NOT NULL UNIQUE,
-                group_type TEXT NOT NULL,
-                url TEXT,
-                enabled INTEGER NOT NULL,
-                line_count INTEGER NOT NULL,
-                size_bytes INTEGER NOT NULL,
-                updated_at TEXT NOT NULL
-            );"
-        )?;
-        self.ensure_defaults()
-    }
-
-    pub fn ensure_defaults(&self) -> rusqlite::Result<()> {
-        let conn = self.get_conn()?;
+    pub fn ensure_defaults(&self) {
         let defaults = vec![
             ("大陆直连主规则 (direct.txt)", "direct.txt", "mainland", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/direct.txt"),
             ("代理过滤主规则 (proxy.txt)", "proxy.txt", "gfw", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/proxy.txt"),
@@ -82,29 +62,36 @@ impl RuleFileManager {
             ("中国 IPv6 地址段 (ipv6_china.txt)", "ipv6_china.txt", "china_ip", "https://gx.aorz.kdns.fr/https://raw.githubusercontent.com/217heidai/RoutingRules/main/rules/ipv6_china.txt"),
         ];
 
-        for (name, file_name, group_type, url) in defaults {
-            let exists: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM routing_rule_files WHERE file_name = ?1)",
-                params![file_name],
-                |r| r.get(0),
-            ).unwrap_or(false);
+        let mut cfg = self.config.write();
+        let mut changed = false;
 
+        for (name, file_name, group_type, url) in defaults {
+            let exists = cfg.routing_rules.iter().any(|r| r.file_name == file_name);
             if !exists {
-                let id = Uuid::new_v4().to_string();
                 let file_path = self.base_dir.join(file_name);
                 let size = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
                 let line_count = fs::read_to_string(&file_path)
                     .map(|s| s.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count())
                     .unwrap_or(0);
 
-                let _ = conn.execute(
-                    "INSERT OR REPLACE INTO routing_rule_files (id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8)",
-                    params![id, name, file_name, group_type, url, line_count as i64, size as i64, chrono::Local::now().to_rfc3339()],
-                );
+                cfg.routing_rules.push(RuleFileInfo {
+                    id: Uuid::new_v4().to_string(),
+                    name: name.to_string(),
+                    file_name: file_name.to_string(),
+                    group_type: group_type.to_string(),
+                    url: url.to_string(),
+                    enabled: true,
+                    count: line_count,
+                    size_bytes: size,
+                    updated_at: chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+                });
+                changed = true;
             }
         }
-        Ok(())
+
+        if changed {
+            let _ = cfg.save(&self.config_path);
+        }
     }
 
     pub fn get_disk_fallback_rules(&self) -> Vec<RuleFileInfo> {
@@ -133,57 +120,23 @@ impl RuleFileManager {
                 enabled: true,
                 count: line_count,
                 size_bytes: size,
-                updated_at: chrono::Local::now().to_rfc3339(),
+                updated_at: chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
             });
         }
         res
     }
 
     pub fn list_rules(&self) -> Vec<RuleFileInfo> {
-        let _ = self.ensure_defaults();
-        let conn = match self.get_conn() {
-            Ok(c) => c,
-            Err(_) => return self.get_disk_fallback_rules(),
-        };
-        let mut stmt = match conn.prepare(
-            "SELECT id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at FROM routing_rule_files ORDER BY group_type ASC, name ASC"
-        ) {
-            Ok(s) => s,
-            Err(_) => return self.get_disk_fallback_rules(),
-        };
-
-        let rows = stmt.query_map([], |r| {
-            Ok(RuleFileInfo {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                file_name: r.get(2)?,
-                group_type: r.get(3)?,
-                url: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                enabled: r.get::<_, i32>(5)? == 1,
-                count: r.get::<_, i64>(6)? as usize,
-                size_bytes: r.get::<_, i64>(7)? as u64,
-                updated_at: r.get(8)?,
-            })
-        });
-
-        let mut result = Vec::new();
-        if let Ok(it) = rows {
-            for item in it {
-                if let Ok(rf) = item {
-                    result.push(rf);
-                }
-            }
-        }
+        self.ensure_defaults();
+        let mut result = self.config.read().routing_rules.clone();
         if result.is_empty() {
             return self.get_disk_fallback_rules();
         }
+        result.sort_by(|a, b| a.group_type.cmp(&b.group_type).then_with(|| a.name.cmp(&b.name)));
         result
     }
 
     pub fn add_rule_file(&self, name: &str, file_name: &str, group_type: &str, url: &str, content: &str) -> anyhow::Result<String> {
-        let conn = self.get_conn()?;
-
-        // 智能文件重名处理: 若磁盘或数据库已存在同名文件，自动分配 safe_file_name 避免冲突覆盖
         let mut safe_name = name.to_string();
         let mut safe_file_name = file_name.to_string();
         let p = std::path::Path::new(file_name);
@@ -192,12 +145,8 @@ impl RuleFileManager {
 
         let mut idx = 1;
         while self.base_dir.join(&safe_file_name).exists() || {
-            let exists_in_db: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM routing_rule_files WHERE file_name = ?1)",
-                params![&safe_file_name],
-                |r| r.get(0),
-            ).unwrap_or(false);
-            exists_in_db
+            let cfg = self.config.read();
+            cfg.routing_rules.iter().any(|r| r.file_name == safe_file_name)
         } {
             safe_file_name = format!("{}_{}.{}", stem, idx, ext);
             safe_name = format!("{} ({})", name, idx);
@@ -217,47 +166,82 @@ impl RuleFileManager {
             .unwrap_or(0);
 
         let id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT OR REPLACE INTO routing_rule_files (id, name, file_name, group_type, url, enabled, line_count, size_bytes, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8)",
-            params![id, safe_name, safe_file_name, group_type, url, line_count as i64, size as i64, chrono::Local::now().to_rfc3339()],
-        )?;
+        {
+            let mut cfg = self.config.write();
+            cfg.routing_rules.push(RuleFileInfo {
+                id,
+                name: safe_name,
+                file_name: safe_file_name.clone(),
+                group_type: group_type.to_string(),
+                url: url.to_string(),
+                enabled: true,
+                count: line_count,
+                size_bytes: size,
+                updated_at: chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+            });
+            cfg.save(&self.config_path)?;
+        }
 
         self.load_local_rules();
         Ok(safe_file_name)
     }
 
     pub fn toggle_rule_file(&self, id: &str) -> anyhow::Result<()> {
-        let conn = self.get_conn()?;
-        conn.execute(
-            "UPDATE routing_rule_files SET enabled = (CASE WHEN enabled = 1 THEN 0 ELSE 1 END) WHERE id = ?1",
-            params![id],
-        )?;
+        {
+            let mut cfg = self.config.write();
+            if let Some(item) = cfg.routing_rules.iter_mut().find(|r| r.id == id) {
+                item.enabled = !item.enabled;
+            }
+            cfg.save(&self.config_path)?;
+        }
         self.load_local_rules();
         Ok(())
     }
 
     pub fn edit_rule_info(&self, id: &str, name: &str, group_type: &str, url: &str) -> anyhow::Result<()> {
-        let conn = self.get_conn()?;
-        conn.execute(
-            "UPDATE routing_rule_files SET name = ?1, group_type = ?2, url = ?3 WHERE id = ?4",
-            params![name, group_type, url, id],
-        )?;
+        {
+            let mut cfg = self.config.write();
+            if let Some(item) = cfg.routing_rules.iter_mut().find(|r| r.id == id) {
+                item.name = name.to_string();
+                item.group_type = group_type.to_string();
+                item.url = url.to_string();
+            }
+            cfg.save(&self.config_path)?;
+        }
         self.load_local_rules();
         Ok(())
     }
 
     pub fn delete_rule_file(&self, id: &str) -> anyhow::Result<()> {
-        let conn = self.get_conn()?;
-        let file_name: String = conn.query_row(
-            "SELECT file_name FROM routing_rule_files WHERE id = ?1",
-            params![id],
-            |r| r.get(0),
-        )?;
-        conn.execute("DELETE FROM routing_rule_files WHERE id = ?1", params![id])?;
+        let file_name = {
+            let mut cfg = self.config.write();
+            let pos = cfg
+                .routing_rules
+                .iter()
+                .position(|r| r.id == id)
+                .ok_or_else(|| anyhow::anyhow!("未找到指定的规则文件"))?;
+            let removed = cfg.routing_rules.remove(pos);
+            cfg.save(&self.config_path)?;
+            removed.file_name
+        };
         let _ = fs::remove_file(self.base_dir.join(file_name));
         self.load_local_rules();
         Ok(())
+    }
+
+    pub fn refresh_file_stats(&self, file_name: &str) {
+        let file_path = self.base_dir.join(file_name);
+        let size = fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+        let line_count = fs::read_to_string(&file_path)
+            .map(|s| s.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count())
+            .unwrap_or(0);
+        let mut cfg = self.config.write();
+        if let Some(item) = cfg.routing_rules.iter_mut().find(|r| r.file_name == file_name) {
+            item.count = line_count;
+            item.size_bytes = size;
+            item.updated_at = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
+            let _ = cfg.save(&self.config_path);
+        }
     }
 
     pub async fn update_rule_file(&self, file_name: &str, url: &str) -> anyhow::Result<usize> {
@@ -273,11 +257,14 @@ impl RuleFileManager {
             .count();
         let size = text.len() as u64;
 
-        if let Ok(conn) = self.get_conn() {
-            let _ = conn.execute(
-                "UPDATE routing_rule_files SET line_count = ?1, size_bytes = ?2, updated_at = ?3 WHERE file_name = ?4",
-                params![line_count as i64, size as i64, chrono::Local::now().to_rfc3339(), file_name],
-            );
+        {
+            let mut cfg = self.config.write();
+            if let Some(item) = cfg.routing_rules.iter_mut().find(|r| r.file_name == file_name) {
+                item.count = line_count;
+                item.size_bytes = size;
+                item.updated_at = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
+            }
+            let _ = cfg.save(&self.config_path);
         }
 
         self.load_local_rules();

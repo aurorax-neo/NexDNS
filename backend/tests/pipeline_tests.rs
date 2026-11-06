@@ -733,3 +733,18 @@ async fn test_proxy_route_fallback_to_mainland_when_gfw_unreachable() {
     assert_eq!(resp.answers.len(), 1);
     assert!(ctx.tags.contains("fallback_restore_mainland"));
 }
+
+#[tokio::test]
+async fn test_dual_stack_tcp_listener_bind_no_conflict() {
+    use std::net::SocketAddr;
+    use nexdns::server::bind_tcp_listener;
+
+    let v4_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+    let v4_listener = bind_tcp_listener(v4_addr).expect("bind IPv4 TCP listener should succeed");
+    let port = v4_listener.local_addr().unwrap().port();
+
+    let v6_addr: SocketAddr = format!("[::]:{}", port).parse().unwrap();
+    if let Ok(v6_listener) = bind_tcp_listener(v6_addr) {
+        assert_eq!(v6_listener.local_addr().unwrap().port(), port);
+    }
+}

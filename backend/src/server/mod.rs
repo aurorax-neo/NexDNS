@@ -64,6 +64,25 @@ fn bind_udp_socket(addr: SocketAddr) -> std::io::Result<UdpSocket> {
     UdpSocket::from_std(std_socket)
 }
 
+pub fn bind_tcp_listener(addr: SocketAddr) -> std::io::Result<TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let domain = if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    if addr.is_ipv6() {
+        let _ = socket.set_only_v6(true);
+    }
+    let _ = socket.set_reuse_address(true);
+    #[cfg(unix)]
+    {
+        let _ = socket.set_reuse_port(true);
+    }
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+    let std_listener: std::net::TcpListener = socket.into();
+    TcpListener::from_std(std_listener)
+}
+
 pub struct DnsServer {
     port: u16,
     listen_mode: String,
@@ -202,7 +221,7 @@ impl DnsServer {
         }
 
         for &tcp_addr in &bind_targets {
-            match TcpListener::bind(tcp_addr).await {
+            match bind_tcp_listener(tcp_addr) {
                 Ok(tcp_listener) => {
                     tracing::info!("DNS TCP 服务监听在 {}", tcp_addr);
                     let engine_tcp = self.engine.clone();

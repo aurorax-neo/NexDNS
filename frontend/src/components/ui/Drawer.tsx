@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
 export interface DrawerProps {
@@ -34,8 +35,8 @@ export const Drawer: React.FC<DrawerProps> = ({
 
   if (!isOpen) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 overflow-hidden">
+  return createPortal(
+    <div className="fixed inset-0 z-[80] overflow-hidden">
       {/* 半透明遮罩，保留背景列表上下文 */}
       <div
         className="fixed inset-0 bg-black/40 backdrop-blur-[2px] transition-opacity"
@@ -70,6 +71,7 @@ export const Drawer: React.FC<DrawerProps> = ({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

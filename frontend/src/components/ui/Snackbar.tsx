@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { RotateCcw } from 'lucide-react';
 
 export interface SnackbarProps {
@@ -15,8 +16,8 @@ export const Snackbar: React.FC<SnackbarProps> = ({ message, onUndo, onClose }) 
     return () => clearTimeout(timer);
   }, [onClose]);
 
-  return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-4 px-4 py-3 bg-neutral-900 border border-neutral-700 text-neutral-200 text-sm rounded-lg shadow-2xl animate-in fade-in-50 slide-in-from-bottom-5">
+  return createPortal(
+    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[130] flex items-center gap-4 px-4 py-3 bg-neutral-900 border border-neutral-700 text-neutral-200 text-sm rounded-lg shadow-2xl animate-in fade-in-50 slide-in-from-bottom-5">
       <span>{message}</span>
       {onUndo && (
         <button
@@ -31,6 +32,7 @@ export const Snackbar: React.FC<SnackbarProps> = ({ message, onUndo, onClose }) 
           撤销
         </button>
       )}
-    </div>
+    </div>,
+    document.body
   );
 };

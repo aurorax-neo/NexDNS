@@ -556,6 +556,67 @@ fn test_cache_hit_rate_only_counts_cache_path_queries() {
     assert_eq!(cache.today.hits, 2);
     assert_eq!(cache.today.misses, 3);
     assert!((cache.today.hit_rate - 40.0).abs() < 1e-9);
+    assert_eq!(cache.last_24h.requests, 5);
+    assert_eq!(cache.last_24h.hits, 2);
+    assert_eq!(cache.last_24h.misses, 3);
+    assert!((cache.last_24h.hit_rate - 40.0).abs() < 1e-9);
+}
+
+#[test]
+fn test_metrics_24h_scoped_reset() {
+    use hickory_proto::op::Message;
+    use nexdns::metrics::MetricsCollector;
+    use nexdns::pipeline::context::{QueryContext, QueryStatus};
+
+    let metrics = MetricsCollector::new();
+
+    let record_one = |domain: &str, status: QueryStatus| {
+        let mut req = Message::query();
+        req.add_query(hickory_proto::op::Query::query(
+            Name::from_str(&format!("{}.", domain)).unwrap(),
+            RecordType::A,
+        ));
+        let mut ctx = QueryContext::new("10.0.0.8".parse().unwrap(), req);
+        ctx.status = status;
+        ctx.duration_ms = 12.0;
+        metrics.record(&ctx);
+    };
+
+    record_one("good.example.com", QueryStatus::Allowed);
+    record_one("good.example.com", QueryStatus::Cached);
+    record_one("ad.example.com", QueryStatus::Blocked);
+
+    let s1 = metrics.snapshot();
+    assert_eq!(s1.total_queries, 3);
+    assert_eq!(s1.blocked_queries, 1);
+    assert_eq!(s1.cached_queries, 1);
+    assert_eq!(s1.top_domains.len(), 1);
+    assert_eq!(s1.top_blocked.len(), 1);
+    assert_eq!(s1.top_clients.len(), 1);
+
+    // Reset top_domains only
+    metrics.reset("top_domains");
+    let s2 = metrics.snapshot();
+    assert!(s2.top_domains.is_empty());
+    assert_eq!(s2.top_blocked.len(), 1);
+    assert_eq!(s2.total_queries, 3);
+
+    // Reset kpi_blocked only
+    metrics.reset("kpi_blocked");
+    let s3 = metrics.snapshot();
+    assert_eq!(s3.blocked_queries, 0);
+    assert_eq!(s3.block_rate, 0.0);
+    assert_eq!(s3.total_queries, 3);
+    assert_eq!(s3.cached_queries, 1);
+
+    // Reset all
+    metrics.reset("all");
+    let s4 = metrics.snapshot();
+    assert_eq!(s4.total_queries, 0);
+    assert_eq!(s4.cached_queries, 0);
+    assert!(s4.top_blocked.is_empty());
+    assert!(s4.top_clients.is_empty());
+    assert_eq!(metrics.cache_stats.snapshot().last_24h.requests, 0);
 }
 
 #[test]

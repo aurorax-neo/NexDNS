@@ -451,11 +451,11 @@ export const FilteringPage: React.FC = () => {
                 />
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => setIsEditingContent(!isEditingContent)}
-                  className={`min-h-[36px] px-3.5 text-xs flex items-center gap-1.5 rounded border transition-colors ${
+                  className={`min-h-[36px] px-3.5 text-xs flex items-center gap-1.5 rounded border transition-colors whitespace-nowrap shrink-0 ${
                     isEditingContent
                       ? 'bg-rose-50 dark:bg-rose-950/60 border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-400 font-medium'
                       : 'bg-white dark:bg-surface-2 border-neutral-300 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300'
@@ -470,7 +470,7 @@ export const FilteringPage: React.FC = () => {
                     type="button"
                     onClick={handleSaveContent}
                     disabled={savingContent}
-                    className="min-h-[36px] px-4 text-xs font-medium bg-rose-600 hover:bg-rose-500 text-white rounded shadow-xs flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                    className="min-h-[36px] px-4 text-xs font-medium bg-rose-600 hover:bg-rose-500 text-white rounded shadow-xs flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap shrink-0"
                   >
                     <Save className="w-3.5 h-3.5 align-icon" />
                     {savingContent ? '保存中...' : '保存修改'}

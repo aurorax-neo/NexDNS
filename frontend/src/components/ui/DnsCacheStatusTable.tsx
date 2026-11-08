@@ -4,9 +4,15 @@ import { Popconfirm } from './Popconfirm';
 
 export interface DnsCacheStatusTableProps {
   className?: string;
+  refreshKey?: number;
+  onResetSuccess?: () => void;
 }
 
-export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({ className = '' }) => {
+export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({
+  className = '',
+  refreshKey = 0,
+  onResetSuccess,
+}) => {
   const [stats, setStats] = useState<CacheStatsSnapshot | null>(null);
   const [clearing, setClearing] = useState(false);
   const [flushing, setFlushing] = useState(false);
@@ -25,13 +31,14 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({ classN
     fetchStats();
     const timer = setInterval(fetchStats, 5000);
     return () => clearInterval(timer);
-  }, []);
+  }, [refreshKey]);
 
   const handleClear = async () => {
     setClearing(true);
     try {
       await api.clearCacheStats();
       await fetchStats();
+      onResetSuccess?.();
       setNotice('已重置缓存统计计数！');
       setTimeout(() => setNotice(null), 3000);
     } catch (e) {
@@ -55,16 +62,17 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({ classN
   };
 
   const rows = [
-    { label: '昨日', data: stats?.yesterday },
-    { label: '今日', data: stats?.today },
-    { label: '累计', data: stats?.total },
+    { label: '近 24 小时', data: stats?.last_24h ?? stats?.today },
   ];
 
   return (
     <div className={`p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4 ${className}`}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="text-sm font-normal text-neutral-800 dark:text-neutral-200">
-          DNS缓存状态(更新频率: 1分钟)
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+            DNS 缓存状态
+          </span>
+          <span className="text-xs font-mono text-neutral-400">近 24 小时统计</span>
         </div>
 
         <div className="flex items-center gap-2">
@@ -88,7 +96,7 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({ classN
           </Popconfirm>
 
           <Popconfirm
-            title="确定清除所有 DNS 缓存累计统计计数吗？"
+            title="确定重置近 24 小时 DNS 缓存统计计数吗？"
             actionText="确认重置计数"
             onConfirm={handleClear}
           >

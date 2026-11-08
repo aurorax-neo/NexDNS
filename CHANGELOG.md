@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-08
+
+### 🚀 Features
+- **首页数据统计全面升级为近 24 小时滑动窗口并支持分项重置**：首页 4 张核心 KPI 卡片（近 24 小时查询总量、已拦截威胁与广告、智能内存缓存、平均解析时延）、DNS 缓存状态表、24 小时查询吞吐与拦截趋势图、以及高频查询域名 / 高频拦截目标 / 活跃客户端 IP 3 张排行榜全部统一为近 24 小时滑动统计口径，并在顶栏（重置全部统计）与各模块右上角提供独立 `重置` 确认入口（`POST /api/v1/metrics/reset`）。
+
+### 🐛 Bug Fixes
+- **彻底修复各类删除二次确认气泡与编辑弹窗下拉框被遮挡问题**：`Popconfirm` 与 `CustomSelect` 下拉菜单全面改用 `createPortal(..., document.body)` 挂载至顶层视口（`fixed z-[120]`），动态计算触发按钮视口坐标、底部空间不足时自动向上翻转并跟随滚动/缩放更新位置，彻底解决列表卡片 `overflow-hidden` 与编辑弹窗 `overflow-y-auto` 裁切遮挡浮层的问题；`Modal`、`Drawer`、`AlertDialog`、`Snackbar` 同步统一至顶层 Portal 层级。
+- **彻底根除深色模式下实时日志“闪白条”问题**：在 `@layer base` 中将 `.dark` 模式默认边框色由 Tailwind Preflight 的 `#e5e7eb`（亮灰白）覆盖为 `#262626`；移除实时日志表 `<tbody>` 上的 `divide-y` 兄弟选择器与 `border-collapse` 组合，改为单元格固定不透明底边框与 `lg:min-w-0` 零横向溢出，并在 `index.html` 首帧同步初始化暗色类名，彻底消除 SSE 实时流顶部插入新行时的横向亮白线残影。
+
 ## [0.1.7] - 2026-11-06
 
 ### 🚀 Features

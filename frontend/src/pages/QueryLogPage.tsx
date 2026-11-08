@@ -607,9 +607,9 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
 
       {/* 全宽查询日志主表格 */}
       <div className="rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
-        <div className="overflow-x-auto no-scrollbar">
-          <table className="w-full min-w-[1360px] text-left text-xs table-fixed">
-            <thead className="bg-neutral-50 dark:bg-surface-2/60 border-b border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 uppercase font-medium">
+        <div className="overflow-x-auto lg:overflow-x-hidden no-scrollbar bg-white dark:bg-surface-1">
+          <table className="w-full min-w-[960px] lg:min-w-0 text-left text-xs table-fixed border-separate border-spacing-0">
+            <thead className="bg-neutral-50 dark:bg-surface-2 text-neutral-500 dark:text-neutral-400 uppercase font-medium [&>tr>th]:border-b [&>tr>th]:border-neutral-200 dark:[&>tr>th]:border-neutral-800">
               <tr>
                 <th className="py-3 pl-5 pr-3 w-[9.5%]">请求时间</th>
                 <th className="py-3 px-3 w-[7.5%]">状态</th>
@@ -621,7 +621,7 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                 <th className="py-3 pl-3 pr-5 w-[11.5%] text-right">就地操作</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800/60 font-normal bg-white dark:bg-surface-1">
+            <tbody className="font-normal bg-white dark:bg-surface-1">
               {logs.length > 0 ? (
                 logs.map((log) => {
                   const timeDisplay = formatShortDateTime(log.timestamp);
@@ -632,10 +632,10 @@ export const QueryLogPage: React.FC<QueryLogPageProps> = ({ onNavigate }) => {
                     <tr
                       key={log.id}
                       onClick={() => setSelectedLog(log)}
-                      className={`cursor-pointer select-none ${
+                      className={`cursor-pointer select-none [&>td]:border-b [&>td]:border-neutral-200 dark:[&>td]:border-[#1f1f1f] last:[&>td]:border-b-0 ${
                         isSelected
-                          ? 'bg-cyan-50/60 dark:bg-cyan-950/25'
-                          : 'hover:bg-neutral-100/60 dark:hover:bg-white/[0.04]'
+                          ? 'bg-cyan-50/60 dark:bg-[#0d2429]'
+                          : 'hover:bg-neutral-100/60 dark:hover:bg-[#1c1c1b]'
                       }`}
                     >
                       <td

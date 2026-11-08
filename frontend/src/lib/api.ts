@@ -49,6 +49,7 @@ export interface CacheStatsSnapshot {
   yesterday: CacheStatRow;
   today: CacheStatRow;
   total: CacheStatRow;
+  last_24h?: CacheStatRow;
   updated_at: string;
 }
 
@@ -341,6 +342,15 @@ export const api = {
   async getMetrics(): Promise<MetricsSnapshot> {
     const res = await authFetch('/api/v1/metrics');
     return res.json();
+  },
+
+  async resetMetrics(scope: string = 'all'): Promise<void> {
+    const res = await authFetch('/api/v1/metrics/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope }),
+    });
+    if (!res.ok) throw new Error('Failed to reset metrics');
   },
 
   async getCacheStats(): Promise<CacheStatsSnapshot> {

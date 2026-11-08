@@ -4,6 +4,7 @@
 
 :root {
   color-scheme: light;
+  background-color: #f6f6f5;
   --surface-0: 246 246 245;
   --surface-1: 255 255 255;
   --surface-2: 245 245 243;
@@ -12,10 +13,19 @@
 
 .dark {
   color-scheme: dark;
+  background-color: #0b0b0a;
   --surface-0: 11 11 10;
   --surface-1: 21 21 21;
   --surface-2: 26 26 25;
   --surface-3: 32 32 30;
+}
+
+@layer base {
+  .dark *,
+  .dark ::before,
+  .dark ::after {
+    border-color: rgb(38 38 38);
+  }
 }
 
 body {
@@ -52,6 +62,9 @@ p {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
 ::-webkit-scrollbar-thumb {
   background: rgba(150, 150, 150, 0.2);
   border-radius: 3px;
@@ -62,7 +75,10 @@ p {
 
 /* 隐藏水平滚动条 */
 .no-scrollbar::-webkit-scrollbar {
-  display: none;
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
 }
 .no-scrollbar {
   -ms-overflow-style: none;

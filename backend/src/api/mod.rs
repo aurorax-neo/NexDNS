@@ -91,6 +91,7 @@ pub fn create_web_router(state: AppState) -> Router {
         .route("/api/v1/auth/password", post(change_password_handler))
         .route("/api/v1/status", get(get_status))
         .route("/api/v1/metrics", get(get_metrics))
+        .route("/api/v1/metrics/reset", post(reset_metrics))
         .route("/api/v1/metrics/cache-stats", get(get_cache_stats))
         .route("/api/v1/metrics/cache-stats/clear", post(clear_cache_stats))
         .route("/api/v1/settings", get(get_settings).put(update_settings))
@@ -658,6 +659,22 @@ async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
 
 async fn get_metrics(State(state): State<AppState>) -> Json<crate::metrics::MetricsSnapshot> {
     Json(state.metrics.snapshot())
+}
+
+#[derive(Deserialize, Default)]
+struct ResetMetricsReq {
+    scope: Option<String>,
+}
+
+async fn reset_metrics(
+    State(state): State<AppState>,
+    payload: Option<Json<ResetMetricsReq>>,
+) -> StatusCode {
+    let scope = payload
+        .and_then(|Json(req)| req.scope)
+        .unwrap_or_else(|| "all".to_string());
+    state.metrics.reset(&scope);
+    StatusCode::OK
 }
 
 async fn get_cache_stats(State(state): State<AppState>) -> Json<crate::metrics::CacheStatsSnapshot> {

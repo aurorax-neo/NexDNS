@@ -446,7 +446,7 @@ export const UpstreamsPage: React.FC = () => {
                 key={addr}
                 className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800/80 hover:border-neutral-300 dark:hover:border-neutral-700 transition-colors"
               >
-                <div className="flex items-center gap-2 min-w-0 pr-3 flex-wrap">
+                <div className="flex items-center gap-2 min-w-0 flex-1 pr-3 flex-wrap">
                   <span
                     className={`px-1.5 py-0.5 text-[10px] font-mono font-bold rounded ${
                       isDoh
@@ -513,7 +513,7 @@ export const UpstreamsPage: React.FC = () => {
                     type="button"
                     onClick={() => handleTestSingle(groupKey, addr)}
                     disabled={isTestingThis || testing || testingGroup === groupKey}
-                    className="text-neutral-400 hover:text-cyan-500 transition-colors disabled:opacity-50"
+                    className="min-w-[28px] min-h-[28px] flex items-center justify-center rounded text-neutral-400 hover:text-cyan-500 hover:bg-neutral-200/60 dark:hover:bg-surface-3 transition-colors disabled:opacity-50"
                     title="单独测试此节点"
                   >
                     <Play className={`w-3.5 h-3.5 align-icon ${isTestingThis ? 'animate-spin text-cyan-500' : ''}`} />
@@ -523,7 +523,7 @@ export const UpstreamsPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => handleOpenEditModal(groupKey, addr)}
-                    className="text-neutral-400 hover:text-cyan-500 transition-colors"
+                    className="min-w-[28px] min-h-[28px] flex items-center justify-center rounded text-neutral-400 hover:text-cyan-500 hover:bg-neutral-200/60 dark:hover:bg-surface-3 transition-colors"
                     title="编辑该上游配置"
                   >
                     <Edit3 className="w-3.5 h-3.5 align-icon" />
@@ -536,7 +536,7 @@ export const UpstreamsPage: React.FC = () => {
                   >
                     <button
                       type="button"
-                      className="text-neutral-400 hover:text-red-500 transition-colors"
+                      className="min-w-[28px] min-h-[28px] flex items-center justify-center rounded text-neutral-400 hover:text-red-500 hover:bg-neutral-200/60 dark:hover:bg-surface-3 transition-colors"
                       title="删除节点"
                     >
                       <Trash2 className="w-3.5 h-3.5 align-icon" />

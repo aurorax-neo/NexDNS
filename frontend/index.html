@@ -6,6 +6,19 @@
     <link rel="alternate icon" href="/favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NexDNS 控制台</title>
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('nexdns_theme');
+          var isDark = saved ? saved === 'dark' : (!window.matchMedia || window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body class="bg-[#f6f6f5] dark:bg-surface-0 antialiased selection:bg-cyan-500/30">
     <div id="root"></div>

@@ -87,30 +87,36 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
   return (
     <div className="space-y-6 animate-in fade-in-50 duration-200">
       {/* 顶部服务状态 */}
-      <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-        <div className="flex items-center gap-3">
-          <div className="relative flex items-center justify-center w-3 h-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 p-4 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
+        <div className="flex items-start sm:items-center gap-3 min-w-0">
+          <div className="relative flex items-center justify-center w-3 h-3 mt-1 sm:mt-0 shrink-0">
             <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 animate-ping" />
             <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">服务正常运行中</span>
-              <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/40">
-                v{status?.version || '0.1.6'}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 whitespace-nowrap">服务正常运行中</span>
+              <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/40 whitespace-nowrap shrink-0">
+                v{status?.version || '0.1.9'}
               </span>
             </div>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-              DNS 端口: <span className="tabular-nums font-mono font-medium text-neutral-700 dark:text-neutral-300">{status?.dns_port || 53}</span>
-              <span className="mx-2 text-neutral-300 dark:text-neutral-700">|</span>
-              Web 端口: <span className="tabular-nums font-mono font-medium text-neutral-700 dark:text-neutral-300">{status?.web_port || 3000}</span>
-              <span className="mx-2 text-neutral-300 dark:text-neutral-700">|</span>
-              运行时长: <span className="tabular-nums text-neutral-700 dark:text-neutral-300">{status ? formatUptime(status.uptime_seconds) : '-'}</span>
-            </p>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
+              <span className="whitespace-nowrap">
+                DNS 端口: <span className="tabular-nums font-mono font-medium text-neutral-700 dark:text-neutral-300">{status?.dns_port || 53}</span>
+              </span>
+              <span className="text-neutral-300 dark:text-neutral-700">|</span>
+              <span className="whitespace-nowrap">
+                Web 端口: <span className="tabular-nums font-mono font-medium text-neutral-700 dark:text-neutral-300">{status?.web_port || 3000}</span>
+              </span>
+              <span className="text-neutral-300 dark:text-neutral-700">|</span>
+              <span className="whitespace-nowrap">
+                运行时长: <span className="tabular-nums text-neutral-700 dark:text-neutral-300">{status ? formatUptime(status.uptime_seconds) : '-'}</span>
+              </span>
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <Popconfirm
             title="确认重置首页全部近 24 小时统计数据？"
             actionText="确认重置"
@@ -119,9 +125,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
             <button
               type="button"
               disabled={resettingScope === 'all'}
-              className="inline-flex items-center gap-1.5 min-h-[36px] px-3.5 text-xs text-neutral-700 dark:text-neutral-300 hover:text-rose-600 dark:hover:text-rose-400 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-rose-300 dark:hover:border-rose-800 rounded-md transition-all active:scale-95 disabled:opacity-75"
+              className="inline-flex items-center justify-center gap-1.5 min-h-[36px] px-3.5 text-xs whitespace-nowrap shrink-0 text-neutral-700 dark:text-neutral-300 hover:text-rose-600 dark:hover:text-rose-400 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-rose-300 dark:hover:border-rose-800 rounded-md transition-all active:scale-95 disabled:opacity-75"
             >
-              <RotateCcw className="w-3.5 h-3.5 align-icon" />
+              <RotateCcw className="w-3.5 h-3.5 align-icon shrink-0" />
               重置全部统计
             </button>
           </Popconfirm>
@@ -129,9 +135,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
             type="button"
             onClick={handleManualRefresh}
             disabled={isRefreshing}
-            className="inline-flex items-center gap-1.5 min-h-[36px] px-3.5 text-xs text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-all active:scale-95 disabled:opacity-75"
+            className="inline-flex items-center justify-center gap-1.5 min-h-[36px] px-3.5 text-xs whitespace-nowrap shrink-0 text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md transition-all active:scale-95 disabled:opacity-75"
           >
-            <RefreshCw className={`w-3.5 h-3.5 align-icon ${isRefreshing ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 align-icon shrink-0 ${isRefreshing ? 'animate-spin' : ''}`} />
             刷新
           </button>
         </div>
@@ -140,9 +146,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
       {/* 核心指标 KPI 卡片矩阵 (近 24 小时) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-          <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400 text-xs font-medium">
-            <span>近 24 小时查询总量</span>
-            <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between gap-2 text-neutral-500 dark:text-neutral-400 text-xs font-medium">
+            <span className="min-w-0 truncate">近 24 小时查询总量</span>
+            <div className="flex items-center gap-1.5 shrink-0">
               <Popconfirm
                 title="确认重置近 24 小时查询总量统计？"
                 actionText="确认重置"
@@ -150,14 +156,14 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
               >
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 transition-colors"
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] whitespace-nowrap shrink-0 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 transition-colors"
                   title="重置查询总量统计"
                 >
-                  <RotateCcw className="w-3 h-3 align-icon" />
+                  <RotateCcw className="w-3 h-3 align-icon shrink-0" />
                   重置
                 </button>
               </Popconfirm>
-              <Activity className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon" />
+              <Activity className="w-4 h-4 text-cyan-600 dark:text-cyan-400 align-icon shrink-0" />
             </div>
           </div>
           <div className="mt-3 text-2xl font-semibold text-neutral-900 dark:text-neutral-100 tabular-nums">
@@ -172,9 +178,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
         </div>
 
         <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-          <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400 text-xs font-medium">
-            <span>近 24 小时已拦截威胁与广告</span>
-            <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between gap-2 text-neutral-500 dark:text-neutral-400 text-xs font-medium">
+            <span className="min-w-0 truncate">近 24 小时已拦截威胁与广告</span>
+            <div className="flex items-center gap-1.5 shrink-0">
               <Popconfirm
                 title="确认重置近 24 小时拦截统计？"
                 actionText="确认重置"
@@ -182,14 +188,14 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
               >
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 transition-colors"
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] whitespace-nowrap shrink-0 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 transition-colors"
                   title="重置拦截统计"
                 >
-                  <RotateCcw className="w-3 h-3 align-icon" />
+                  <RotateCcw className="w-3 h-3 align-icon shrink-0" />
                   重置
                 </button>
               </Popconfirm>
-              <ShieldCheck className="w-4 h-4 text-rose-500 dark:text-rose-400 align-icon" />
+              <ShieldCheck className="w-4 h-4 text-rose-500 dark:text-rose-400 align-icon shrink-0" />
             </div>
           </div>
           <div className="mt-3 text-2xl font-semibold text-neutral-900 dark:text-neutral-100 tabular-nums">
@@ -204,9 +210,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
         </div>
 
         <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-          <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400 text-xs font-medium">
-            <span>近 24 小时智能内存缓存</span>
-            <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between gap-2 text-neutral-500 dark:text-neutral-400 text-xs font-medium">
+            <span className="min-w-0 truncate">近 24 小时智能内存缓存</span>
+            <div className="flex items-center gap-1.5 shrink-0">
               <Popconfirm
                 title="确认重置近 24 小时缓存命中统计？"
                 actionText="确认重置"
@@ -214,14 +220,14 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
               >
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 transition-colors"
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] whitespace-nowrap shrink-0 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 transition-colors"
                   title="重置缓存命中统计"
                 >
-                  <RotateCcw className="w-3 h-3 align-icon" />
+                  <RotateCcw className="w-3 h-3 align-icon shrink-0" />
                   重置
                 </button>
               </Popconfirm>
-              <Database className="w-4 h-4 text-amber-500 dark:text-amber-400 align-icon" />
+              <Database className="w-4 h-4 text-amber-500 dark:text-amber-400 align-icon shrink-0" />
             </div>
           </div>
           <div className="mt-3 text-2xl font-semibold text-neutral-900 dark:text-neutral-100 tabular-nums">
@@ -236,9 +242,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
         </div>
 
         <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-          <div className="flex items-center justify-between text-neutral-500 dark:text-neutral-400 text-xs font-medium">
-            <span>近 24 小时平均解析时延</span>
-            <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between gap-2 text-neutral-500 dark:text-neutral-400 text-xs font-medium">
+            <span className="min-w-0 truncate">近 24 小时平均解析时延</span>
+            <div className="flex items-center gap-1.5 shrink-0">
               <Popconfirm
                 title="确认重置近 24 小时平均解析时延统计？"
                 actionText="确认重置"
@@ -246,14 +252,14 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
               >
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 transition-colors"
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] whitespace-nowrap shrink-0 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 transition-colors"
                   title="重置平均时延统计"
                 >
-                  <RotateCcw className="w-3 h-3 align-icon" />
+                  <RotateCcw className="w-3 h-3 align-icon shrink-0" />
                   重置
                 </button>
               </Popconfirm>
-              <Clock className="w-4 h-4 text-emerald-500 dark:text-emerald-400 align-icon" />
+              <Clock className="w-4 h-4 text-emerald-500 dark:text-emerald-400 align-icon shrink-0" />
             </div>
           </div>
           <div className="mt-3 text-2xl font-semibold text-neutral-900 dark:text-neutral-100 tabular-nums">
@@ -273,13 +279,13 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
 
       {/* 24 小时动态折线图 */}
       <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
-        <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
-          <div>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
+          <div className="min-w-0">
             <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">近 24 小时查询吞吐与拦截趋势</h4>
             <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">按小时统计总查询量与安全拦截量分布</p>
           </div>
-          <div className="flex items-center gap-2.5">
-            <span className="text-xs font-mono text-neutral-400">时间轴 (24h)</span>
+          <div className="flex items-center justify-between sm:justify-end gap-2.5 shrink-0">
+            <span className="text-xs font-mono text-neutral-400 whitespace-nowrap">时间轴 (24h)</span>
             <Popconfirm
               title="确认重置近 24 小时查询吞吐与拦截趋势数据？"
               actionText="确认重置"
@@ -287,9 +293,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
             >
               <button
                 type="button"
-                className="inline-flex items-center gap-1 min-h-[28px] px-2.5 text-xs text-neutral-600 dark:text-neutral-300 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 rounded transition-colors"
+                className="inline-flex items-center gap-1 min-h-[28px] px-2.5 text-xs whitespace-nowrap shrink-0 text-neutral-600 dark:text-neutral-300 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 rounded transition-colors"
               >
-                <RotateCcw className="w-3 h-3 align-icon" />
+                <RotateCcw className="w-3 h-3 align-icon shrink-0" />
                 重置
               </button>
             </Popconfirm>
@@ -311,16 +317,18 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
           return (
             <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col justify-between">
               <div>
-                <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
-                  <div className="flex items-center gap-2">
-                    <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">高频查询域名</h4>
-                    <span className="text-[11px] font-normal text-neutral-400 font-mono">24h · 前 {Math.min(list.length, MAX_TOP_LIMIT)} 项</span>
+                <div className="flex items-center justify-between gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 whitespace-nowrap">高频查询域名</h4>
+                    <span className="px-1.5 py-0.5 text-[11px] font-normal text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-surface-2 rounded font-mono whitespace-nowrap shrink-0">
+                      24h · {Math.min(list.length, MAX_TOP_LIMIT)}项
+                    </span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
                       type="button"
                       onClick={() => onNavigate('querylog')}
-                      className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline font-medium mr-1"
+                      className="text-xs text-cyan-600 dark:text-cyan-400 hover:underline font-medium whitespace-nowrap shrink-0"
                     >
                       查看日志
                     </button>
@@ -331,34 +339,13 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                     >
                       <button
                         type="button"
-                        className="inline-flex items-center gap-1 min-h-[26px] px-2 text-xs text-neutral-600 dark:text-neutral-300 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 rounded transition-colors"
+                        className="inline-flex items-center gap-1 min-h-[26px] px-2 text-xs whitespace-nowrap shrink-0 text-neutral-600 dark:text-neutral-300 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 rounded transition-colors"
                         title="重置高频查询域名统计"
                       >
-                        <RotateCcw className="w-3 h-3 align-icon" />
+                        <RotateCcw className="w-3 h-3 align-icon shrink-0" />
                         重置
                       </button>
                     </Popconfirm>
-                    {totalPages > 1 && (
-                      <div className="flex items-center gap-1 text-xs text-neutral-500 font-mono">
-                        <button
-                          type="button"
-                          disabled={domainsPage <= 1}
-                          onClick={() => setDomainsPage((p) => Math.max(1, p - 1))}
-                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
-                        >
-                          <ChevronLeft className="w-3.5 h-3.5 align-icon" />
-                        </button>
-                        <span className="tabular-nums">{domainsPage}/{totalPages}</span>
-                        <button
-                          type="button"
-                          disabled={domainsPage >= totalPages}
-                          onClick={() => setDomainsPage((p) => Math.min(totalPages, p + 1))}
-                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
-                        >
-                          <ChevronRight className="w-3.5 h-3.5 align-icon" />
-                        </button>
-                      </div>
-                    )}
                   </div>
                 </div>
                 <div className="space-y-3">
@@ -367,11 +354,11 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                       const pct = Math.round((count / maxCount) * 100);
                       return (
                         <div key={domain} className="group">
-                          <div className="flex items-center justify-between text-xs mb-1">
-                            <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate max-w-[190px]">
+                          <div className="flex items-center justify-between gap-3 text-xs mb-1">
+                            <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate min-w-0 flex-1" title={domain}>
                               {baseIdx + idx + 1}. {domain}
                             </span>
-                            <span className="text-neutral-500 font-mono tabular-nums">{count}</span>
+                            <span className="text-neutral-500 font-mono tabular-nums shrink-0">{count}</span>
                           </div>
                           <div className="w-full bg-neutral-100 dark:bg-surface-3 h-1.5 rounded-full overflow-hidden">
                             <div
@@ -387,6 +374,31 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                   )}
                 </div>
               </div>
+              {totalPages > 1 && (
+                <div className="pt-3 mt-4 border-t border-neutral-100 dark:border-neutral-800/60 flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400 font-mono">
+                  <span className="tabular-nums whitespace-nowrap">第 {domainsPage} / {totalPages} 页</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={domainsPage <= 1}
+                      onClick={() => setDomainsPage((p) => Math.max(1, p - 1))}
+                      className="min-w-[26px] min-h-[26px] flex items-center justify-center rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-surface-2 hover:bg-neutral-100 dark:hover:bg-surface-3 disabled:opacity-30 transition-colors"
+                      title="上一页"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5 align-icon" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={domainsPage >= totalPages}
+                      onClick={() => setDomainsPage((p) => Math.min(totalPages, p + 1))}
+                      className="min-w-[26px] min-h-[26px] flex items-center justify-center rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-surface-2 hover:bg-neutral-100 dark:hover:bg-surface-3 disabled:opacity-30 transition-colors"
+                      title="下一页"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5 align-icon" />
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })()}
@@ -402,16 +414,18 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
           return (
             <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col justify-between">
               <div>
-                <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
-                  <div className="flex items-center gap-2">
-                    <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">高频拦截目标</h4>
-                    <span className="text-[11px] font-normal text-neutral-400 font-mono">24h · 前 {Math.min(list.length, MAX_TOP_LIMIT)} 项</span>
+                <div className="flex items-center justify-between gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 whitespace-nowrap">高频拦截目标</h4>
+                    <span className="px-1.5 py-0.5 text-[11px] font-normal text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-surface-2 rounded font-mono whitespace-nowrap shrink-0">
+                      24h · {Math.min(list.length, MAX_TOP_LIMIT)}项
+                    </span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
                       type="button"
                       onClick={() => onNavigate('filtering')}
-                      className="text-xs text-rose-600 dark:text-rose-400 hover:underline font-medium mr-1"
+                      className="text-xs text-rose-600 dark:text-rose-400 hover:underline font-medium whitespace-nowrap shrink-0"
                     >
                       规则库
                     </button>
@@ -422,34 +436,13 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                     >
                       <button
                         type="button"
-                        className="inline-flex items-center gap-1 min-h-[26px] px-2 text-xs text-neutral-600 dark:text-neutral-300 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 rounded transition-colors"
+                        className="inline-flex items-center gap-1 min-h-[26px] px-2 text-xs whitespace-nowrap shrink-0 text-neutral-600 dark:text-neutral-300 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 rounded transition-colors"
                         title="重置高频拦截目标统计"
                       >
-                        <RotateCcw className="w-3 h-3 align-icon" />
+                        <RotateCcw className="w-3 h-3 align-icon shrink-0" />
                         重置
                       </button>
                     </Popconfirm>
-                    {totalPages > 1 && (
-                      <div className="flex items-center gap-1 text-xs text-neutral-500 font-mono">
-                        <button
-                          type="button"
-                          disabled={blockedPage <= 1}
-                          onClick={() => setBlockedPage((p) => Math.max(1, p - 1))}
-                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
-                        >
-                          <ChevronLeft className="w-3.5 h-3.5 align-icon" />
-                        </button>
-                        <span className="tabular-nums">{blockedPage}/{totalPages}</span>
-                        <button
-                          type="button"
-                          disabled={blockedPage >= totalPages}
-                          onClick={() => setBlockedPage((p) => Math.min(totalPages, p + 1))}
-                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
-                        >
-                          <ChevronRight className="w-3.5 h-3.5 align-icon" />
-                        </button>
-                      </div>
-                    )}
                   </div>
                 </div>
                 <div className="space-y-3">
@@ -458,11 +451,11 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                       const pct = Math.round((count / maxCount) * 100);
                       return (
                         <div key={domain} className="group">
-                          <div className="flex items-center justify-between text-xs mb-1">
-                            <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate max-w-[190px]">
+                          <div className="flex items-center justify-between gap-3 text-xs mb-1">
+                            <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate min-w-0 flex-1" title={domain}>
                               {baseIdx + idx + 1}. {domain}
                             </span>
-                            <span className="text-neutral-500 font-mono tabular-nums">{count}</span>
+                            <span className="text-neutral-500 font-mono tabular-nums shrink-0">{count}</span>
                           </div>
                           <div className="w-full bg-neutral-100 dark:bg-surface-3 h-1.5 rounded-full overflow-hidden">
                             <div
@@ -478,6 +471,31 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                   )}
                 </div>
               </div>
+              {totalPages > 1 && (
+                <div className="pt-3 mt-4 border-t border-neutral-100 dark:border-neutral-800/60 flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400 font-mono">
+                  <span className="tabular-nums whitespace-nowrap">第 {blockedPage} / {totalPages} 页</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={blockedPage <= 1}
+                      onClick={() => setBlockedPage((p) => Math.max(1, p - 1))}
+                      className="min-w-[26px] min-h-[26px] flex items-center justify-center rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-surface-2 hover:bg-neutral-100 dark:hover:bg-surface-3 disabled:opacity-30 transition-colors"
+                      title="上一页"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5 align-icon" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={blockedPage >= totalPages}
+                      onClick={() => setBlockedPage((p) => Math.min(totalPages, p + 1))}
+                      className="min-w-[26px] min-h-[26px] flex items-center justify-center rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-surface-2 hover:bg-neutral-100 dark:hover:bg-surface-3 disabled:opacity-30 transition-colors"
+                      title="下一页"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5 align-icon" />
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })()}
@@ -493,12 +511,14 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
           return (
             <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs flex flex-col justify-between">
               <div>
-                <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
-                  <div className="flex items-center gap-2">
-                    <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">活跃客户端 IP</h4>
-                    <span className="text-[11px] font-normal text-neutral-400 font-mono">24h · 前 {Math.min(list.length, MAX_TOP_LIMIT)} 项</span>
+                <div className="flex items-center justify-between gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800 mb-4">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 whitespace-nowrap">活跃客户端 IP</h4>
+                    <span className="px-1.5 py-0.5 text-[11px] font-normal text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-surface-2 rounded font-mono whitespace-nowrap shrink-0">
+                      24h · {Math.min(list.length, MAX_TOP_LIMIT)}项
+                    </span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <Popconfirm
                       title="确认重置近 24 小时活跃客户端统计？"
                       actionText="确认重置"
@@ -506,34 +526,13 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                     >
                       <button
                         type="button"
-                        className="inline-flex items-center gap-1 min-h-[26px] px-2 text-xs text-neutral-600 dark:text-neutral-300 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 rounded transition-colors"
+                        className="inline-flex items-center gap-1 min-h-[26px] px-2 text-xs whitespace-nowrap shrink-0 text-neutral-600 dark:text-neutral-300 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 rounded transition-colors"
                         title="重置活跃客户端统计"
                       >
-                        <RotateCcw className="w-3 h-3 align-icon" />
+                        <RotateCcw className="w-3 h-3 align-icon shrink-0" />
                         重置
                       </button>
                     </Popconfirm>
-                    {totalPages > 1 && (
-                      <div className="flex items-center gap-1 text-xs text-neutral-500 font-mono">
-                        <button
-                          type="button"
-                          disabled={clientsPage <= 1}
-                          onClick={() => setClientsPage((p) => Math.max(1, p - 1))}
-                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
-                        >
-                          <ChevronLeft className="w-3.5 h-3.5 align-icon" />
-                        </button>
-                        <span className="tabular-nums">{clientsPage}/{totalPages}</span>
-                        <button
-                          type="button"
-                          disabled={clientsPage >= totalPages}
-                          onClick={() => setClientsPage((p) => Math.min(totalPages, p + 1))}
-                          className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-surface-2 disabled:opacity-30 transition-colors"
-                        >
-                          <ChevronRight className="w-3.5 h-3.5 align-icon" />
-                        </button>
-                      </div>
-                    )}
                   </div>
                 </div>
                 <div className="space-y-3">
@@ -543,13 +542,13 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                       const privateSource = isPrivateIp(client);
                       return (
                         <div key={client} className="group">
-                          <div className="flex items-center justify-between text-xs mb-1">
-                            <span className="flex items-center gap-1.5 min-w-0">
-                              <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate max-w-[190px]">
+                          <div className="flex items-center justify-between gap-3 text-xs mb-1">
+                            <span className="flex items-center gap-1.5 min-w-0 flex-1">
+                              <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate min-w-0" title={client}>
                                 {baseIdx + idx + 1}. {client}
                               </span>
                               <span
-                                className={`shrink-0 px-1 py-0.5 text-[10px] rounded border ${
+                                className={`shrink-0 whitespace-nowrap px-1 py-0.5 text-[10px] rounded border ${
                                   privateSource
                                     ? 'bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-400 border-sky-200 dark:border-sky-800/40'
                                     : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/40'
@@ -558,7 +557,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                                 {privateSource ? '内网' : '公网'}
                               </span>
                             </span>
-                            <span className="text-neutral-500 font-mono tabular-nums">{count}</span>
+                            <span className="text-neutral-500 font-mono tabular-nums shrink-0">{count}</span>
                           </div>
                           <div className="w-full bg-neutral-100 dark:bg-surface-3 h-1.5 rounded-full overflow-hidden">
                             <div
@@ -574,6 +573,31 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
                   )}
                 </div>
               </div>
+              {totalPages > 1 && (
+                <div className="pt-3 mt-4 border-t border-neutral-100 dark:border-neutral-800/60 flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400 font-mono">
+                  <span className="tabular-nums whitespace-nowrap">第 {clientsPage} / {totalPages} 页</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={clientsPage <= 1}
+                      onClick={() => setClientsPage((p) => Math.max(1, p - 1))}
+                      className="min-w-[26px] min-h-[26px] flex items-center justify-center rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-surface-2 hover:bg-neutral-100 dark:hover:bg-surface-3 disabled:opacity-30 transition-colors"
+                      title="上一页"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5 align-icon" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={clientsPage >= totalPages}
+                      onClick={() => setClientsPage((p) => Math.min(totalPages, p + 1))}
+                      className="min-w-[26px] min-h-[26px] flex items-center justify-center rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-surface-2 hover:bg-neutral-100 dark:hover:bg-surface-3 disabled:opacity-30 transition-colors"
+                      title="下一页"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5 align-icon" />
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })()}

@@ -69,13 +69,13 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({
     <div className={`p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4 ${className}`}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+          <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 whitespace-nowrap">
             DNS 缓存状态
           </span>
-          <span className="text-xs font-mono text-neutral-400">近 24 小时统计</span>
+          <span className="text-xs font-mono text-neutral-400 whitespace-nowrap">近 24 小时统计</span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {notice && (
             <span className="text-xs text-emerald-600 dark:text-emerald-400 font-mono animate-in fade-in">
               {notice}
@@ -89,7 +89,7 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({
             <button
               type="button"
               disabled={flushing}
-              className="inline-flex items-center min-h-[30px] px-3.5 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/60 border border-amber-200 dark:border-amber-800/60 rounded shadow-2xs transition-colors disabled:opacity-50"
+              className="inline-flex items-center min-h-[30px] px-3.5 text-xs whitespace-nowrap shrink-0 text-amber-700 dark:text-amber-300 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/60 border border-amber-200 dark:border-amber-800/60 rounded shadow-2xs transition-colors disabled:opacity-50"
             >
               {flushing ? '正在清空...' : '清空内存缓存'}
             </button>
@@ -103,7 +103,7 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({
             <button
               type="button"
               disabled={clearing}
-              className="inline-flex items-center min-h-[30px] px-3.5 text-xs text-neutral-700 dark:text-neutral-300 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 rounded shadow-2xs transition-colors disabled:opacity-50"
+              className="inline-flex items-center min-h-[30px] px-3.5 text-xs whitespace-nowrap shrink-0 text-neutral-700 dark:text-neutral-300 bg-white dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-600 rounded shadow-2xs transition-colors disabled:opacity-50"
             >
               {clearing ? '正在重置...' : '重置统计计数'}
             </button>
@@ -111,21 +111,54 @@ export const DnsCacheStatusTable: React.FC<DnsCacheStatusTableProps> = ({
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded border border-neutral-200 dark:border-neutral-800">
+      {/* 移动端免横滑 2x2 指标网格 (< sm) */}
+      <div className="sm:hidden grid grid-cols-2 gap-2 text-xs">
+        {rows.map(({ label, data }) => (
+          <React.Fragment key={label}>
+            <div className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-surface-2/60">
+              <div className="text-[11px] text-neutral-500 dark:text-neutral-400">缓存查询次数</div>
+              <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">
+                {data ? data.requests.toLocaleString() : '0'}
+              </div>
+            </div>
+            <div className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-surface-2/60">
+              <div className="text-[11px] text-neutral-500 dark:text-neutral-400">缓存命中次数</div>
+              <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">
+                {data ? data.hits.toLocaleString() : '0'}
+              </div>
+            </div>
+            <div className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-surface-2/60">
+              <div className="text-[11px] text-neutral-500 dark:text-neutral-400">未命中次数</div>
+              <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">
+                {data ? data.misses.toLocaleString() : '0'}
+              </div>
+            </div>
+            <div className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-surface-2/60">
+              <div className="text-[11px] text-neutral-500 dark:text-neutral-400">命中比例</div>
+              <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+                {data ? `${data.hit_rate.toFixed(2)}%` : '0.00%'}
+              </div>
+            </div>
+          </React.Fragment>
+        ))}
+      </div>
+
+      {/* 平板及桌面端完整横向表格 (>= sm) */}
+      <div className="hidden sm:block overflow-x-auto rounded border border-neutral-200 dark:border-neutral-800">
         <table className="w-full text-xs text-left border-collapse">
           <thead>
             <tr className="bg-neutral-100/70 dark:bg-surface-2 border-b border-neutral-200 dark:border-neutral-800 text-neutral-600 dark:text-neutral-400 font-medium">
-              <th className="py-2.5 px-4 w-28 text-center text-neutral-600 dark:text-neutral-400 font-medium"></th>
+              <th className="py-2.5 px-3 sm:px-4 w-24 sm:w-28 text-center whitespace-nowrap text-neutral-600 dark:text-neutral-400 font-medium"></th>
               <th
-                className="py-2.5 px-4 text-center font-medium cursor-help text-neutral-600 dark:text-neutral-400"
+                className="py-2.5 px-3 sm:px-4 text-center whitespace-nowrap font-medium cursor-help text-neutral-600 dark:text-neutral-400"
                 title="仅统计实际进入缓存路径的查询；私有域名拒绝、规则拦截与本地重写不计入"
               >
                 缓存查询次数
               </th>
-              <th className="py-2.5 px-4 text-center font-medium text-neutral-600 dark:text-neutral-400">缓存命中次数</th>
-              <th className="py-2.5 px-4 text-center font-medium text-neutral-600 dark:text-neutral-400">未命中次数</th>
+              <th className="py-2.5 px-3 sm:px-4 text-center whitespace-nowrap font-medium text-neutral-600 dark:text-neutral-400">缓存命中次数</th>
+              <th className="py-2.5 px-3 sm:px-4 text-center whitespace-nowrap font-medium text-neutral-600 dark:text-neutral-400">未命中次数</th>
               <th
-                className="py-2.5 px-4 text-center font-medium cursor-help text-neutral-600 dark:text-neutral-400"
+                className="py-2.5 px-3 sm:px-4 text-center whitespace-nowrap font-medium cursor-help text-neutral-600 dark:text-neutral-400"
                 title="缓存命中次数 ÷ 缓存查询次数"
               >
                 命中比例

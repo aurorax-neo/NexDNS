@@ -420,13 +420,13 @@ export const UpstreamsPage: React.FC = () => {
               type="button"
               onClick={() => handleBenchmarkGroup(groupKey)}
               disabled={testingGroup === groupKey || testing || servers.length === 0}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-surface-2 text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs whitespace-nowrap shrink-0 rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-surface-2 text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-neutral-100 transition-colors disabled:opacity-50"
               title={`对${title}执行整体并发测速`}
             >
               <Zap className={`w-3.5 h-3.5 align-icon ${testingGroup === groupKey ? 'animate-pulse text-amber-500' : ''}`} />
               {testingGroup === groupKey ? '测速中...' : '整体测速'}
             </button>
-            <span className="text-xs font-mono text-neutral-600 dark:text-neutral-400 bg-neutral-100 dark:bg-surface-2 px-2.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-800">
+            <span className="text-xs font-mono whitespace-nowrap shrink-0 text-neutral-600 dark:text-neutral-400 bg-neutral-100 dark:bg-surface-2 px-2.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-800">
               {servers.length} 个节点
             </span>
           </div>
@@ -444,11 +444,11 @@ export const UpstreamsPage: React.FC = () => {
             return (
               <div
                 key={addr}
-                className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800/80 hover:border-neutral-300 dark:hover:border-neutral-700 transition-colors"
+                className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800/80 hover:border-neutral-300 dark:hover:border-neutral-700 transition-colors"
               >
-                <div className="flex items-center gap-2 min-w-0 flex-1 pr-3 flex-wrap">
+                <div className="flex items-center gap-2 min-w-0 flex-1 sm:pr-3 flex-wrap">
                   <span
-                    className={`px-1.5 py-0.5 text-[10px] font-mono font-bold rounded ${
+                    className={`px-1.5 py-0.5 text-[10px] font-mono font-bold rounded shrink-0 ${
                       isDoh
                         ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-400 border border-purple-200 dark:border-purple-800/40'
                         : isTcp
@@ -458,7 +458,7 @@ export const UpstreamsPage: React.FC = () => {
                   >
                     {proto}
                   </span>
-                  <span className="font-mono text-xs text-neutral-800 dark:text-neutral-200 truncate">
+                  <span className="font-mono text-xs text-neutral-800 dark:text-neutral-200 break-all sm:break-normal sm:truncate">
                     {uri}
                   </span>
                   {hostName && (
@@ -481,9 +481,9 @@ export const UpstreamsPage: React.FC = () => {
                   )}
                 </div>
 
-                <div className="flex items-center gap-3 shrink-0">
+                <div className="flex items-center justify-end gap-2.5 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-neutral-200/70 dark:border-neutral-800/60">
                   {score && (
-                    <div className="flex items-center gap-1.5 font-mono text-xs tabular-nums">
+                    <div className="flex items-center gap-1.5 font-mono text-xs tabular-nums mr-auto sm:mr-0">
                       {score.ok ? (
                         <>
                           <span
@@ -582,7 +582,7 @@ export const UpstreamsPage: React.FC = () => {
             type="button"
             onClick={handleBenchmark}
             disabled={testing}
-            className="inline-flex items-center gap-2 min-h-[38px] px-4 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md transition-colors shadow-xs disabled:opacity-50"
+            className="inline-flex items-center gap-2 min-h-[38px] px-4 text-xs font-medium whitespace-nowrap text-white bg-cyan-600 hover:bg-cyan-500 rounded-md transition-colors shadow-xs disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 align-icon ${testing ? 'animate-spin' : ''}`} />
             {testing ? '正在并发测试...' : '测试上游连通性与时延'}

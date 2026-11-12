@@ -231,7 +231,7 @@ export const FilteringPage: React.FC = () => {
           <button
             type="button"
             onClick={handleTestRule}
-            className="min-h-[38px] px-4 text-xs font-medium bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md text-neutral-800 dark:text-neutral-200"
+            className="min-h-[38px] px-4 text-xs font-medium whitespace-nowrap shrink-0 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md text-neutral-800 dark:text-neutral-200"
           >
             开始测试
           </button>

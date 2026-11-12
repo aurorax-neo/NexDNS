@@ -88,11 +88,11 @@ export const RewritesPage: React.FC = () => {
             配置本地专用的 A / AAAA / CNAME 权威映射。优先应答指定域名，无需依赖外部公共上游。
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={handleFlushCache}
-            className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-950/60 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 rounded-md transition-colors shadow-xs"
+            className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 text-xs font-medium whitespace-nowrap text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-950/60 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 rounded-md transition-colors shadow-xs"
           >
             <RotateCcw className="w-3.5 h-3.5 align-icon" />
             {flushSuccess ? '已清空缓存' : '清空内存缓存'}
@@ -100,7 +100,7 @@ export const RewritesPage: React.FC = () => {
           <button
             type="button"
             onClick={() => setIsAddModalOpen(true)}
-            className="inline-flex items-center gap-1.5 min-h-[38px] px-4 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md transition-colors shadow-xs"
+            className="inline-flex items-center gap-1.5 min-h-[38px] px-4 text-xs font-medium whitespace-nowrap text-white bg-cyan-600 hover:bg-cyan-500 rounded-md transition-colors shadow-xs"
           >
             <Plus className="w-3.5 h-3.5 align-icon" />
             添加重写记录
@@ -110,8 +110,8 @@ export const RewritesPage: React.FC = () => {
 
       {/* 筛选与记录列表卡片 */}
       <div className="rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs overflow-hidden">
-        <div className="p-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between gap-4">
-          <div className="relative flex-1 max-w-md">
+        <div className="p-4 border-b border-neutral-200 dark:border-neutral-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-4">
+          <div className="relative flex-1 w-full sm:max-w-md">
             <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2 align-icon" />
             <input
               type="text"
@@ -121,7 +121,7 @@ export const RewritesPage: React.FC = () => {
               className="w-full min-h-[36px] pl-9 pr-3 text-xs bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:border-cyan-500 font-mono"
             />
           </div>
-          <span className="text-xs text-neutral-500 font-mono">共 {filteredRewrites.length} 条映射记录</span>
+          <span className="text-xs text-neutral-500 font-mono whitespace-nowrap shrink-0">共 {filteredRewrites.length} 条映射记录</span>
         </div>
 
         <div className="divide-y divide-neutral-200 dark:divide-neutral-800/60">
@@ -129,11 +129,11 @@ export const RewritesPage: React.FC = () => {
             filteredRewrites.map((r) => (
               <div
                 key={r.id}
-                className="p-4 flex items-center justify-between hover:bg-neutral-50 dark:hover:bg-surface-2/40 transition-colors"
+                className="p-4 flex items-center justify-between gap-3 hover:bg-neutral-50 dark:hover:bg-surface-2/40 transition-colors"
               >
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
                   <span
-                    className={`px-2 py-0.5 text-xs font-mono font-bold rounded ${
+                    className={`px-2 py-0.5 text-xs font-mono font-bold rounded shrink-0 ${
                       r.record_type === 'A'
                         ? 'bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-400 border border-cyan-200 dark:border-cyan-800/40'
                         : r.record_type === 'AAAA'
@@ -143,13 +143,13 @@ export const RewritesPage: React.FC = () => {
                   >
                     {r.record_type}
                   </span>
-                  <div>
-                    <div className="text-sm font-mono font-medium text-neutral-900 dark:text-neutral-100">{r.domain}</div>
-                    <div className="text-xs font-mono text-neutral-500 dark:text-neutral-400 mt-0.5">&rarr; {r.value}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-mono font-medium text-neutral-900 dark:text-neutral-100 truncate">{r.domain}</div>
+                    <div className="text-xs font-mono text-neutral-500 dark:text-neutral-400 mt-0.5 truncate">&rarr; {r.value}</div>
                   </div>
                 </div>
 
-                <div>
+                <div className="shrink-0">
                   <Popconfirm
                     title="确认删除该 DNS 重写规则？"
                     actionText="确认删除"

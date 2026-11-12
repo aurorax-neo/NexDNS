@@ -42,21 +42,10 @@ pub struct ProxyItem {
 pub struct ProxyConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socks5: Option<String>,
-    #[serde(default = "default_proxy_list")]
+    #[serde(default)]
     pub list: Vec<ProxyItem>,
-}
-
-fn default_proxy_list() -> Vec<ProxyItem> {
-    vec![
-        ProxyItem {
-            id: "local_clash".to_string(),
-            name: "本地 Clash/Mihomo 节点".to_string(),
-            addr: "socks5://127.0.0.1:7890".to_string(),
-            is_default: true,
-        }
-    ]
 }
 
 impl ProxyConfig {
@@ -96,8 +85,8 @@ impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            socks5: Some("socks5://127.0.0.1:7890".to_string()),
-            list: default_proxy_list(),
+            socks5: None,
+            list: Vec::new(),
         }
     }
 }
@@ -253,11 +242,7 @@ fn default_bootstrap_dns() -> Vec<String> {
     vec![
         "https://223.5.5.5/dns-query#sni=dns.alidns.com".to_string(),
         "https://1.12.12.12/dns-query#sni=doh.pub".to_string(),
-        "https://8.8.8.8/dns-query#sni=dns.google".to_string(),
-        "https://1.1.1.1/dns-query".to_string(),
-        "https://1.0.0.1/dns-query".to_string(),
-        "223.5.5.5".to_string(),
-        "119.29.29.29".to_string(),
+        "https://218.30.118.6/dns-query#sni=doh.360.cn".to_string(),
     ]
 }
 
@@ -266,19 +251,19 @@ impl Default for UpstreamsConfig {
         Self {
             bootstrap_dns: default_bootstrap_dns(),
             mainland: vec![
-                "udp://223.5.5.5:53".to_string(),
-                "udp://119.29.29.29:53".to_string(),
-                "https://dns.alidns.com/dns-query".to_string(),
+                "https://1.12.12.12/dns-query#sni=doh.pub".to_string(),
+                "https://101.226.4.6/dns-query#sni=doh.360.cn".to_string(),
+                "https://223.5.5.5/dns-query#sni=dns.alidns.com".to_string(),
             ],
             gfw: vec![
-                "https://dns.google/dns-query".to_string(),
-                "https://cloudflare-dns.com/dns-query".to_string(),
-                "udp://8.8.8.8:53".to_string(),
+                "https://8.8.8.8/dns-query#sni=dns.google&proxy=default".to_string(),
+                "https://94.140.14.140/dns-query#sni=dns.adguard.com&proxy=default".to_string(),
+                "https://1.1.1.1/dns-query#proxy=default".to_string(),
             ],
             overseas: vec![
-                "udp://1.1.1.1:53".to_string(),
-                "https://1.1.1.1/dns-query".to_string(),
-                "udp://8.8.4.4:53".to_string(),
+                "https://1.1.1.1/dns-query#proxy=none".to_string(),
+                "https://8.8.8.8/dns-query#sni=dns.google&proxy=none".to_string(),
+                "https://168.95.1.1/dns-query#sni=dns.hinet.net&proxy=none".to_string(),
             ],
             timeout_ms: 2000,
         }
@@ -428,47 +413,7 @@ impl Default for AppConfig {
             routing: RoutingConfig::default(),
             logging: LoggingConfig::default(),
             rules_update: RulesUpdateConfig::default(),
-            upstreams: UpstreamsConfig {
-                bootstrap_dns: vec![
-                    "https://223.5.5.5/dns-query#sni=dns.alidns.com".to_string(),
-                    "https://1.12.12.12/dns-query#sni=doh.pub".to_string(),
-                    "https://8.8.8.8/dns-query#sni=dns.google".to_string(),
-                    "https://1.1.1.1/dns-query".to_string(),
-                    "https://1.0.0.1/dns-query".to_string(),
-                    "223.5.5.5".to_string(),
-                    "119.29.29.29".to_string(),
-                ],
-                mainland: vec![
-                    "https://1.12.12.12/dns-query#sni=doh.pub".to_string(),
-                    "https://120.53.53.53/dns-query#sni=doh.pub".to_string(),
-                    "https://101.226.4.6/dns-query#sni=doh.360.cn".to_string(),
-                    "https://218.30.118.6/dns-query#sni=doh.360.cn".to_string(),
-                    "https://223.5.5.5/dns-query#sni=dns.alidns.com".to_string(),
-                    "https://223.6.6.6/dns-query#sni=dns.alidns.com".to_string(),
-                    "udp://223.5.5.5:53".to_string(),
-                    "udp://119.29.29.29:53".to_string(),
-                ],
-                gfw: vec![
-                    "https://8.8.8.8/dns-query#sni=dns.google&proxy=default".to_string(),
-                    "https://8.8.4.4/dns-query#sni=dns.google&proxy=default".to_string(),
-                    "https://94.140.14.140/dns-query#sni=dns.adguard.com&proxy=default".to_string(),
-                    "https://94.140.14.141/dns-query#sni=dns.adguard.com&proxy=default".to_string(),
-                    "https://route.aorz.kdns.fr/dns-query#proxy=default".to_string(),
-                    "https://1.1.1.1/dns-query#proxy=default".to_string(),
-                    "https://1.0.0.1/dns-query#proxy=default".to_string(),
-                ],
-                overseas: vec![
-                    "https://1.1.1.1/dns-query#proxy=default".to_string(),
-                    "https://1.0.0.1/dns-query#proxy=default".to_string(),
-                    "https://8.8.8.8/dns-query#sni=dns.google&proxy=default".to_string(),
-                    "https://168.95.1.1/dns-query#sni=dns.hinet.net&proxy=default".to_string(),
-                    "https://168.95.192.1/dns-query#sni=dns.hinet.net&proxy=default".to_string(),
-                    "https://77.88.8.8/dns-query#proxy=default".to_string(),
-                    "https://77.88.8.1/dns-query#proxy=default".to_string(),
-                    "https://route.aorz.kdns.fr/dns-query#proxy=default".to_string(),
-                ],
-                timeout_ms: 2000,
-            },
+            upstreams: UpstreamsConfig::default(),
             rewrites: Vec::new(),
             adblock_rules: Vec::new(),
             routing_rules: Vec::new(),

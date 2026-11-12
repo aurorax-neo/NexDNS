@@ -257,11 +257,11 @@ export const RoutingPage: React.FC = () => {
             支持多文件分组配置。不同规则文件可自由划分至大陆直连组、代理过滤组、私网组或中国 IP 库，支持独立启停与行级查看编辑。
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => setIsAddModalOpen(true)}
-            className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 text-xs font-medium text-neutral-800 dark:text-neutral-200 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md shadow-xs transition-colors"
+            className="inline-flex items-center gap-1.5 min-h-[38px] px-3.5 text-xs font-medium whitespace-nowrap text-neutral-800 dark:text-neutral-200 bg-neutral-100 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 rounded-md shadow-xs transition-colors"
           >
             <Plus className="w-3.5 h-3.5 align-icon" />
             添加规则文件
@@ -270,7 +270,7 @@ export const RoutingPage: React.FC = () => {
             type="button"
             onClick={handleUpdateAll}
             disabled={updatingAll}
-            className="inline-flex items-center gap-2 min-h-[38px] px-4 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md shadow-xs disabled:opacity-50 transition-colors"
+            className="inline-flex items-center gap-2 min-h-[38px] px-4 text-xs font-medium whitespace-nowrap text-white bg-cyan-600 hover:bg-cyan-500 rounded-md shadow-xs disabled:opacity-50 transition-colors"
           >
             <RefreshCw className={`w-3.5 h-3.5 align-icon ${updatingAll ? 'animate-spin' : ''}`} />
             {updatingAll ? '正在更新中...' : '一键全量更新规则集'}

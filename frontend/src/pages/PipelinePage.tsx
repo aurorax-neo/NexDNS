@@ -91,7 +91,7 @@ export const PipelinePage: React.FC = () => {
       </div>
 
       {/* 拓扑流转主链卡片 */}
-      <div className="p-6 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
+      <div className="p-4 sm:p-6 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs">
         <div className="space-y-4">
           {nodes.map((node, index) => {
             const isLast = index === nodes.length - 1;
@@ -99,25 +99,25 @@ export const PipelinePage: React.FC = () => {
             return (
               <div key={node.id} className="relative">
                 <div
-                  className={`flex items-center justify-between p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border transition-all duration-150 ${
+                  className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border transition-all duration-150 ${
                     node.enabled
                       ? 'border-neutral-200 dark:border-neutral-800/80 hover:border-neutral-300 dark:hover:border-neutral-700'
                       : 'opacity-60 border-dashed border-neutral-300 dark:border-neutral-800'
                   }`}
                 >
                   <div
-                    className="flex items-center gap-4 cursor-pointer flex-1"
+                    className="flex items-start sm:items-center gap-3.5 sm:gap-4 cursor-pointer flex-1 min-w-0"
                     onClick={() => setSelectedNode(node)}
                   >
                     <div className="p-2.5 rounded-md bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shrink-0 shadow-2xs">
                       {getNodeIcon(node.id)}
                     </div>
-                    <div>
-                      <div className="flex items-center gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 hover:text-cyan-600 dark:hover:text-cyan-400 transition-colors">
                           {node.name}
                         </span>
-                        <span className="px-1.5 py-0.5 text-[10px] font-mono uppercase rounded bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-300 dark:border-neutral-700/50">
+                        <span className="px-1.5 py-0.5 text-[10px] font-mono uppercase rounded bg-neutral-200 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-300 dark:border-neutral-700/50 shrink-0">
                           {node.stage}
                         </span>
                       </div>
@@ -125,11 +125,11 @@ export const PipelinePage: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-4 pl-4 border-l border-neutral-200 dark:border-neutral-800">
+                  <div className="flex items-center justify-between sm:justify-end gap-4 pt-2.5 sm:pt-0 sm:pl-4 border-t sm:border-t-0 sm:border-l border-neutral-200 dark:border-neutral-800 shrink-0">
                     <button
                       type="button"
                       onClick={() => setSelectedNode(node)}
-                      className="text-xs text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 transition-colors"
+                      className="text-xs whitespace-nowrap shrink-0 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200 transition-colors"
                     >
                       规则配置 &rarr;
                     </button>

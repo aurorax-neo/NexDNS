@@ -47,7 +47,7 @@ export const Popconfirm: React.FC<PopconfirmProps> = ({
 
   useEffect(() => {
     if (!visible) return;
-    const handleClickOutside = (e: MouseEvent) => {
+    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
       const target = e.target as Node;
       if (
         containerRef.current?.contains(target) ||
@@ -66,11 +66,13 @@ export const Popconfirm: React.FC<PopconfirmProps> = ({
       updatePosition();
     };
     document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside, { passive: true });
     document.addEventListener('keydown', handleKeyDown);
     window.addEventListener('scroll', handleScrollOrResize, true);
     window.addEventListener('resize', handleScrollOrResize);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
       document.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('scroll', handleScrollOrResize, true);
       window.removeEventListener('resize', handleScrollOrResize);
@@ -92,7 +94,7 @@ export const Popconfirm: React.FC<PopconfirmProps> = ({
             ref={popoverRef}
             style={{ top: `${coords.top}px`, left: `${coords.left}px` }}
             onClick={(e) => e.stopPropagation()}
-            className="fixed z-[120] w-64 p-3.5 bg-white dark:bg-surface-2 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-2xl text-left animate-in fade-in-50 zoom-in-95 duration-100"
+            className="fixed z-[120] w-[min(16rem,calc(100vw-16px))] p-3.5 bg-white dark:bg-surface-2 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-2xl text-left animate-in fade-in-50 zoom-in-95 duration-100"
           >
             <div className="flex items-start gap-2 text-xs text-neutral-800 dark:text-neutral-200 mb-3 leading-relaxed">
               <AlertCircle className="w-4 h-4 text-amber-500 dark:text-amber-400 shrink-0 mt-0.5 align-icon" />
@@ -102,7 +104,7 @@ export const Popconfirm: React.FC<PopconfirmProps> = ({
               <button
                 type="button"
                 onClick={() => setVisible(false)}
-                className="min-h-[30px] px-2.5 text-xs text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200 rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-surface-1 transition-colors"
+                className="min-h-[30px] px-2.5 text-xs whitespace-nowrap text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200 rounded border border-neutral-300 dark:border-neutral-700 bg-neutral-100 dark:bg-surface-1 transition-colors"
               >
                 取消
               </button>
@@ -112,7 +114,7 @@ export const Popconfirm: React.FC<PopconfirmProps> = ({
                   onConfirm();
                   setVisible(false);
                 }}
-                className="min-h-[30px] px-2.5 text-xs text-white bg-red-600 hover:bg-red-500 rounded font-medium transition-colors shadow-2xs"
+                className="min-h-[30px] px-2.5 text-xs whitespace-nowrap text-white bg-red-600 hover:bg-red-500 rounded font-medium transition-colors shadow-2xs"
               >
                 {actionText}
               </button>

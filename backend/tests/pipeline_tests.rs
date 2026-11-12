@@ -118,6 +118,10 @@ fn test_proxy_config_lookup() {
     use nexdns::config::{ProxyConfig, ProxyItem};
 
     let mut cfg = ProxyConfig::default();
+    assert!(!cfg.enabled);
+    assert!(cfg.socks5.is_none());
+    assert!(cfg.list.is_empty());
+
     cfg.enabled = true;
     cfg.list = vec![
         ProxyItem {

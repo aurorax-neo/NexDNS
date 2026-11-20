@@ -181,8 +181,8 @@ export const PipelinePage: React.FC = () => {
                     高性能智能缓存说明
                   </h4>
                   <div className="text-xs text-neutral-700 dark:text-neutral-300 space-y-2 leading-relaxed">
-                    <p>• <strong>标准 TTL 生命周期</strong>: 按照上游权威解析真实 TTL 缓存（默认 60s~120s），未过期秒返，过期自动回源拉取最新解析，杜绝陈旧失效 IP。</p>
-                    <p>• <strong>Prefetch-Domain (智能预取)</strong>: 高频访问热点域名在 TTL 剩余低于 20% 时由内核自动发起异步预取刷新。</p>
+                    <p>• <strong>标准 TTL 生命周期</strong>: 按照上游权威解析真实 TTL 缓存（默认 60s~1800s），未过期秒返，过期自动回源拉取最新解析，杜绝高频无效回源。</p>
+                    <p>• <strong>Prefetch-Domain (安全静默预取)</strong>: 高频访问热点域名在 TTL 剩余低于 20% 时由内核自动复用完整分流 + 防污染 + 下游地址族过滤流水线静默预取刷新，绝不污染干净缓存。</p>
                   </div>
                 </div>
 
@@ -244,6 +244,13 @@ export const PipelinePage: React.FC = () => {
                     <span className="text-amber-600 dark:text-amber-400 font-semibold">&rarr; 智能回退 + 降级保底</span>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {selectedNode.id === 'anti_pollution' && (
+              <div className="p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-2 text-xs text-neutral-700 dark:text-neutral-300 leading-relaxed">
+                <p>• <strong>中国 IP 段真实性校验</strong>: 当未命中显式规则的域名先向大陆上游探测时，内核自动比对返回 IP 是否属于 <code className="font-mono">ipv4_china.txt</code> / <code className="font-mono">ipv6_china.txt</code>。</p>
+                <p>• <strong>自动丢弃污染并回退</strong>: 若返回非中国 IP（疑似被抢答投毒或该域名本属境外服务），立即丢弃大陆污染响应并切换至 GFW / 海外纯净加密 DoH 组。</p>
               </div>
             )}
 

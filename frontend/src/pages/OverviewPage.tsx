@@ -97,7 +97,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 whitespace-nowrap">服务正常运行中</span>
               <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/40 whitespace-nowrap shrink-0">
-                v{status?.version || '0.1.9'}
+                v{status?.version || '0.1.10'}
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
@@ -142,6 +142,33 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
           </button>
         </div>
       </div>
+
+      {/* 智能分流未开启提醒横幅 */}
+      {status && status.routing_enabled === false && (
+        <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-lg bg-amber-50/90 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800/60 text-xs">
+          <div className="text-amber-900 dark:text-amber-200">
+            <span className="font-semibold">提示：智能分流调度引擎当前处于关闭状态</span>
+            <span className="ml-2 text-amber-800 dark:text-amber-300">
+              分流规则集当前未参与调度，所有公网查询均直连大陆上游解析。开启后即可启用 Direct/Proxy 智能分流与非中国 IP 防污染回退。
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                await api.togglePipelineStage('router', true);
+                await fetchData();
+                setSnackbarMessage('已开启智能分流调度引擎！');
+              } catch (e: any) {
+                setSnackbarMessage(e?.message || '开启失败，请检查境外上游配置');
+              }
+            }}
+            className="shrink-0 min-h-[32px] px-3.5 font-medium rounded-md bg-amber-600 hover:bg-amber-500 text-white transition-colors"
+          >
+            一键开启智能分流
+          </button>
+        </div>
+      )}
 
       {/* 核心指标 KPI 卡片矩阵 (近 24 小时) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

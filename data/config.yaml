@@ -1,6 +1,14 @@
 dns:
+  enabled: true
   port: 53
+  listen_mode: dual
   connect_ip_version: dual
+  response_mode: dual
+  doh_enabled: true
+  doh_port: 8053
+  doh_path: /dns-query
+  block_type: zero_ip
+  block_ttl: 60
 web:
   port: 3000
 proxy:
@@ -10,12 +18,28 @@ cache:
   size: 10000
   prefetch: true
   min_ttl: 60
-  max_ttl: 120
+  max_ttl: 1800
 speed_check:
   enabled: true
   timeout_ms: 400
   cache_mins: 5
-anti_pollution: true
+  mode: tcp_80_443
+  direct_only: true
+routing:
+  enabled: true
+  anti_pollution: true
+  fallback_timeout_ms: 1500
+  custom_direct_domains: []
+  custom_proxy_domains: []
+logging:
+  enabled: true
+  retention_mins: 60
+  max_disk_usage_percent: 90
+  min_free_disk_mb: 512
+  max_db_size_mb: 512
+rules_update:
+  auto_update: true
+  interval_mins: 1440
 upstreams:
   bootstrap_dns:
   - https://223.5.5.5/dns-query#sni=dns.alidns.com

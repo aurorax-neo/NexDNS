@@ -56,7 +56,31 @@ export const SettingsPage: React.FC = () => {
         api.getStatus().catch(() => null),
       ]);
       if (settingsRes.cache.max_ttl === undefined || settingsRes.cache.max_ttl === null) {
-        settingsRes.cache.max_ttl = 120;
+        settingsRes.cache.max_ttl = 1800;
+      }
+      if (!settingsRes.routing) {
+        settingsRes.routing = {
+          enabled: true,
+          anti_pollution: settingsRes.anti_pollution ?? true,
+          fallback_timeout_ms: 1500,
+          custom_direct_domains: [],
+          custom_proxy_domains: [],
+        };
+      } else {
+        settingsRes.routing = {
+          enabled: settingsRes.routing.enabled ?? true,
+          anti_pollution: settingsRes.routing.anti_pollution ?? settingsRes.anti_pollution ?? true,
+          fallback_timeout_ms: settingsRes.routing.fallback_timeout_ms || 1500,
+          custom_direct_domains: settingsRes.routing.custom_direct_domains || [],
+          custom_proxy_domains: settingsRes.routing.custom_proxy_domains || [],
+        };
+      }
+      delete settingsRes.anti_pollution;
+      if (settingsRes.speed_check.direct_only === undefined) {
+        settingsRes.speed_check.direct_only = true;
+      }
+      if (!settingsRes.speed_check.mode) {
+        settingsRes.speed_check.mode = 'tcp_80_443';
       }
       if (!settingsRes.rules_update) {
         settingsRes.rules_update = { auto_update: true, interval_mins: 1440 };
@@ -411,20 +435,38 @@ export const SettingsPage: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">监听模式</label>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">入站监听模式</label>
                   <CustomSelect
                     options={[
-                      { value: 'dual', label: 'IPv4 + IPv6' },
-                      { value: 'ipv4', label: 'IPv4' },
-                      { value: 'ipv6', label: 'IPv6' },
+                      { value: 'dual', label: 'IPv4 + IPv6 双栈' },
+                      { value: 'ipv4', label: '仅 IPv4' },
+                      { value: 'ipv6', label: '仅 IPv6' },
                     ]}
-                    value={settings.dns.listen_mode || settings.dns.connect_ip_version || 'dual'}
+                    value={settings.dns.listen_mode || 'dual'}
                     onChange={(v) =>
                       setSettings({
                         ...settings,
-                        dns: { ...settings.dns, listen_mode: v, connect_ip_version: v },
+                        dns: { ...settings.dns, listen_mode: v },
+                      })
+                    }
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">上游连接协议栈</label>
+                  <CustomSelect
+                    options={[
+                      { value: 'dual', label: 'IPv4 + IPv6 自动' },
+                      { value: 'ipv4', label: '强制仅 IPv4 出站' },
+                      { value: 'ipv6', label: '强制仅 IPv6 出站' },
+                    ]}
+                    value={settings.dns.connect_ip_version || 'dual'}
+                    onChange={(v) =>
+                      setSettings({
+                        ...settings,
+                        dns: { ...settings.dns, connect_ip_version: v },
                       })
                     }
                     className="w-full"
@@ -435,7 +477,7 @@ export const SettingsPage: React.FC = () => {
                   <CustomSelect
                     options={[
                       { value: 'dual', label: 'IPv4 + IPv6' },
-                      { value: 'ipv4_only', label: '仅 IPv4' },
+                      { value: 'ipv4_only', label: '仅 IPv4 (无 IPv6 出口必开)' },
                       { value: 'ipv6_only', label: '仅 IPv6' },
                     ]}
                     value={settings.dns.response_mode || 'dual'}
@@ -449,6 +491,42 @@ export const SettingsPage: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {/* IPv4 单栈环境一键优化提示 */}
+              {settings.dns.response_mode === 'ipv4_only' ? (
+                <div className="flex items-center justify-between gap-3 p-3 rounded-md bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/50 text-xs">
+                  <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 align-icon" />
+                    <span>
+                      <strong>已开启无 IPv6 出口必开项</strong>：AAAA 查询在缓存前置阶段 0.05ms 本地返回带 SOA 的 NODATA，消除双栈退避卡顿并立省 50% 上游查询。
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-md bg-cyan-50/70 dark:bg-cyan-950/30 border border-cyan-200 dark:border-cyan-800/50 text-xs">
+                  <div className="text-cyan-900 dark:text-cyan-200 flex-1 min-w-[220px]">
+                    <span className="font-semibold">无 IPv6 出口必开推荐：</span>
+                    若局域网或代理无公网 IPv6 出口，强烈建议开启「仅 IPv4」返回模式，0.05ms 本地短路 AAAA 请求，立省 50% 上游查询与连接开销。
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSettings({
+                        ...settings,
+                        dns: {
+                          ...settings.dns,
+                          response_mode: 'ipv4_only',
+                          connect_ip_version: 'ipv4',
+                        },
+                      });
+                      setSnackbarMessage('已一键开启 IPv4 单栈极速优化 (仅返回 IPv4 + 强制 IPv4 出站)');
+                    }}
+                    className="shrink-0 min-h-[30px] px-3 text-xs font-medium rounded bg-cyan-600 hover:bg-cyan-500 text-white transition-colors"
+                  >
+                    一键开启仅 IPv4 优化
+                  </button>
+                </div>
+              )}
 
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -668,6 +746,47 @@ export const SettingsPage: React.FC = () => {
                 />
               </div>
 
+              <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                    仅对国内/直连结果测速 (跳过 GFW / 海外代理组)
+                  </span>
+                  <span className="text-[11px] text-neutral-500">
+                    避免在无透明代理环境下直连探测境外 IP 引发全量超时与无效探测包
+                  </span>
+                </div>
+                <Switch
+                  checked={settings.speed_check.direct_only ?? true}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      speed_check: { ...settings.speed_check, direct_only: v },
+                    })
+                  }
+                />
+              </div>
+
+              <div>
+                <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
+                  探测端口模式 (mode)
+                </label>
+                <CustomSelect
+                  options={[
+                    { value: 'tcp_80_443', label: 'TCP 80 + 443 双端口竞速 (推荐)' },
+                    { value: 'tcp_443', label: '仅 TCP 443 (HTTPS)' },
+                    { value: 'tcp_80', label: '仅 TCP 80 (HTTP)' },
+                  ]}
+                  value={settings.speed_check.mode || 'tcp_80_443'}
+                  onChange={(v) =>
+                    setSettings({
+                      ...settings,
+                      speed_check: { ...settings.speed_check, mode: v },
+                    })
+                  }
+                  className="w-full"
+                />
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
@@ -787,8 +906,80 @@ export const SettingsPage: React.FC = () => {
           </div>
           </div>
 
-          {/* 右列: 缓存、安全分流、日志策略与密码修改 */}
+          {/* 右列: 分流防污染、缓存、日志策略与密码修改 */}
           <div className="space-y-6">
+            {/* 智能分流与防污染策略 (Routing & Anti-Pollution) */}
+            <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+              <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+                <Shield className="w-4 h-4 text-emerald-600 dark:text-emerald-400 align-icon" />
+                <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">智能分流与防 DNS 污染策略</h4>
+              </div>
+              <div className="space-y-3 text-xs">
+                <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                  <div>
+                    <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                      启用智能分流调度引擎 (routing.enabled)
+                    </span>
+                    <span className="text-[11px] text-neutral-500">
+                      按自定义覆盖、Direct 大陆直连、Proxy 境外代理与未命中智能回退调度解析
+                    </span>
+                  </div>
+                  <Switch
+                    checked={settings.routing?.enabled ?? true}
+                    onChange={(v) =>
+                      setSettings({
+                        ...settings,
+                        routing: { ...settings.routing, enabled: v },
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
+                  <div>
+                    <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
+                      非中国 IP 防污染自动探测 (routing.anti_pollution)
+                    </span>
+                    <span className="text-[11px] text-neutral-500">
+                      未命中规则的大陆回包若不含中国 IP，自动丢弃污染结果并切换境外纯净加密组
+                    </span>
+                  </div>
+                  <Switch
+                    checked={settings.routing?.anti_pollution ?? true}
+                    onChange={(v) =>
+                      setSettings({
+                        ...settings,
+                        routing: { ...settings.routing, anti_pollution: v },
+                      })
+                    }
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
+                    未命中域名大陆探测回退超时 (fallback_timeout_ms)
+                  </label>
+                  <input
+                    type="number"
+                    min={100}
+                    max={30000}
+                    step={100}
+                    value={settings.routing?.fallback_timeout_ms ?? 1500}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        routing: {
+                          ...settings.routing,
+                          fallback_timeout_ms: Math.max(100, parseInt(e.target.value, 10) || 1500),
+                        },
+                      })
+                    }
+                    className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+
             {/* 2. 智能缓存设置 (SmartCache) */}
           <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
@@ -829,11 +1020,11 @@ export const SettingsPage: React.FC = () => {
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">最大 TTL (秒)</label>
                   <input
                     type="number"
-                    value={settings.cache.max_ttl || 120}
+                    value={settings.cache.max_ttl || 1800}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
-                        cache: { ...settings.cache, max_ttl: parseInt(e.target.value) || 120 },
+                        cache: { ...settings.cache, max_ttl: parseInt(e.target.value) || 1800 },
                       })
                     }
                     className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"

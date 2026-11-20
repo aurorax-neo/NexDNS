@@ -25,6 +25,11 @@ export const RoutingPage: React.FC = () => {
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<string>('all');
 
+  // Custom persistent override domains (highest priority, never overwritten by auto_update)
+  const [customProxyText, setCustomProxyText] = useState('');
+  const [customDirectText, setCustomDirectText] = useState('');
+  const [savingCustom, setSavingCustom] = useState(false);
+
   // Drawer view/edit state
   const [selectedFile, setSelectedFile] = useState<RuleFileInfo | null>(null);
   const [fileContent, setFileContent] = useState('');
@@ -58,9 +63,43 @@ export const RoutingPage: React.FC = () => {
     }
   };
 
+  const fetchCustomOverrides = async () => {
+    try {
+      const res = await api.getCustomRoutingDomains();
+      setCustomProxyText((res.custom_proxy_domains || []).join('\n'));
+      setCustomDirectText((res.custom_direct_domains || []).join('\n'));
+    } catch (e) {
+      console.error('Failed to load custom routing domains', e);
+    }
+  };
+
   useEffect(() => {
     fetchRules();
+    fetchCustomOverrides();
   }, []);
+
+  const handleSaveCustomOverrides = async () => {
+    setSavingCustom(true);
+    try {
+      const parseLines = (txt: string) =>
+        txt
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0 && !l.startsWith('#'));
+      const custom_proxy_domains = parseLines(customProxyText);
+      const custom_direct_domains = parseLines(customDirectText);
+      await api.updateCustomRoutingDomains({
+        custom_direct_domains,
+        custom_proxy_domains,
+      });
+      await fetchCustomOverrides();
+      setSnackbarMessage('自定义高优先级强制分流规则已持久化至 config.yaml 并自动刷新缓存！');
+    } catch (e: any) {
+      setSnackbarMessage(e?.message || '保存自定义覆盖规则失败');
+    } finally {
+      setSavingCustom(false);
+    }
+  };
 
   const handleUpdateAll = async () => {
     setUpdatingAll(true);
@@ -275,6 +314,70 @@ export const RoutingPage: React.FC = () => {
             <RefreshCw className={`w-3.5 h-3.5 align-icon ${updatingAll ? 'animate-spin' : ''}`} />
             {updatingAll ? '正在更新中...' : '一键全量更新规则集'}
           </button>
+        </div>
+      </div>
+
+      {/* 自定义高优先级分流覆盖面板（独立于自动更新文件，持久化于 config.yaml） */}
+      <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+          <div>
+            <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 flex items-center gap-2">
+              自定义强制分流覆盖规则
+              <span className="px-2 py-0.5 text-[11px] font-medium rounded bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/40">
+                最高优先级 · 免受自动更新覆盖
+              </span>
+            </h4>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+              独立保存在 <code className="font-mono">config.yaml</code> 中，优先级高于 <code className="font-mono">direct.txt</code> / <code className="font-mono">proxy.txt</code>（例如解决托管于 Cloudflare 的 <code className="font-mono">.cn</code> 域名被强制直连问题）。支持每行一条（如 <code className="font-mono">fd.myzwq.cn</code>、<code className="font-mono">+.example.cn</code>、<code className="font-mono">full:sub.domain.com</code>）。
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={savingCustom}
+            onClick={handleSaveCustomOverrides}
+            className="inline-flex items-center gap-1.5 min-h-[36px] px-4 text-xs font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-md shadow-xs disabled:opacity-50 transition-colors"
+          >
+            <Save className="w-3.5 h-3.5 align-icon" />
+            {savingCustom ? '正在保存...' : '保存自定义覆盖并刷新缓存'}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="font-medium text-rose-700 dark:text-rose-400">
+                强制走境外代理组 (custom_proxy_domains)
+              </label>
+              <span className="font-mono text-[11px] text-neutral-500">
+                {customProxyText.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length} 条
+              </span>
+            </div>
+            <textarea
+              rows={5}
+              value={customProxyText}
+              onChange={(e) => setCustomProxyText(e.target.value)}
+              placeholder={"# 每行一个域名规则，优先转发至 GFW/境外代理组\nfd.myzwq.cn\n+.workers.dev"}
+              className="w-full p-3 font-mono text-xs bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="font-medium text-cyan-700 dark:text-cyan-400">
+                强制走大陆直连组 (custom_direct_domains)
+              </label>
+              <span className="font-mono text-[11px] text-neutral-500">
+                {customDirectText.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length} 条
+              </span>
+            </div>
+            <textarea
+              rows={5}
+              value={customDirectText}
+              onChange={(e) => setCustomDirectText(e.target.value)}
+              placeholder={"# 每行一个域名规则，优先转发至大陆直连组\n+.apple.com\n+.steamcontent.com"}
+              className="w-full p-3 font-mono text-xs bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-cyan-500"
+            />
+          </div>
         </div>
       </div>
 

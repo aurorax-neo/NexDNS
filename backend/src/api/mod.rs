@@ -45,18 +45,21 @@ impl AppState {
             let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("mainland", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "none".to_string());
             s.set_proxy(proxy.find_proxy_addr(&proxy_mode));
+            s.set_connect_ip_version(&cfg.dns.connect_ip_version);
             Some(s)
         }).collect();
         let gfw = cfg.upstreams.gfw.iter().filter_map(|u| {
             let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("gfw", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
             s.set_proxy(proxy.find_proxy_addr(&proxy_mode));
+            s.set_connect_ip_version(&cfg.dns.connect_ip_version);
             Some(s)
         }).collect();
         let overseas = cfg.upstreams.overseas.iter().filter_map(|u| {
             let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("overseas", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
             s.set_proxy(proxy.find_proxy_addr(&proxy_mode));
+            s.set_connect_ip_version(&cfg.dns.connect_ip_version);
             Some(s)
         }).collect();
         self.engine.reload_upstreams(mainland, gfw, overseas);
@@ -118,6 +121,7 @@ pub fn create_web_router(state: AppState) -> Router {
         .route("/api/v1/upstreams/remove", post(remove_upstream))
         .route("/api/v1/upstreams/bootstrap", post(update_bootstrap_dns))
         .route("/api/v1/upstreams/timeout", post(update_upstream_timeout))
+        .route("/api/v1/routing/custom", get(get_custom_routing_domains).put(update_custom_routing_domains))
         .route("/api/v1/routing/rules", get(get_routing_rules))
         .route("/api/v1/routing/rules/update", post(update_routing_rules))
         .route("/api/v1/routing/rules/add", post(add_routing_rule))
@@ -360,13 +364,30 @@ fn validate_config_safety(payload: &AppConfig) -> Result<(), (StatusCode, String
 }
 
 fn apply_config_to_runtime(state: &AppState, payload: &AppConfig) {
-    state.engine.anti_pollution_enabled.store(payload.anti_pollution, Ordering::SeqCst);
+    let custom_routing_changed = {
+        let prev = state.config.read();
+        prev.routing.custom_direct_domains != payload.routing.custom_direct_domains
+            || prev.routing.custom_proxy_domains != payload.routing.custom_proxy_domains
+    };
+
+    state.engine.anti_pollution_enabled.store(payload.routing.anti_pollution, Ordering::SeqCst);
     state.engine.router_enabled.store(payload.routing.enabled, Ordering::SeqCst);
-    state.engine.speed_check_enabled.store(payload.speed_check.enabled, Ordering::SeqCst);
+    state.engine.set_fallback_timeout_ms(payload.routing.fallback_timeout_ms);
+    state.engine.update_custom_routing_domains(
+        &payload.routing.custom_direct_domains,
+        &payload.routing.custom_proxy_domains,
+    );
+    if custom_routing_changed {
+        state.engine.cache.flush();
+    }
+
     state.engine.speed_check.update_config(
         payload.speed_check.enabled,
         payload.speed_check.timeout_ms,
         payload.speed_check.cache_mins,
+        &payload.speed_check.mode,
+        payload.speed_check.direct_only,
+        &payload.dns.connect_ip_version,
     );
     state.engine.cache.min_ttl.store(payload.cache.min_ttl, Ordering::SeqCst);
     state.engine.cache.max_ttl.store(payload.cache.max_ttl, Ordering::SeqCst);
@@ -637,13 +658,15 @@ struct StatusResponse {
     cache_entries: usize,
     adblock_rules_count: usize,
     anti_pollution: bool,
+    routing_enabled: bool,
+    response_mode: String,
     disk: crate::db::DiskStatus,
 }
 
 async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
-    let (dns_p, web_p) = {
+    let (dns_p, web_p, resp_mode) = {
         let c = state.config.read();
-        (c.dns.port, c.web.port)
+        (c.dns.port, c.web.port, c.dns.response_mode.clone())
     };
     Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION"),
@@ -653,6 +676,8 @@ async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
         cache_entries: state.engine.cache.size(),
         adblock_rules_count: state.engine.adblock.rule_count(),
         anti_pollution: state.engine.anti_pollution_enabled.load(Ordering::Relaxed),
+        routing_enabled: state.engine.router_enabled.load(Ordering::Relaxed),
+        response_mode: resp_mode,
         disk: state.db.get_disk_status(),
     })
 }
@@ -829,14 +854,21 @@ async fn get_pipeline(State(state): State<AppState>) -> Json<Vec<PipelineNode>> 
             id: "router",
             name: "智能分流调度引擎",
             stage: "routing",
-            description: "集成 Direct/Proxy 分流、未命中智能回退与非大陆 IP 防污染探测，带优雅降级保底",
+            description: "集成自定义强制覆盖、Direct/Proxy 分流与未命中智能回退，带优雅降级保底",
             enabled: state.engine.router_enabled.load(Ordering::Relaxed),
         },
         PipelineNode {
+            id: "anti_pollution",
+            name: "非大陆 IP 防污染探测",
+            stage: "security",
+            description: "对未命中规则的大陆回包自动校验中国 IP 段，发现非大陆污染 IP 自动无缝切换纯净境外组",
+            enabled: state.engine.anti_pollution_enabled.load(Ordering::Relaxed),
+        },
+        PipelineNode {
             id: "speed_check",
-            name: "TCP 80/443 最优 IP 测速",
+            name: "TCP 端口最优 IP 测速",
             stage: "optimize",
-            description: "并发建连测速并按最低 RTT 重排序多条 IP 结果",
+            description: "后台非阻塞并发握手探测并按最低 RTT 重排序多条直连 IP 结果",
             enabled: state.engine.speed_check_enabled.load(Ordering::Relaxed),
         },
     ])
@@ -870,6 +902,7 @@ async fn toggle_pipeline_stage(
             let mut cfg = state.config.write();
             match payload.id.as_str() {
                 "router" => cfg.routing.enabled = payload.enabled,
+                "anti_pollution" => cfg.routing.anti_pollution = payload.enabled,
                 "speed_check" => cfg.speed_check.enabled = payload.enabled,
                 _ => {}
             }
@@ -1117,6 +1150,7 @@ async fn probe_upstream_latency(
     group: String,
     addr: String,
     proxy_cfg: crate::config::ProxyConfig,
+    connect_ip_version: String,
 ) -> UpstreamTestItem {
     let start = std::time::Instant::now();
     let server = crate::pipeline::plugins::upstream::UpstreamServer::parse(&group, &addr);
@@ -1128,6 +1162,7 @@ async fn probe_upstream_latency(
             if group == "mainland" || group == "bootstrap" { "none".to_string() } else { "default".to_string() }
         });
         s.set_proxy(proxy_cfg.find_proxy_addr(&proxy_mode));
+        s.set_connect_ip_version(&connect_ip_version);
         let mut req = hickory_proto::op::Message::query();
         req.add_query(hickory_proto::op::Query::query(
             hickory_proto::rr::Name::from_ascii("example.com.").unwrap(),
@@ -1150,7 +1185,7 @@ async fn probe_upstream_latency(
 }
 
 async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestItem>> {
-    let (bootstrap, mainland, gfw, overseas, proxy_cfg) = {
+    let (bootstrap, mainland, gfw, overseas, proxy_cfg, connect_ip_ver) = {
         let cfg = state.config.read();
         (
             cfg.upstreams.bootstrap_dns.clone(),
@@ -1158,6 +1193,7 @@ async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestI
             cfg.upstreams.gfw.clone(),
             cfg.upstreams.overseas.clone(),
             cfg.proxy.clone(),
+            cfg.dns.connect_ip_version.clone(),
         )
     };
 
@@ -1173,8 +1209,9 @@ async fn test_upstreams(State(state): State<AppState>) -> Json<Vec<UpstreamTestI
         for addr in list {
             let g = group_name.to_string();
             let p = proxy_cfg.clone();
+            let ip_ver = connect_ip_ver.clone();
             tasks.push(tokio::spawn(async move {
-                probe_upstream_latency(g, addr, p).await
+                probe_upstream_latency(g, addr, p, ip_ver).await
             }));
         }
     }
@@ -1198,7 +1235,7 @@ async fn test_group_upstreams(
     State(state): State<AppState>,
     Json(payload): Json<GroupUpstreamTestPayload>,
 ) -> Result<Json<Vec<UpstreamTestItem>>, (StatusCode, String)> {
-    let (servers, proxy_cfg) = {
+    let (servers, proxy_cfg, connect_ip_ver) = {
         let cfg = state.config.read();
         let s = match payload.group.as_str() {
             "bootstrap" => cfg.upstreams.bootstrap_dns.clone(),
@@ -1207,7 +1244,7 @@ async fn test_group_upstreams(
             "overseas" => cfg.upstreams.overseas.clone(),
             _ => return Err((StatusCode::BAD_REQUEST, "未知上游分组".to_string())),
         };
-        (s, cfg.proxy.clone())
+        (s, cfg.proxy.clone(), cfg.dns.connect_ip_version.clone())
     };
 
     let group_name = payload.group;
@@ -1215,8 +1252,9 @@ async fn test_group_upstreams(
     for addr in servers {
         let g = group_name.clone();
         let p = proxy_cfg.clone();
+        let ip_ver = connect_ip_ver.clone();
         tasks.push(tokio::spawn(async move {
-            probe_upstream_latency(g, addr, p).await
+            probe_upstream_latency(g, addr, p, ip_ver).await
         }));
     }
 
@@ -1435,13 +1473,17 @@ async fn test_single_upstream(
 ) -> Json<SingleUpstreamTestResponse> {
     let start = std::time::Instant::now();
     let server = crate::pipeline::plugins::upstream::UpstreamServer::parse(&payload.group, &payload.addr);
-    let proxy_cfg = state.config.read().proxy.clone();
+    let (proxy_cfg, connect_ip_ver) = {
+        let cfg = state.config.read();
+        (cfg.proxy.clone(), cfg.dns.connect_ip_version.clone())
+    };
 
     if let Some(mut s) = server {
         let proxy_mode = s.proxy.clone().unwrap_or_else(|| {
             if payload.group == "mainland" || payload.group == "bootstrap" { "none".to_string() } else { "default".to_string() }
         });
         s.set_proxy(proxy_cfg.find_proxy_addr(&proxy_mode));
+        s.set_connect_ip_version(&connect_ip_ver);
 
         let mut req = hickory_proto::op::Message::query();
         req.add_query(hickory_proto::op::Query::query(
@@ -1668,6 +1710,45 @@ fn validate_bootstrap_addr(addr_str: &str) -> Result<(), String> {
     }
     Ok(())
 }
+#[derive(Serialize, Deserialize)]
+struct CustomRoutingDomainsPayload {
+    #[serde(default)]
+    custom_direct_domains: Vec<String>,
+    #[serde(default)]
+    custom_proxy_domains: Vec<String>,
+}
+
+async fn get_custom_routing_domains(
+    State(state): State<AppState>,
+) -> Json<CustomRoutingDomainsPayload> {
+    let cfg = state.config.read();
+    Json(CustomRoutingDomainsPayload {
+        custom_direct_domains: cfg.routing.custom_direct_domains.clone(),
+        custom_proxy_domains: cfg.routing.custom_proxy_domains.clone(),
+    })
+}
+
+async fn update_custom_routing_domains(
+    State(state): State<AppState>,
+    Json(payload): Json<CustomRoutingDomainsPayload>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (direct, proxy) = {
+        let mut cfg = state.config.write();
+        cfg.routing.custom_direct_domains = payload.custom_direct_domains;
+        cfg.routing.custom_proxy_domains = payload.custom_proxy_domains;
+        cfg.normalize();
+        cfg.save(&state.config_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        (
+            cfg.routing.custom_direct_domains.clone(),
+            cfg.routing.custom_proxy_domains.clone(),
+        )
+    };
+    state.engine.update_custom_routing_domains(&direct, &proxy);
+    state.engine.cache.flush();
+    Ok(StatusCode::OK)
+}
+
 async fn get_routing_rules(
     State(state): State<AppState>,
 ) -> Json<Vec<crate::pipeline::rule_files::RuleFileInfo>> {

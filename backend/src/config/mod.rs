@@ -189,7 +189,7 @@ impl Default for CacheConfig {
             size: 10000,
             prefetch: true,
             min_ttl: 60,
-            max_ttl: 120,
+            max_ttl: 1800,
         }
     }
 }
@@ -199,7 +199,7 @@ fn default_min_ttl() -> u32 {
 }
 
 fn default_max_ttl() -> u32 {
-    120
+    1800
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +210,8 @@ pub struct SpeedCheckConfig {
     pub cache_mins: u64,
     #[serde(default = "default_speed_mode")]
     pub mode: String,
+    #[serde(default = "default_true")]
+    pub direct_only: bool,
 }
 
 impl Default for SpeedCheckConfig {
@@ -219,6 +221,7 @@ impl Default for SpeedCheckConfig {
             timeout_ms: 400,
             cache_mins: 5,
             mode: "tcp_80_443".to_string(),
+            direct_only: true,
         }
     }
 }
@@ -270,8 +273,8 @@ impl Default for UpstreamsConfig {
     }
 }
 
-fn default_false() -> bool {
-    false
+fn default_fallback_timeout_ms() -> u64 {
+    1500
 }
 
 fn default_retention_mins() -> u32 {
@@ -293,18 +296,26 @@ fn default_max_db_size_mb() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RoutingConfig {
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default = "default_true")]
     pub anti_pollution: bool,
+    #[serde(default = "default_fallback_timeout_ms")]
     pub fallback_timeout_ms: u64,
+    #[serde(default)]
+    pub custom_direct_domains: Vec<String>,
+    #[serde(default)]
+    pub custom_proxy_domains: Vec<String>,
 }
 
 impl Default for RoutingConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             anti_pollution: true,
             fallback_timeout_ms: 1500,
+            custom_direct_domains: Vec::new(),
+            custom_proxy_domains: Vec::new(),
         }
     }
 }
@@ -377,8 +388,14 @@ pub struct AppConfig {
     pub cache: CacheConfig,
     #[serde(default)]
     pub speed_check: SpeedCheckConfig,
-    #[serde(default)]
-    pub anti_pollution: bool,
+    /// 兼容旧版顶层 anti_pollution 字段：启动归一化时自动迁移至 routing.anti_pollution 并不再重复序列化
+    #[serde(default, skip_serializing)]
+    pub anti_pollution: Option<bool>,
+    /// 兼容顶层直接书写的 custom_direct_domains / custom_proxy_domains，归一化后统一归入 routing
+    #[serde(default, skip_serializing)]
+    pub custom_direct_domains: Vec<String>,
+    #[serde(default, skip_serializing)]
+    pub custom_proxy_domains: Vec<String>,
     #[serde(default)]
     pub routing: RoutingConfig,
     #[serde(default)]
@@ -403,13 +420,10 @@ impl Default for AppConfig {
             web: WebConfig { port: 3000 },
             proxy: ProxyConfig::default(),
             cache: CacheConfig::default(),
-            speed_check: SpeedCheckConfig {
-                enabled: true,
-                timeout_ms: 400,
-                cache_mins: 5,
-                mode: "tcp_80_443".to_string(),
-            },
-            anti_pollution: true,
+            speed_check: SpeedCheckConfig::default(),
+            anti_pollution: None,
+            custom_direct_domains: Vec::new(),
+            custom_proxy_domains: Vec::new(),
             routing: RoutingConfig::default(),
             logging: LoggingConfig::default(),
             rules_update: RulesUpdateConfig::default(),
@@ -421,8 +435,56 @@ impl Default for AppConfig {
     }
 }
 
+fn clean_domain_list(list: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    let mut cleaned = Vec::with_capacity(list.len());
+    for item in list.drain(..) {
+        for part in item.lines() {
+            let trimmed = part.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let lower = trimmed.to_lowercase();
+            if seen.insert(lower.clone()) {
+                cleaned.push(lower);
+            }
+        }
+    }
+    *list = cleaned;
+}
+
 impl AppConfig {
     pub fn normalize(&mut self) {
+        if let Some(legacy_ap) = self.anti_pollution.take() {
+            if !legacy_ap {
+                self.routing.anti_pollution = false;
+            }
+        }
+        if !self.custom_direct_domains.is_empty() {
+            let extra = std::mem::take(&mut self.custom_direct_domains);
+            self.routing.custom_direct_domains.extend(extra);
+        }
+        if !self.custom_proxy_domains.is_empty() {
+            let extra = std::mem::take(&mut self.custom_proxy_domains);
+            self.routing.custom_proxy_domains.extend(extra);
+        }
+        clean_domain_list(&mut self.routing.custom_direct_domains);
+        clean_domain_list(&mut self.routing.custom_proxy_domains);
+
+        if self.routing.fallback_timeout_ms == 0 {
+            self.routing.fallback_timeout_ms = default_fallback_timeout_ms();
+        } else {
+            self.routing.fallback_timeout_ms = self.routing.fallback_timeout_ms.clamp(100, 30000);
+        }
+        if self.speed_check.timeout_ms == 0 {
+            self.speed_check.timeout_ms = 400;
+        } else {
+            self.speed_check.timeout_ms = self.speed_check.timeout_ms.clamp(50, 10000);
+        }
+        if self.speed_check.mode.trim().is_empty() {
+            self.speed_check.mode = default_speed_mode();
+        }
+
         if let Some(days) = self.logging.retention_days.take() {
             if self.logging.retention_mins == 0 {
                 self.logging.retention_mins = (days * 1440).max(1);
@@ -441,6 +503,16 @@ impl AppConfig {
         if self.upstreams.timeout_ms == 0 {
             self.upstreams.timeout_ms = 2000;
         }
+        self.dns.listen_mode = match self.dns.listen_mode.trim().to_lowercase().as_str() {
+            "ipv4" | "ipv4_only" => "ipv4".to_string(),
+            "ipv6" | "ipv6_only" => "ipv6".to_string(),
+            _ => "dual".to_string(),
+        };
+        self.dns.connect_ip_version = match self.dns.connect_ip_version.trim().to_lowercase().as_str() {
+            "ipv4" | "ipv4_only" => "ipv4".to_string(),
+            "ipv6" | "ipv6_only" => "ipv6".to_string(),
+            _ => "dual".to_string(),
+        };
         self.dns.response_mode = match self.dns.response_mode.trim() {
             "ipv4" | "ipv4_only" => "ipv4_only".to_string(),
             "ipv6" | "ipv6_only" => "ipv6_only".to_string(),
@@ -479,6 +551,9 @@ impl AppConfig {
     pub fn save<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
         let mut cloned = self.clone();
         cloned.logging.retention_days = None;
+        cloned.anti_pollution = None;
+        cloned.custom_direct_domains.clear();
+        cloned.custom_proxy_domains.clear();
         let content = serde_yaml::to_string(&cloned)?;
         fs::write(path, content)?;
         Ok(())

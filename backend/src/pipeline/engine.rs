@@ -1,17 +1,44 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::watch;
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::{RData, RecordType};
 use crate::pipeline::context::{QueryContext, QueryStatus};
 use crate::pipeline::plugin::DnsPlugin;
 use crate::pipeline::plugins::adblock::AdblockPlugin;
 use crate::pipeline::plugins::cache::CachePlugin;
-use crate::pipeline::plugins::domain_match::DomainListRegistry;
+use crate::pipeline::plugins::domain_match::{DomainListRegistry, DomainMatcher};
 use crate::pipeline::plugins::ip_match::IpListRegistry;
 use crate::pipeline::plugins::rewrite::RewritePlugin;
 use crate::pipeline::plugins::speed_check::SpeedCheckPlugin;
 use crate::pipeline::plugins::upstream::ForwardPlugin;
 
+#[derive(Clone)]
+struct InflightSnapshot {
+    response: Option<Message>,
+    status: QueryStatus,
+    routing_group: Option<String>,
+    fastest_ip: Option<IpAddr>,
+    tags: HashSet<String>,
+}
+
+type InflightMap = parking_lot::Mutex<HashMap<(String, RecordType), watch::Sender<Option<InflightSnapshot>>>>;
+
+struct InflightGuard {
+    map: Arc<InflightMap>,
+    key: (String, RecordType),
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.map.lock().remove(&self.key);
+    }
+}
+
+#[derive(Clone)]
 pub struct PipelineEngine {
     pub rewrite: Arc<RewritePlugin>,
     pub adblock: Arc<AdblockPlugin>,
@@ -22,12 +49,14 @@ pub struct PipelineEngine {
     pub forward_gfw: Arc<ForwardPlugin>,
     pub forward_overseas: Arc<ForwardPlugin>,
     pub speed_check: Arc<SpeedCheckPlugin>,
-    pub adblock_enabled: AtomicBool,
-    pub cache_enabled: AtomicBool,
-    pub router_enabled: AtomicBool,
-    pub anti_pollution_enabled: AtomicBool,
-    pub speed_check_enabled: AtomicBool,
+    pub adblock_enabled: Arc<AtomicBool>,
+    pub cache_enabled: Arc<AtomicBool>,
+    pub router_enabled: Arc<AtomicBool>,
+    pub anti_pollution_enabled: Arc<AtomicBool>,
+    pub speed_check_enabled: Arc<AtomicBool>,
+    pub fallback_timeout_ms: Arc<AtomicU64>,
     pub response_mode: Arc<parking_lot::RwLock<String>>,
+    inflight: Arc<InflightMap>,
 }
 
 impl PipelineEngine {
@@ -45,6 +74,7 @@ impl PipelineEngine {
         anti_pollution_enabled: bool,
         response_mode: String,
     ) -> Self {
+        let shared_speed_enabled = speed_check.enabled.clone();
         Self {
             rewrite,
             adblock,
@@ -55,13 +85,33 @@ impl PipelineEngine {
             forward_gfw,
             forward_overseas,
             speed_check,
-            adblock_enabled: AtomicBool::new(true),
-            cache_enabled: AtomicBool::new(true),
-            router_enabled: AtomicBool::new(router_enabled),
-            anti_pollution_enabled: AtomicBool::new(anti_pollution_enabled),
-            speed_check_enabled: AtomicBool::new(true),
+            adblock_enabled: Arc::new(AtomicBool::new(true)),
+            cache_enabled: Arc::new(AtomicBool::new(true)),
+            router_enabled: Arc::new(AtomicBool::new(router_enabled)),
+            anti_pollution_enabled: Arc::new(AtomicBool::new(anti_pollution_enabled)),
+            speed_check_enabled: shared_speed_enabled,
+            fallback_timeout_ms: Arc::new(AtomicU64::new(1500)),
             response_mode: Arc::new(parking_lot::RwLock::new(response_mode)),
+            inflight: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn set_fallback_timeout_ms(&self, timeout_ms: u64) {
+        self.fallback_timeout_ms.store(timeout_ms.clamp(100, 30000), Ordering::SeqCst);
+    }
+
+    pub fn update_custom_routing_domains(&self, custom_direct: &[String], custom_proxy: &[String]) {
+        let mut direct_matcher = DomainMatcher::new("custom_direct");
+        if !custom_direct.is_empty() {
+            direct_matcher.load_from_text(&custom_direct.join("\n"));
+        }
+        self.domain_registry.register(direct_matcher);
+
+        let mut proxy_matcher = DomainMatcher::new("custom_proxy");
+        if !custom_proxy.is_empty() {
+            proxy_matcher.load_from_text(&custom_proxy.join("\n"));
+        }
+        self.domain_registry.register(proxy_matcher);
     }
 
     pub fn toggle_stage(&self, stage_id: &str, enabled: bool) -> bool {
@@ -90,7 +140,7 @@ impl PipelineEngine {
                 true
             }
             "speed_check" => {
-                self.speed_check_enabled.store(enabled, Ordering::SeqCst);
+                // speed_check_enabled 与 speed_check.enabled 共享同一 Arc<AtomicBool>
                 self.speed_check.set_enabled(enabled);
                 true
             }
@@ -119,13 +169,13 @@ impl PipelineEngine {
         for ans in &resp.answers {
             match &ans.data {
                 RData::A(a) => {
-                    let ip = std::net::IpAddr::V4(a.0);
+                    let ip = IpAddr::V4(a.0);
                     if self.ip_registry.contains("ipv4_china", &ip) {
                         return true;
                     }
                 }
                 RData::AAAA(aaaa) => {
-                    let ip = std::net::IpAddr::V6(aaaa.0);
+                    let ip = IpAddr::V6(aaaa.0);
                     if aaaa.0 == std::net::Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 1)
                         || aaaa.0 == std::net::Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 2)
                     {
@@ -169,6 +219,253 @@ impl PipelineEngine {
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    async fn query_proxy_chain(&self, ctx: &mut QueryContext) {
+        self.forward_gfw.execute(ctx).await;
+
+        let gfw_ok = ctx
+            .response
+            .as_ref()
+            .map(|r| r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty())
+            .unwrap_or(false);
+
+        if !gfw_ok {
+            self.forward_overseas.execute(ctx).await;
+        }
+
+        let overseas_ok = ctx
+            .response
+            .as_ref()
+            .map(|r| r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty())
+            .unwrap_or(false);
+
+        // 容灾兜底：若代理未开启或境外上游不可达，自动降级至大陆上游解析，防止 proxy 域名直接返回 ServFail 断网
+        if !overseas_ok {
+            ctx.tags.insert("fallback_restore_mainland".to_string());
+            self.forward_mainland.execute(ctx).await;
+        }
+    }
+
+    async fn resolve_uncached_and_store(&self, ctx: &mut QueryContext, is_prefetch: bool) {
+        let qname_lower = ctx.qname.to_ascii_lowercase();
+        ctx.record_timing("route");
+
+        if self.domain_registry.matches("domain_private", &ctx.qname)
+            || is_rfc_locally_served_domain(&qname_lower)
+        {
+            let is_public_direct_helper = qname_lower.ends_with(".qq.com")
+                || qname_lower.ends_with(".plex.direct")
+                || qname_lower.ends_with(".ts.net")
+                || qname_lower.ends_with(".kaspersky-labs.com")
+                || qname_lower.ends_with(".adguard.org")
+                || qname_lower.ends_with(".arubanetworks.com")
+                || qname_lower.ends_with(".h3c.com");
+
+            if is_public_direct_helper {
+                ctx.tags.insert("route:private_direct".to_string());
+                self.forward_mainland.execute(ctx).await;
+            } else {
+                let mut resp = Message::error_msg(
+                    ctx.request.metadata.id,
+                    ctx.request.metadata.op_code,
+                    ResponseCode::NXDomain,
+                );
+                resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
+                resp.metadata.recursion_available = true;
+                resp.queries = ctx.request.queries.clone();
+                attach_negative_soa(&mut resp, &qname_lower, 300);
+                if self.cache_enabled.load(Ordering::Relaxed) {
+                    self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
+                }
+                ctx.response = Some(resp);
+                ctx.status = QueryStatus::Allowed;
+                ctx.routing_group = Some("private_local".to_string());
+                return;
+            }
+        } else if !self.router_enabled.load(Ordering::Relaxed) {
+            ctx.tags.insert("route:bypass_disabled".to_string());
+            self.forward_mainland.execute(ctx).await;
+        } else {
+            // 最高优先级：用户自定义持久化分流覆盖表（高于 direct.txt / proxy.txt，免受在线自动更新覆盖）
+            let custom_direct_spec = self.domain_registry.match_specificity("custom_direct", &ctx.qname);
+            let custom_proxy_spec = self.domain_registry.match_specificity("custom_proxy", &ctx.qname);
+
+            if custom_proxy_spec.is_some() || custom_direct_spec.is_some() {
+                if custom_proxy_spec >= custom_direct_spec {
+                    ctx.tags.insert("route:custom_proxy".to_string());
+                    ctx.matched_rule = Some("custom_proxy_domains".to_string());
+                    self.query_proxy_chain(ctx).await;
+                } else {
+                    ctx.tags.insert("route:custom_direct".to_string());
+                    ctx.matched_rule = Some("custom_direct_domains".to_string());
+                    self.forward_mainland.execute(ctx).await;
+                }
+            } else {
+                let is_direct = self.domain_registry.matches("domain_direct", &ctx.qname);
+                let is_proxy = self.domain_registry.matches("domain_proxy", &ctx.qname);
+
+                if is_direct {
+                    ctx.tags.insert("route:direct".to_string());
+                    self.forward_mainland.execute(ctx).await;
+                } else if is_proxy {
+                    ctx.tags.insert("route:proxy".to_string());
+                    self.query_proxy_chain(ctx).await;
+                } else {
+                    // Fallback pipeline: try mainland first (bounded by fallback_timeout_ms)
+                    ctx.tags.insert("route:fallback".to_string());
+                    let fb_timeout = Duration::from_millis(self.fallback_timeout_ms.load(Ordering::Relaxed));
+                    self.forward_mainland
+                        .execute_with_timeout(ctx, Some(fb_timeout))
+                        .await;
+
+                    let mut mainland_fallback_resp = None;
+
+                    // Anti-pollution check: if mainland returned an IP that is NOT in China IP list, drop response and fallback to GFW!
+                    if self.anti_pollution_enabled.load(Ordering::Relaxed) {
+                        if let Some(ref resp) = ctx.response {
+                            if self.has_ip_answers(resp) && !self.has_china_ip(resp) {
+                                ctx.tags.insert("pollution_detected".to_string());
+                                mainland_fallback_resp = ctx.response.take();
+                            }
+                        }
+                    }
+
+                    // If mainland returned no response or dropped due to pollution, query GFW/Overseas
+                    if ctx.response.is_none() {
+                        ctx.tags.insert("fallback_to_gfw".to_string());
+                        self.forward_gfw.execute(ctx).await;
+
+                        let gfw_effective = match &ctx.response {
+                            Some(r) => r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty(),
+                            None => false,
+                        };
+
+                        if !gfw_effective {
+                            self.forward_overseas.execute(ctx).await;
+                        }
+
+                        let overseas_effective = match &ctx.response {
+                            Some(r) => r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty(),
+                            None => false,
+                        };
+
+                        if !overseas_effective && mainland_fallback_resp.is_some() {
+                            ctx.tags.insert("fallback_restore_mainland".to_string());
+                            ctx.response = mainland_fallback_resp;
+                            ctx.routing_group = Some("mainland (fallback)".to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Post-processing: Response Mode -> Speed Check -> Cache Storage
+        if ctx.response.is_some() {
+            self.apply_response_mode(ctx);
+
+            if self.speed_check_enabled.load(Ordering::Relaxed) {
+                ctx.record_timing("speed_check");
+                self.speed_check.execute(ctx).await;
+            }
+
+            if self.cache_enabled.load(Ordering::Relaxed) {
+                if let Some(ref resp) = ctx.response {
+                    let degraded_polluted_fallback = ctx.tags.contains("pollution_detected")
+                        && ctx.tags.contains("fallback_restore_mainland");
+                    let should_store = if is_prefetch {
+                        // 后台预取严禁将境外短暂断连时降级回退的污染 IP 覆盖已有干净缓存
+                        resp.metadata.response_code == ResponseCode::NoError
+                            && !resp.answers.is_empty()
+                            && !degraded_polluted_fallback
+                    } else {
+                        resp.metadata.response_code == ResponseCode::NoError
+                            || resp.metadata.response_code == ResponseCode::NXDomain
+                    };
+                    if should_store {
+                        self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
+                    }
+                }
+            }
+        } else if !is_prefetch {
+            let mut resp = Message::error_msg(
+                ctx.request.metadata.id,
+                ctx.request.metadata.op_code,
+                ResponseCode::ServFail,
+            );
+            resp.queries = ctx.request.queries.clone();
+            ctx.response = Some(resp);
+            ctx.status = QueryStatus::Error;
+        }
+    }
+
+    /// Singleflight 在途查询合并去重：同一时刻针对相同 (qname, qtype) 的并发冷查询共享单次上游解析
+    async fn resolve_with_singleflight(&self, ctx: &mut QueryContext, is_prefetch: bool) {
+        enum FlightRole {
+            Leader(watch::Sender<Option<InflightSnapshot>>, InflightGuard),
+            Follower(watch::Receiver<Option<InflightSnapshot>>),
+        }
+
+        let key = (ctx.qname.to_ascii_lowercase(), ctx.qtype);
+        let role = {
+            let mut map = self.inflight.lock();
+            if let Some(existing_tx) = map.get(&key) {
+                FlightRole::Follower(existing_tx.subscribe())
+            } else {
+                let (tx, _rx) = watch::channel(None);
+                map.insert(key.clone(), tx.clone());
+                FlightRole::Leader(
+                    tx,
+                    InflightGuard {
+                        map: self.inflight.clone(),
+                        key,
+                    },
+                )
+            }
+        };
+
+        match role {
+            FlightRole::Leader(tx, _guard) => {
+                self.resolve_uncached_and_store(ctx, is_prefetch).await;
+                let mut clean_resp = ctx.response.clone();
+                if let Some(ref mut r) = clean_resp {
+                    r.edns = None;
+                }
+                let snapshot = InflightSnapshot {
+                    response: clean_resp,
+                    status: ctx.status.clone(),
+                    routing_group: ctx.routing_group.clone(),
+                    fastest_ip: ctx.fastest_ip,
+                    tags: ctx.tags.clone(),
+                };
+                let _ = tx.send(Some(snapshot));
+            }
+            FlightRole::Follower(mut rx) => {
+                if let Ok(snap_ref) = rx.wait_for(|v| v.is_some()).await {
+                    if let Some(snap) = snap_ref.as_ref().cloned() {
+                        drop(snap_ref);
+                        if let Some(mut resp) = snap.response {
+                            resp.metadata.id = ctx.request.metadata.id;
+                            resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
+                            resp.metadata.recursion_available = true;
+                            resp.queries = ctx.request.queries.clone();
+                            ctx.response = Some(resp);
+                            self.apply_response_mode(ctx);
+                        }
+                        ctx.status = snap.status;
+                        ctx.routing_group = snap.routing_group;
+                        ctx.fastest_ip = snap.fastest_ip;
+                        for t in snap.tags {
+                            ctx.tags.insert(t);
+                        }
+                        ctx.tags.insert("coalesced_inflight".to_string());
+                        return;
+                    }
+                }
+                // Leader 被提前取消时安全回退自行解析，确保下游请求绝不丢失
+                self.resolve_uncached_and_store(ctx, is_prefetch).await;
             }
         }
     }
@@ -312,7 +609,7 @@ impl PipelineEngine {
             return;
         }
 
-        // 2. Local Rewrites / Hosts（优先于拦截与私有域规则，支持将 tplinkac.tplogin.cn / nas.home 等重写到内网 IP）
+        // 2. Local Rewrites / Hosts
         ctx.record_timing("rewrite");
         if self.rewrite.execute(ctx).await == crate::pipeline::plugin::PluginResult::Accept {
             align_edns_response(ctx);
@@ -330,8 +627,7 @@ impl PipelineEngine {
             }
         }
 
-        // 4.5. 下游单栈模式前置短路：若配置仅返回 IPv4 (或仅 IPv6)，直接对 AAAA (或 A) 返回空 NoError (NODATA)
-        // 避免无 IPv6 出口的楼层因缓存命中返回 AAAA 记录导致双栈 Happy Eyeballs 退避卡顿，同时节省 50% 无效回源
+        // 4.5. 下游单栈模式前置短路：若配置仅返回 IPv4 (或仅 IPv6)，直接对 AAAA (或 A) 返回空 NoError (NODATA) + SOA
         {
             let mode = self.response_mode.read().clone();
             let short_circuit = matches!(
@@ -358,7 +654,7 @@ impl PipelineEngine {
             }
         }
 
-        // 5. Cache
+        // 5. Cache (命中极速秒返；剩余 TTL < 20% 时后台完整复用分流+防污染+response_mode+测速流水线静默预取)
         ctx.record_timing("cache");
         if self.cache_enabled.load(Ordering::Relaxed) {
             if let Some((mut cached_resp, should_prefetch)) = self.cache.get_with_prefetch(&ctx.qname, ctx.qtype) {
@@ -373,15 +669,7 @@ impl PipelineEngine {
 
                 if should_prefetch {
                     ctx.tags.insert("prefetch_triggered".to_string());
-                    let is_proxy_domain = self.router_enabled.load(Ordering::Relaxed)
-                        && self.domain_registry.matches("domain_proxy", &ctx.qname);
-                    let forward_primary = if is_proxy_domain {
-                        self.forward_gfw.clone()
-                    } else {
-                        self.forward_mainland.clone()
-                    };
-                    let forward_fallback = self.forward_mainland.clone();
-                    let cache = self.cache.clone();
+                    let engine = self.clone();
                     let qname = ctx.qname.clone();
                     let qtype = ctx.qtype;
                     tokio::spawn(async move {
@@ -390,23 +678,16 @@ impl PipelineEngine {
                         if let Ok(name) = hickory_proto::rr::Name::from_str(&format!("{}.", qname)) {
                             req.add_query(hickory_proto::op::Query::query(name, qtype));
                             let mut sub_ctx = QueryContext::new(
-                                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                                IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
                                 req,
                             );
-                            forward_primary.execute(&mut sub_ctx).await;
-                            let ok = sub_ctx
-                                .response
-                                .as_ref()
-                                .map(|r| r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty())
-                                .unwrap_or(false);
-                            if !ok && is_proxy_domain {
-                                forward_fallback.execute(&mut sub_ctx).await;
-                            }
-                            if let Some(resp) = sub_ctx.response {
-                                if resp.metadata.response_code == ResponseCode::NoError && !resp.answers.is_empty() {
-                                    cache.insert(&qname, qtype, resp);
-                                    tracing::debug!("Prefetch-Domain 自动预取静默更新成功: {}", qname);
-                                }
+                            engine.resolve_with_singleflight(&mut sub_ctx, true).await;
+                            if sub_ctx.response.is_some() {
+                                tracing::debug!(
+                                    "Prefetch-Domain 自动预取静默刷新完成: {} (group={:?})",
+                                    qname,
+                                    sub_ctx.routing_group
+                                );
                             }
                         }
                     });
@@ -418,159 +699,8 @@ impl PipelineEngine {
             }
         }
 
-        // 6. Router & Dispatch (Routing pipeline)
-        ctx.record_timing("route");
-        if self.domain_registry.matches("domain_private", &ctx.qname)
-            || is_rfc_locally_served_domain(&qname_lower)
-        {
-            // 区分 RoutingRules private.txt 中的两类条目：
-            // (a) 需走大陆公网 DNS 解析出回环/内网直连 IP 的应用辅助域（如 localhost.weixin.qq.com、localhost.ptlogin2.qq.com、plex.direct、ts.net）
-            let is_public_direct_helper = qname_lower.ends_with(".qq.com")
-                || qname_lower.ends_with(".plex.direct")
-                || qname_lower.ends_with(".ts.net")
-                || qname_lower.ends_with(".kaspersky-labs.com")
-                || qname_lower.ends_with(".adguard.org")
-                || qname_lower.ends_with(".arubanetworks.com")
-                || qname_lower.ends_with(".h3c.com");
-
-            if is_public_direct_helper {
-                ctx.tags.insert("route:private_direct".to_string());
-                self.forward_mainland.execute(ctx).await;
-            } else {
-                // (b) RFC 6303 私有反向解析域 (*.in-addr.arpa / *.ip6.arpa)、单标签主机名及未配置重写的路由器/AP发现域 (如 tplinkac.tplogin.cn)：
-                // 本地直接返回标准 NXDomain（标记为 Allowed 并写入 60s 否定缓存），不向公网泄露，也不返回 Refused 触发客户端每秒死循环重试
-                let mut resp = Message::error_msg(
-                    ctx.request.metadata.id,
-                    ctx.request.metadata.op_code,
-                    ResponseCode::NXDomain,
-                );
-                resp.metadata.recursion_desired = ctx.request.metadata.recursion_desired;
-                resp.metadata.recursion_available = true;
-                resp.queries = ctx.request.queries.clone();
-                attach_negative_soa(&mut resp, &qname_lower, 300);
-                if self.cache_enabled.load(Ordering::Relaxed) {
-                    self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
-                }
-                ctx.response = Some(resp);
-                ctx.status = QueryStatus::Allowed;
-                ctx.routing_group = Some("private_local".to_string());
-                align_edns_response(ctx);
-                ctx.finish();
-                return;
-            }
-        } else if !self.router_enabled.load(Ordering::Relaxed) {
-            ctx.tags.insert("route:bypass_disabled".to_string());
-            self.forward_mainland.execute(ctx).await;
-        } else {
-        let is_direct = self.domain_registry.matches("domain_direct", &ctx.qname);
-        let is_proxy = self.domain_registry.matches("domain_proxy", &ctx.qname);
-
-        if is_direct {
-            ctx.tags.insert("route:direct".to_string());
-            self.forward_mainland.execute(ctx).await;
-        } else if is_proxy {
-            ctx.tags.insert("route:proxy".to_string());
-            self.forward_gfw.execute(ctx).await;
-
-            let gfw_ok = ctx
-                .response
-                .as_ref()
-                .map(|r| r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty())
-                .unwrap_or(false);
-
-            if !gfw_ok {
-                self.forward_overseas.execute(ctx).await;
-            }
-
-            let overseas_ok = ctx
-                .response
-                .as_ref()
-                .map(|r| r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty())
-                .unwrap_or(false);
-
-            // 容灾兜底：若代理未开启或境外上游不可达，自动降级至大陆上游解析，防止 proxy.txt 域名直接返回 ServFail 断网
-            if !overseas_ok {
-                ctx.tags.insert("fallback_restore_mainland".to_string());
-                self.forward_mainland.execute(ctx).await;
-            }
-        } else {
-            // Fallback pipeline: try mainland first
-            ctx.tags.insert("route:fallback".to_string());
-            self.forward_mainland.execute(ctx).await;
-
-            let mut mainland_fallback_resp = None;
-
-            // Anti-pollution check: if mainland returned an IP that is NOT in China IP list, drop response and fallback to GFW!
-            if self.anti_pollution_enabled.load(Ordering::Relaxed) {
-                if let Some(ref resp) = ctx.response {
-                    if self.has_ip_answers(resp) && !self.has_china_ip(resp) {
-                        ctx.tags.insert("pollution_detected".to_string());
-                        mainland_fallback_resp = ctx.response.take(); // 暂存大陆原始响应以供降级兜底，清空当前响应触发后续 GFW 探测
-                    }
-                }
-            }
-
-            // If mainland returned no response or dropped due to pollution, query GFW/Overseas
-            if ctx.response.is_none() {
-                ctx.tags.insert("fallback_to_gfw".to_string());
-                self.forward_gfw.execute(ctx).await;
-
-                let gfw_effective = match &ctx.response {
-                    Some(r) => r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty(),
-                    None => false,
-                };
-
-                if !gfw_effective {
-                    self.forward_overseas.execute(ctx).await;
-                }
-
-                // 关键容灾兜底: 如果 GFW 与 Overseas 境外上游全部超时、熔断或失败，
-                // 且此前国内上游已拿到响应，则立即启用国内原始响应作为保底恢复，
-                // 坚决防止向客户端抛出 Server Failure 导致断网！
-                let overseas_effective = match &ctx.response {
-                    Some(r) => r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty(),
-                    None => false,
-                };
-
-                if !overseas_effective && mainland_fallback_resp.is_some() {
-                    ctx.tags.insert("fallback_restore_mainland".to_string());
-                    ctx.response = mainland_fallback_resp;
-                    ctx.routing_group = Some("mainland (fallback)".to_string());
-                }
-            }
-        }
-        }
-
-        // 7. Speed Check (Fastest IP)
-        if ctx.response.is_some() {
-            // 8. 先执行下游地址族过滤，再测速与写缓存，杜绝被过滤的 AAAA/A 记录污染缓存
-            self.apply_response_mode(ctx);
-
-            if self.speed_check_enabled.load(Ordering::Relaxed) {
-                ctx.record_timing("speed_check");
-                self.speed_check.execute(ctx).await;
-            }
-
-            // 9. Cache storage
-            if self.cache_enabled.load(Ordering::Relaxed) {
-                if let Some(ref resp) = ctx.response {
-                    if resp.metadata.response_code == ResponseCode::NoError
-                        || resp.metadata.response_code == ResponseCode::NXDomain
-                    {
-                        self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
-                    }
-                }
-            }
-        } else {
-            let mut resp = Message::error_msg(
-                ctx.request.metadata.id,
-                ctx.request.metadata.op_code,
-                ResponseCode::ServFail,
-            );
-            resp.queries = ctx.request.queries.clone();
-            ctx.response = Some(resp);
-            ctx.status = QueryStatus::Error;
-        }
+        // 6-9. Singleflight 合并去重 + 智能分流 + 防污染 + 下游地址族过滤 + 测速优选 + 缓存入库
+        self.resolve_with_singleflight(ctx, false).await;
 
         align_edns_response(ctx);
         ctx.finish();
@@ -578,10 +708,6 @@ impl PipelineEngine {
 }
 
 /// RFC 6891 / RFC 7873 / RFC 9018 EDNS 与 Cookie 协议对齐治理函数
-/// 彻底消除所有下游客户端出现 `;; Warning: Client COOKIE mismatch` 的根本原因：
-/// 1. 若下游请求携带了 EDNS Cookie，应答必须精准回显客户端自生成的 8 字节 Client Cookie；
-/// 2. 若下游请求未携带 Cookie，应答绝对不返回上游或缓存带入的异构 Cookie；
-/// 3. 若下游客户端未开启 EDNS，应答严格遵循 RFC 6891 清除 OPT 伪记录。
 pub fn align_edns_response(ctx: &mut QueryContext) {
     if let Some(ref mut resp) = ctx.response {
         if let Some(ref req_edns) = ctx.request.edns {
@@ -613,8 +739,7 @@ pub fn align_edns_response(ctx: &mut QueryContext) {
     }
 }
 
-/// RFC 2308 Section 3 & Section 5: 为本地生成的 NXDOMAIN / NODATA 否定应答注入 Authority SOA 记录，
-/// 使下游操作系统、路由器与无线 AP 解析器读取 SOA MINIMUM TTL 并执行本地否定缓存，避免重复刷屏请求。
+/// RFC 2308 Section 3 & Section 5: 为本地生成的 NXDOMAIN / NODATA 否定应答注入 Authority SOA 记录
 pub fn attach_negative_soa(resp: &mut Message, qname: &str, ttl: u32) {
     use std::str::FromStr;
     resp.metadata.authoritative = true;
@@ -647,14 +772,11 @@ pub fn attach_negative_soa(resp: &mut Message, qname: &str, ttl: u32) {
     ));
 }
 
-/// RFC 6303 (Locally Served DNS Zones) + RFC 6761 / RFC 6762 / RFC 6763 / RFC 7686 / RFC 8375 特殊与保留域判定：
-/// 补齐 private.txt 未覆盖的标准保留反向域、特殊顶级域及局域网 DNS-SD 服务发现后缀，防止泄露至公网 DNS
+/// RFC 6303 (Locally Served DNS Zones) + RFC 6761 / RFC 6762 / RFC 6763 / RFC 7686 / RFC 8375 特殊与保留域判定
 pub fn is_rfc_locally_served_domain(qname_lower: &str) -> bool {
-    // 1. 单标签无点主机名 (如 tekiair5 / workgroup / wpad)
     if !qname_lower.contains('.') {
         return true;
     }
-    // 2. RFC 6761 / 2606 / 6762 / 7686 / 8375 保留与私有顶级域
     const SPECIAL_TLDS: &[&str] = &[
         ".test",
         ".invalid",
@@ -670,11 +792,9 @@ pub fn is_rfc_locally_served_domain(qname_lower: &str) -> bool {
     if SPECIAL_TLDS.iter().any(|tld| qname_lower.ends_with(tld)) {
         return true;
     }
-    // 3. RFC 6763 DNS-SD 局域网浏览域 (b._dns-sd._udp.<domain>, lb._dns-sd._udp.<domain>, db._dns-sd._udp.<domain>)
     if qname_lower.contains("._dns-sd._udp.") {
         return true;
     }
-    // 4. RFC 6303 / RFC 6890 私有与特殊 IPv4/IPv6 反向解析区补齐 (0.in-addr.arpa, 0.0.192, 18/19.198, c.f.ip6.arpa, ::/128)
     const EXTRA_RFC6303_ZONES: &[&str] = &[
         ".0.in-addr.arpa",
         ".0.0.192.in-addr.arpa",

@@ -438,6 +438,7 @@ export const UpstreamsPage: React.FC = () => {
             const isTestingThis = testingSingleKey === `${groupKey}:${addr}`;
             const { uri, hostName, proxy, proto } = parseUpstreamEntry(addr);
             const isDoh = proto === 'DoH';
+            const isDot = proto === 'DoT';
             const isTcp = proto === 'TCP';
             const effectiveProxy = proxy || (groupKey === 'mainland' || groupKey === 'bootstrap' ? 'none' : 'default');
 
@@ -451,6 +452,8 @@ export const UpstreamsPage: React.FC = () => {
                     className={`px-1.5 py-0.5 text-[10px] font-mono font-bold rounded shrink-0 ${
                       isDoh
                         ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-400 border border-purple-200 dark:border-purple-800/40'
+                        : isDot
+                        ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800/40'
                         : isTcp
                         ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800/40'
                         : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/40'

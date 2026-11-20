@@ -813,3 +813,530 @@ async fn test_dual_stack_tcp_listener_bind_no_conflict() {
         assert_eq!(v6_listener.local_addr().unwrap().port(), port);
     }
 }
+
+#[tokio::test]
+async fn test_singleflight_coalesces_concurrent_queries_and_preserves_edns_cookies() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::net::UdpSocket;
+    use hickory_proto::op::{Edns, MessageType, OpCode, Query, ResponseCode};
+    use hickory_proto::rr::rdata::opt::{EdnsCode, EdnsOption};
+    use nexdns::pipeline::context::QueryContext;
+    use nexdns::pipeline::engine::PipelineEngine;
+    use nexdns::pipeline::plugins::adblock::{AdblockPlugin, BlockType};
+    use nexdns::pipeline::plugins::cache::CachePlugin;
+    use nexdns::pipeline::plugins::domain_match::DomainListRegistry;
+    use nexdns::pipeline::plugins::ip_match::IpListRegistry;
+    use nexdns::pipeline::plugins::rewrite::RewritePlugin;
+    use nexdns::pipeline::plugins::speed_check::SpeedCheckPlugin;
+    use nexdns::pipeline::plugins::upstream::{ForwardPlugin, UpstreamGroup, UpstreamServer};
+
+    let upstream_hits = Arc::new(AtomicUsize::new(0));
+    let hits_clone = upstream_hits.clone();
+
+    let mock_udp = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let addr = mock_udp.local_addr().unwrap();
+    let mock_udp_bg = mock_udp.clone();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 512];
+        while let Ok((len, src)) = mock_udp_bg.recv_from(&mut buf).await {
+            hits_clone.fetch_add(1, Ordering::SeqCst);
+            let pkt = buf[..len].to_vec();
+            let s_reply = mock_udp_bg.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                if let Ok(req) = Message::from_vec(&pkt) {
+                    let mut resp = Message::new(req.metadata.id, MessageType::Response, OpCode::Query);
+                    resp.metadata.response_code = ResponseCode::NoError;
+                    resp.queries = req.queries.clone();
+                    if let Some(q) = req.queries.first() {
+                        resp.add_answer(Record::from_rdata(
+                            q.name().clone(),
+                            300,
+                            RData::A(A(Ipv4Addr::new(93, 184, 216, 34))),
+                        ));
+                    }
+                    let _ = s_reply.send_to(&resp.to_vec().unwrap(), src).await;
+                }
+            });
+        }
+    });
+
+    let srv = UpstreamServer::parse("mainland", &format!("udp://{}", addr)).unwrap();
+    let engine = Arc::new(PipelineEngine::new(
+        Arc::new(RewritePlugin::new()),
+        Arc::new(AdblockPlugin::new(BlockType::ZeroIp, 60)),
+        Arc::new(CachePlugin::new(100, false, 60, 1800)),
+        Arc::new(DomainListRegistry::new()),
+        Arc::new(IpListRegistry::new()),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("mainland", vec![srv], 1000)))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("gfw", vec![], 1000)))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("overseas", vec![], 1000)))),
+        Arc::new(SpeedCheckPlugin::new(false, 200, 5)),
+        false,
+        false,
+        "dual".to_string(),
+    ));
+
+    let mut handles = Vec::new();
+    for i in 0..10u16 {
+        let eng = engine.clone();
+        handles.push(tokio::spawn(async move {
+            let mut req = Message::query();
+            req.metadata.id = 1000 + i;
+            req.add_query(Query::query(
+                Name::from_str("singleflight.example.com.").unwrap(),
+                RecordType::A,
+            ));
+            let mut edns = Edns::new();
+            let cookie = vec![i as u8; 8];
+            edns.options_mut().insert(EdnsOption::Unknown(10, cookie.clone()));
+            req.set_edns(edns);
+
+            let mut ctx = QueryContext::new("127.0.0.1".parse().unwrap(), req);
+            eng.process(&mut ctx).await;
+            (i, cookie, ctx)
+        }));
+    }
+
+    let mut coalesced_count = 0usize;
+    for h in handles {
+        let (i, expected_cookie, ctx) = h.await.unwrap();
+        let resp = ctx.response.expect("response must be present");
+        assert_eq!(resp.metadata.id, 1000 + i);
+        assert_eq!(resp.metadata.response_code, ResponseCode::NoError);
+        assert_eq!(resp.answers.len(), 1);
+        if ctx.tags.contains("coalesced_inflight") {
+            coalesced_count += 1;
+        }
+        let echoed = resp
+            .edns
+            .as_ref()
+            .and_then(|e| e.options().get(EdnsCode::Cookie));
+        assert_eq!(echoed, Some(&EdnsOption::Unknown(10, expected_cookie)));
+    }
+
+    assert_eq!(upstream_hits.load(Ordering::SeqCst), 1, "10 concurrent queries must coalesce into 1 upstream request");
+    assert_eq!(coalesced_count, 9);
+}
+
+#[tokio::test]
+async fn test_hedged_request_avoids_amplification_when_fast_and_hedges_when_slow() {
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio::net::UdpSocket;
+    use hickory_proto::op::{MessageType, OpCode, Query, ResponseCode};
+    use nexdns::pipeline::plugins::upstream::{UpstreamGroup, UpstreamServer};
+
+    let spawn_mock = |delay_ms: Arc<AtomicU64>, counter: Arc<AtomicUsize>, ip: Ipv4Addr| async move {
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr = sock.local_addr().unwrap();
+        let sock_bg = sock.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            while let Ok((len, src)) = sock_bg.recv_from(&mut buf).await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let pkt = buf[..len].to_vec();
+                let d = delay_ms.load(Ordering::SeqCst);
+                let s_reply = sock_bg.clone();
+                tokio::spawn(async move {
+                    if d > 0 {
+                        tokio::time::sleep(Duration::from_millis(d)).await;
+                    }
+                    if let Ok(req) = Message::from_vec(&pkt) {
+                        let mut resp = Message::new(req.metadata.id, MessageType::Response, OpCode::Query);
+                        resp.metadata.response_code = ResponseCode::NoError;
+                        resp.queries = req.queries.clone();
+                        if let Some(q) = req.queries.first() {
+                            resp.add_answer(Record::from_rdata(q.name().clone(), 60, RData::A(A(ip))));
+                        }
+                        let _ = s_reply.send_to(&resp.to_vec().unwrap(), src).await;
+                    }
+                });
+            }
+        });
+        addr
+    };
+
+    let p_delay = Arc::new(AtomicU64::new(5));
+    let b_delay = Arc::new(AtomicU64::new(5));
+    let p_hits = Arc::new(AtomicUsize::new(0));
+    let b_hits = Arc::new(AtomicUsize::new(0));
+
+    let p_addr = spawn_mock(p_delay.clone(), p_hits.clone(), Ipv4Addr::new(1, 1, 1, 1)).await;
+    let b_addr = spawn_mock(b_delay.clone(), b_hits.clone(), Ipv4Addr::new(8, 8, 8, 8)).await;
+
+    let s_primary = UpstreamServer::parse("gfw", &format!("udp://{}", p_addr)).unwrap();
+    let s_backup = UpstreamServer::parse("gfw", &format!("udp://{}", b_addr)).unwrap();
+    let group = UpstreamGroup::new("gfw", vec![s_primary, s_backup], 800);
+
+    let mut req = Message::query();
+    req.add_query(Query::query(Name::from_str("fast.example.com.").unwrap(), RecordType::A));
+    let req_bytes = req.to_vec().unwrap();
+
+    // 1. Primary responds in 5ms (< hedge_delay): backup must NOT be queried!
+    let res1 = group.query_parallel(&req_bytes).await.unwrap();
+    assert_eq!(res1.answers.len(), 1);
+    assert_eq!(p_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(b_hits.load(Ordering::SeqCst), 0, "Backup server should not be hit when primary is fast");
+
+    // 2. Make primary stall for 450ms; hedge should fire backup and return backup's 8.8.8.8 quickly!
+    p_delay.store(450, Ordering::SeqCst);
+    let start = Instant::now();
+    let res2 = group.query_parallel(&req_bytes).await.unwrap();
+    let elapsed = start.elapsed();
+    assert!(elapsed < Duration::from_millis(320), "Hedged request took too long: {:?}", elapsed);
+    assert_eq!(b_hits.load(Ordering::SeqCst), 1, "Backup server must be hedged when primary stalls");
+    assert_eq!(res2.answers[0].data, RData::A(A(Ipv4Addr::new(8, 8, 8, 8))));
+}
+
+#[tokio::test]
+async fn test_prefetch_preserves_anti_pollution_and_response_mode() {
+    use std::net::Ipv6Addr;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::net::UdpSocket;
+    use hickory_proto::op::{MessageType, OpCode, Query, ResponseCode};
+    use hickory_proto::rr::rdata::AAAA;
+    use nexdns::pipeline::context::QueryContext;
+    use nexdns::pipeline::engine::PipelineEngine;
+    use nexdns::pipeline::plugins::adblock::{AdblockPlugin, BlockType};
+    use nexdns::pipeline::plugins::cache::CachePlugin;
+    use nexdns::pipeline::plugins::domain_match::DomainListRegistry;
+    use nexdns::pipeline::plugins::ip_match::{IpListRegistry, IpMatcher};
+    use nexdns::pipeline::plugins::rewrite::RewritePlugin;
+    use nexdns::pipeline::plugins::speed_check::SpeedCheckPlugin;
+    use nexdns::pipeline::plugins::upstream::{ForwardPlugin, UpstreamGroup, UpstreamServer};
+
+    // Mainland returns a non-China (polluted) IPv4 31.13.64.1 + IPv6
+    let mainland_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let mainland_addr = mainland_sock.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 512];
+        while let Ok((len, src)) = mainland_sock.recv_from(&mut buf).await {
+            if let Ok(req) = Message::from_vec(&buf[..len]) {
+                let mut resp = Message::new(req.metadata.id, MessageType::Response, OpCode::Query);
+                resp.metadata.response_code = ResponseCode::NoError;
+                resp.queries = req.queries.clone();
+                if let Some(q) = req.queries.first() {
+                    resp.add_answer(Record::from_rdata(q.name().clone(), 2, RData::A(A(Ipv4Addr::new(31, 13, 64, 1)))));
+                    resp.add_answer(Record::from_rdata(q.name().clone(), 2, RData::AAAA(AAAA(Ipv6Addr::new(0x2a03, 0x2880, 0, 0, 0, 0, 0, 1)))));
+                }
+                let _ = mainland_sock.send_to(&resp.to_vec().unwrap(), src).await;
+            }
+        }
+    });
+
+    // GFW returns clean overseas IP 104.18.10.20 + IPv6
+    let gfw_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let gfw_addr = gfw_sock.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 512];
+        while let Ok((len, src)) = gfw_sock.recv_from(&mut buf).await {
+            if let Ok(req) = Message::from_vec(&buf[..len]) {
+                let mut resp = Message::new(req.metadata.id, MessageType::Response, OpCode::Query);
+                resp.metadata.response_code = ResponseCode::NoError;
+                resp.queries = req.queries.clone();
+                if let Some(q) = req.queries.first() {
+                    resp.add_answer(Record::from_rdata(q.name().clone(), 2, RData::A(A(Ipv4Addr::new(104, 18, 10, 20)))));
+                    resp.add_answer(Record::from_rdata(q.name().clone(), 2, RData::AAAA(AAAA(Ipv6Addr::new(0x2606, 0x4700, 0, 0, 0, 0, 0, 1)))));
+                }
+                let _ = gfw_sock.send_to(&resp.to_vec().unwrap(), src).await;
+            }
+        }
+    });
+
+    let ip_reg = Arc::new(IpListRegistry::new());
+    let mut cn_v4 = IpMatcher::new("ipv4_china");
+    cn_v4.load_from_text("223.5.5.0/24");
+    ip_reg.register(cn_v4);
+
+    let m_srv = UpstreamServer::parse("mainland", &format!("udp://{}", mainland_addr)).unwrap();
+    let g_srv = UpstreamServer::parse("gfw", &format!("udp://{}", gfw_addr)).unwrap();
+    let o_srv = UpstreamServer::parse("overseas", &format!("udp://{}", gfw_addr)).unwrap();
+
+    let engine = PipelineEngine::new(
+        Arc::new(RewritePlugin::new()),
+        Arc::new(AdblockPlugin::new(BlockType::ZeroIp, 60)),
+        Arc::new(CachePlugin::new(100, true, 2, 10)),
+        Arc::new(DomainListRegistry::new()), // Domain NOT in proxy.txt! Relies on fallback + anti_pollution!
+        ip_reg,
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("mainland", vec![m_srv], 500)))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("gfw", vec![g_srv], 500)))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("overseas", vec![o_srv], 500)))),
+        Arc::new(SpeedCheckPlugin::new(false, 200, 5)),
+        true,
+        true,
+        "ipv4_only".to_string(),
+    );
+
+    let make_ctx = || {
+        let mut req = Message::query();
+        req.add_query(Query::query(Name::from_str("uncategorized-saas.io.").unwrap(), RecordType::A));
+        QueryContext::new("127.0.0.1".parse().unwrap(), req)
+    };
+
+    // 1. Cold query: hits fallback + anti_pollution -> caches clean 104.18.10.20 (with AAAA stripped)
+    let mut ctx1 = make_ctx();
+    engine.process(&mut ctx1).await;
+    let r1 = ctx1.response.unwrap();
+    assert_eq!(r1.answers.len(), 1);
+    assert_eq!(r1.answers[0].data, RData::A(A(Ipv4Addr::new(104, 18, 10, 20))));
+
+    // 2. Wait > 80% of 2s TTL to trigger background prefetch
+    tokio::time::sleep(Duration::from_millis(1650)).await;
+    let mut ctx2 = make_ctx();
+    engine.process(&mut ctx2).await;
+    assert!(ctx2.tags.contains("prefetch_triggered"));
+
+    // 3. Give background prefetch 150ms to finish and verify cache STILL holds clean GFW IP (not polluted 31.13.64.1!)
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let mut ctx3 = make_ctx();
+    engine.process(&mut ctx3).await;
+    let r3 = ctx3.response.unwrap();
+    assert_eq!(r3.answers.len(), 1, "AAAA record must remain filtered out after prefetch");
+    assert_eq!(
+        r3.answers[0].data,
+        RData::A(A(Ipv4Addr::new(104, 18, 10, 20))),
+        "Prefetch must NOT overwrite clean cache with polluted mainland IP"
+    );
+}
+
+#[tokio::test]
+async fn test_speed_check_bounded_cache_mode_timeout_and_shared_toggle() {
+    use std::net::IpAddr;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use nexdns::pipeline::context::QueryContext;
+    use nexdns::pipeline::engine::PipelineEngine;
+    use nexdns::pipeline::plugin::DnsPlugin;
+    use nexdns::pipeline::plugins::adblock::{AdblockPlugin, BlockType};
+    use nexdns::pipeline::plugins::cache::CachePlugin;
+    use nexdns::pipeline::plugins::domain_match::DomainListRegistry;
+    use nexdns::pipeline::plugins::ip_match::IpListRegistry;
+    use nexdns::pipeline::plugins::rewrite::RewritePlugin;
+    use nexdns::pipeline::plugins::speed_check::SpeedCheckPlugin;
+    use nexdns::pipeline::plugins::upstream::{ForwardPlugin, UpstreamGroup};
+
+    // 1. Mode port parsing & un-truncated timeout_ms
+    assert_eq!(SpeedCheckPlugin::parse_mode_ports("tcp_443"), vec![443]);
+    assert_eq!(SpeedCheckPlugin::parse_mode_ports("tcp_80"), vec![80]);
+    assert_eq!(SpeedCheckPlugin::parse_mode_ports("tcp_80_443"), vec![80, 443]);
+    assert_eq!(SpeedCheckPlugin::parse_mode_ports("tcp:8443,443"), vec![8443, 443]);
+
+    let sc = Arc::new(SpeedCheckPlugin::with_capacity(false, 450, 5, "tcp_443", true, "dual", 8));
+    assert_eq!(sc.probe_timeout_ms(), 450);
+    assert_eq!(sc.target_ports_snapshot(), vec![443]);
+
+    // 2. Bounded cache eviction: inserting 30 distinct IPs never exceeds capacity 8
+    for i in 1..=30u8 {
+        sc.insert_score_for_test(IpAddr::V4(Ipv4Addr::new(10, 0, 0, i)), 20 + i as u64);
+    }
+    assert!(sc.cache_size() <= 8, "speed_check cache size exceeded capacity: {}", sc.cache_size());
+
+    // 3. Shared enabled state between PipelineEngine and SpeedCheckPlugin
+    let engine = PipelineEngine::new(
+        Arc::new(RewritePlugin::new()),
+        Arc::new(AdblockPlugin::new(BlockType::ZeroIp, 60)),
+        Arc::new(CachePlugin::new(100, false, 60, 1800)),
+        Arc::new(DomainListRegistry::new()),
+        Arc::new(IpListRegistry::new()),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("mainland", vec![], 500)))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("gfw", vec![], 500)))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("overseas", vec![], 500)))),
+        sc.clone(),
+        true,
+        true,
+        "dual".to_string(),
+    );
+    assert!(!engine.speed_check_enabled.load(Ordering::SeqCst), "engine must inherit config speed_check.enabled=false");
+    engine.toggle_stage("speed_check", true);
+    assert!(sc.enabled.load(Ordering::SeqCst));
+    assert!(engine.speed_check_enabled.load(Ordering::SeqCst));
+
+    // 4. direct_only skips probing gfw group while preserving CNAME-first order
+    let qname = Name::from_str("sub.foreign.com.").unwrap();
+    let cname_target = Name::from_str("edge.foreign.com.").unwrap();
+    let mut resp = Message::response(1, hickory_proto::op::OpCode::Query);
+    resp.answers.push(Record::from_rdata(cname_target.clone(), 60, RData::A(A(Ipv4Addr::new(104, 16, 0, 1)))));
+    resp.answers.push(Record::from_rdata(qname.clone(), 60, RData::CNAME(hickory_proto::rr::rdata::CNAME(cname_target.clone()))));
+    resp.answers.push(Record::from_rdata(cname_target, 60, RData::A(A(Ipv4Addr::new(104, 16, 0, 2)))));
+
+    let mut ctx = QueryContext::new("127.0.0.1".parse().unwrap(), Message::query());
+    ctx.routing_group = Some("gfw".to_string());
+    ctx.response = Some(resp);
+    sc.execute(&mut ctx).await;
+    assert!(ctx.tags.contains("speed_check_skipped:proxy_group"));
+    let out = ctx.response.unwrap();
+    assert!(matches!(out.answers[0].data, RData::CNAME(_)));
+}
+
+#[tokio::test]
+async fn test_config_defaults_anti_pollution_unification_and_custom_domain_override() {
+    use std::sync::Arc;
+    use tokio::net::UdpSocket;
+    use hickory_proto::op::{MessageType, OpCode, Query, ResponseCode};
+    use nexdns::config::AppConfig;
+    use nexdns::pipeline::context::QueryContext;
+    use nexdns::pipeline::engine::PipelineEngine;
+    use nexdns::pipeline::plugins::adblock::{AdblockPlugin, BlockType};
+    use nexdns::pipeline::plugins::cache::CachePlugin;
+    use nexdns::pipeline::plugins::domain_match::{DomainListRegistry, DomainMatcher};
+    use nexdns::pipeline::plugins::ip_match::IpListRegistry;
+    use nexdns::pipeline::plugins::rewrite::RewritePlugin;
+    use nexdns::pipeline::plugins::speed_check::SpeedCheckPlugin;
+    use nexdns::pipeline::plugins::upstream::{ForwardPlugin, UpstreamGroup, UpstreamServer};
+
+    // 1. Fresh config defaults: routing.enabled=true, cache.max_ttl=1800
+    let def_cfg = AppConfig::default();
+    assert!(def_cfg.routing.enabled);
+    assert!(def_cfg.routing.anti_pollution);
+    assert_eq!(def_cfg.cache.max_ttl, 1800);
+
+    // 2. Legacy top-level anti_pollution: false migrates to routing.anti_pollution and is stripped on serialize
+    let legacy_yaml = "anti_pollution: false\n";
+    let mut parsed: AppConfig = serde_yaml::from_str(legacy_yaml).unwrap();
+    parsed.normalize();
+    assert!(!parsed.routing.anti_pollution);
+    let dumped = serde_yaml::to_string(&parsed).unwrap();
+    assert!(!dumped.lines().any(|l| l.starts_with("anti_pollution:")));
+    assert!(dumped.contains("anti_pollution: false"));
+
+    // 3. custom_proxy_domains overrides `.cn` in direct.txt (e.g. fd.myzwq.cn hosted on Cloudflare)
+    let spawn_dns = |ip: Ipv4Addr| async move {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = sock.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            while let Ok((len, src)) = sock.recv_from(&mut buf).await {
+                if let Ok(req) = Message::from_vec(&buf[..len]) {
+                    let mut resp = Message::new(req.metadata.id, MessageType::Response, OpCode::Query);
+                    resp.metadata.response_code = ResponseCode::NoError;
+                    resp.queries = req.queries.clone();
+                    if let Some(q) = req.queries.first() {
+                        resp.add_answer(Record::from_rdata(q.name().clone(), 60, RData::A(A(ip))));
+                    }
+                    let _ = sock.send_to(&resp.to_vec().unwrap(), src).await;
+                }
+            }
+        });
+        addr
+    };
+
+    let m_addr = spawn_dns(Ipv4Addr::new(114, 114, 114, 114)).await;
+    let g_addr = spawn_dns(Ipv4Addr::new(172, 67, 1, 1)).await;
+
+    let domain_reg = Arc::new(DomainListRegistry::new());
+    let mut direct_matcher = DomainMatcher::new("domain_direct");
+    direct_matcher.load_from_text(".cn");
+    domain_reg.register(direct_matcher);
+
+    let engine = PipelineEngine::new(
+        Arc::new(RewritePlugin::new()),
+        Arc::new(AdblockPlugin::new(BlockType::ZeroIp, 60)),
+        Arc::new(CachePlugin::new(100, false, 60, 1800)),
+        domain_reg,
+        Arc::new(IpListRegistry::new()),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new(
+            "mainland",
+            vec![UpstreamServer::parse("mainland", &format!("udp://{}", m_addr)).unwrap()],
+            500,
+        )))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new(
+            "gfw",
+            vec![UpstreamServer::parse("gfw", &format!("udp://{}", g_addr)).unwrap()],
+            500,
+        )))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new(
+            "overseas",
+            vec![UpstreamServer::parse("overseas", &format!("udp://{}", g_addr)).unwrap()],
+            500,
+        )))),
+        Arc::new(SpeedCheckPlugin::new(false, 200, 5)),
+        true,
+        true,
+        "dual".to_string(),
+    );
+    engine.update_custom_routing_domains(&[], &["fd.myzwq.cn".to_string()]);
+
+    let mut req_cf_cn = Message::query();
+    req_cf_cn.add_query(Query::query(Name::from_str("fd.myzwq.cn.").unwrap(), RecordType::A));
+    let mut ctx_cf = QueryContext::new("127.0.0.1".parse().unwrap(), req_cf_cn);
+    engine.process(&mut ctx_cf).await;
+    assert!(ctx_cf.tags.contains("route:custom_proxy"));
+    assert_eq!(ctx_cf.response.unwrap().answers[0].data, RData::A(A(Ipv4Addr::new(172, 67, 1, 1))));
+
+    let mut req_normal_cn = Message::query();
+    req_normal_cn.add_query(Query::query(Name::from_str("gov.cn.").unwrap(), RecordType::A));
+    let mut ctx_cn = QueryContext::new("127.0.0.1".parse().unwrap(), req_normal_cn);
+    engine.process(&mut ctx_cn).await;
+    assert!(ctx_cn.tags.contains("route:direct"));
+    assert_eq!(ctx_cn.response.unwrap().answers[0].data, RData::A(A(Ipv4Addr::new(114, 114, 114, 114))));
+}
+
+#[tokio::test]
+async fn test_tcp_upstream_connection_pool_reuses_single_stream() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use hickory_proto::op::{MessageType, OpCode, Query, ResponseCode};
+    use nexdns::pipeline::plugins::upstream::UpstreamServer;
+
+    let accepts = Arc::new(AtomicUsize::new(0));
+    let queries = Arc::new(AtomicUsize::new(0));
+    let accepts_bg = accepts.clone();
+    let queries_bg = queries.clone();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            accepts_bg.fetch_add(1, Ordering::SeqCst);
+            let q_cnt = queries_bg.clone();
+            tokio::spawn(async move {
+                let mut len_buf = [0u8; 2];
+                while stream.read_exact(&mut len_buf).await.is_ok() {
+                    let len = u16::from_be_bytes(len_buf) as usize;
+                    let mut buf = vec![0u8; len];
+                    if stream.read_exact(&mut buf).await.is_err() {
+                        break;
+                    }
+                    q_cnt.fetch_add(1, Ordering::SeqCst);
+                    if let Ok(req) = Message::from_vec(&buf) {
+                        let mut resp = Message::new(req.metadata.id, MessageType::Response, OpCode::Query);
+                        resp.metadata.response_code = ResponseCode::NoError;
+                        resp.queries = req.queries.clone();
+                        if let Some(q) = req.queries.first() {
+                            resp.add_answer(Record::from_rdata(q.name().clone(), 60, RData::A(A(Ipv4Addr::new(9, 9, 9, 9)))));
+                        }
+                        let raw = resp.to_vec().unwrap();
+                        let mut framed = Vec::with_capacity(2 + raw.len());
+                        framed.extend_from_slice(&(raw.len() as u16).to_be_bytes());
+                        framed.extend_from_slice(&raw);
+                        if stream.write_all(&framed).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let srv = UpstreamServer::parse("mainland", &format!("tcp://{}", addr)).unwrap();
+    let mut req = Message::query();
+    req.add_query(Query::query(Name::from_str("reuse.example.com.").unwrap(), RecordType::A));
+    let bytes = req.to_vec().unwrap();
+
+    for _ in 0..3 {
+        let resp = srv.query(&bytes, Duration::from_millis(500)).await.unwrap();
+        assert_eq!(resp.answers.len(), 1);
+    }
+
+    assert_eq!(queries.load(Ordering::SeqCst), 3);
+    assert_eq!(accepts.load(Ordering::SeqCst), 1, "All 3 sequential TCP DNS queries must reuse 1 pooled TCP connection");
+    assert_eq!(srv.tcp_pool.idle_len(), 1);
+}

@@ -245,7 +245,10 @@ impl RuleFileManager {
     }
 
     pub async fn update_rule_file(&self, file_name: &str, url: &str) -> anyhow::Result<usize> {
-        let resp = reqwest::get(url).await?;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()?;
+        let resp = client.get(url).send().await?.error_for_status()?;
         let text = resp.text().await?;
 
         let file_path = self.base_dir.join(file_name);

@@ -31,10 +31,11 @@ NexDNS 是一款自研原生统一单内核架构的下一代高性能 DNS 综�
    - 内置域名规则命中实时诊断工具。
 
 4. **并发查询与最优测速 (Fastest IP & SmartCache)**：
-   - 支持 UDP 53、TCP 53 以及加密 DNS over HTTPS (DoH)。
-   - **TCP 80/443 建连测速优选**：针对上游返回的多个 IP 记录并发发起非阻塞握手，将最低 RTT 的最快 IP 置顶返回客户端。
-   - **标准智能缓存**：支持按 [最小TTL, 最大TTL] 严格缓存、高频热点域名静默预取与一键清空。
-   - **多协议上游池**：支持按 mainland、gfw、overseas 独立分组并发探测与 SOCKS5 代理无缝集成。
+   - 支持 UDP 53、TCP 53、DoT (`tls://`，全局共享 TLS 会话配置与长连接池复用) 以及基于 **HTTP/2 多路复用长连接** 的加密 DNS over HTTPS (DoH)。
+   - **Singleflight 并发去重 & 阶梯式 Hedged Request**：同一 `(qname, qtype)` 在途冷查询自动合并去重；上游组优先单发 EWMA 历史最低延迟节点，仅在超时（如 150ms）未回时阶梯补发备节点，彻底消除代理连接风暴与流量倍增。
+   - **TCP 端口建连测速优选**：针对国内直连返回的多条 IP 记录异步并发握手（支持 `tcp_80_443` / `tcp_443` / `tcp_80`，默认跳过境外代理组并内置有界缓存与并发限流），将最低 RTT 的最快 IP 置顶返回客户端。
+   - **标准智能缓存与安全预取**：默认缓存范围 `[60s, 1800s]`，80% TTL 静默预取完整复用智能分流 + 防污染 + 地址族过滤流水线，绝不将污染 IP 写回缓存。
+   - **持久化高优先级自定义分流覆盖**：支持在 `config.yaml` 与控制台配置 `routing.custom_proxy_domains` / `routing.custom_direct_domains`，优先级高于自动更新的 `direct.txt` / `proxy.txt`（完美解决托管在海外 CDN 的 `.cn` 域名分流）。
 
 5. **服务端口物理隔离与原生诊断工具**：
    - **端口物理隔离**：UDP/TCP 53（标准 DNS 解析）、TCP 8053（RFC 8484 独立 DoH 解析）、TCP 3000（Web 控制台与 API）。
@@ -145,6 +146,15 @@ cargo build --release
 # 4. 运行单二进制文件
 ./target/release/nexdns --config data/config.yaml
 ```
+
+---
+
+## 生产环境最佳实践（无 IPv6 出口必开项）
+
+- **【无 IPv6 出口必开项】开启仅 IPv4 下游响应短路 (`dns.response_mode: ipv4_only`)**：
+  在纯 IPv4 宽带、Docker 默认桥接或代理无 IPv6 出口的环境中，前往控制台 **「系统设置 -> DNS 基础监听与下游服务」** 点击 **「一键开启仅 IPv4 优化」**（或在 `data/config.yaml` 设置 `dns.response_mode: ipv4_only` 与 `dns.connect_ip_version: ipv4`）。内核将在缓存前置阶段以 **0.05ms** 直接对 `AAAA` 查询返回标准 `NoError (NODATA)` 并附带 `Authority SOA` 否定缓存记录，彻底消除双栈 Happy Eyeballs 退避卡顿并**立即节省 50% 上游查询量**。
+- **托管在 Cloudflare 等海外 CDN 的 `.cn` 域名覆盖 (`routing.custom_proxy_domains`)**：
+  由于社区 `direct.txt` 默认包含 `.cn` 顶级域，若个别 `.cn` 域名托管于海外 CDN 需要防污染解析，可在控制台 **「分流规则 -> 自定义强制分流覆盖规则」** 中填入该域名，优先级高于订阅规则且不会被定时自动更新覆盖。
 
 ---
 

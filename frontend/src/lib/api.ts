@@ -13,6 +13,8 @@ export interface StatusResponse {
   cache_entries: number;
   adblock_rules_count: number;
   anti_pollution: boolean;
+  routing_enabled?: boolean;
+  response_mode?: string;
   disk?: DiskStatus;
 }
 
@@ -199,12 +201,15 @@ export interface AppSettings {
     timeout_ms: number;
     cache_mins: number;
     mode: string;
+    direct_only?: boolean;
   };
-  anti_pollution: boolean;
+  anti_pollution?: boolean;
   routing: {
-    enabled?: boolean;
+    enabled: boolean;
     anti_pollution: boolean;
     fallback_timeout_ms: number;
+    custom_direct_domains?: string[];
+    custom_proxy_domains?: string[];
   };
   logging: {
     enabled: boolean;
@@ -482,6 +487,29 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ domain, action }),
     });
+  },
+
+  async getCustomRoutingDomains(): Promise<{
+    custom_direct_domains: string[];
+    custom_proxy_domains: string[];
+  }> {
+    const res = await authFetch('/api/v1/routing/custom');
+    return res.json();
+  },
+
+  async updateCustomRoutingDomains(payload: {
+    custom_direct_domains: string[];
+    custom_proxy_domains: string[];
+  }): Promise<void> {
+    const res = await authFetch('/api/v1/routing/custom', {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || '保存自定义分流覆盖规则失败');
+    }
   },
 
   async getRoutingRules(): Promise<RuleFileInfo[]> {

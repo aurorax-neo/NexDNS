@@ -193,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
             let mut s = UpstreamServer::parse("mainland", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "none".to_string());
             s.set_proxy(config.proxy.find_proxy_addr(&proxy_mode));
+            s.set_connect_ip_version(&config.dns.connect_ip_version);
             Some(s)
         })
         .collect();
@@ -204,6 +205,7 @@ async fn main() -> anyhow::Result<()> {
             let mut s = UpstreamServer::parse("gfw", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
             s.set_proxy(config.proxy.find_proxy_addr(&proxy_mode));
+            s.set_connect_ip_version(&config.dns.connect_ip_version);
             Some(s)
         })
         .collect();
@@ -215,6 +217,7 @@ async fn main() -> anyhow::Result<()> {
             let mut s = UpstreamServer::parse("overseas", u)?;
             let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
             s.set_proxy(config.proxy.find_proxy_addr(&proxy_mode));
+            s.set_connect_ip_version(&config.dns.connect_ip_version);
             Some(s)
         })
         .collect();
@@ -235,11 +238,14 @@ async fn main() -> anyhow::Result<()> {
         config.upstreams.timeout_ms,
     ))));
 
-    // 8. Plugins: Speed Check (TCP 80/443 handshake)
-    let speed_check = Arc::new(SpeedCheckPlugin::new(
+    // 8. Plugins: Speed Check (TCP handshake with configurable ports, timeout & bounded cache)
+    let speed_check = Arc::new(SpeedCheckPlugin::with_options(
         config.speed_check.enabled,
         config.speed_check.timeout_ms,
         config.speed_check.cache_mins,
+        &config.speed_check.mode,
+        config.speed_check.direct_only,
+        &config.dns.connect_ip_version,
     ));
 
     // 9. Pipeline Engine
@@ -254,9 +260,14 @@ async fn main() -> anyhow::Result<()> {
         forward_overseas,
         speed_check,
         config.routing.enabled,
-        config.anti_pollution,
+        config.routing.anti_pollution,
         config.dns.response_mode.clone(),
     ));
+    engine.set_fallback_timeout_ms(config.routing.fallback_timeout_ms);
+    engine.update_custom_routing_domains(
+        &config.routing.custom_direct_domains,
+        &config.routing.custom_proxy_domains,
+    );
 
     // 10. Start DNS Server (Controlled by independent enabled switch)
     let dns_server_enabled = Arc::new(parking_lot::RwLock::new(config.dns.enabled));

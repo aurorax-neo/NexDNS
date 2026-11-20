@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-11-20
+
+### 🚀 Features
+- **DoH HTTP/2 多路复用长连接 + Singleflight 去重 + 阶梯式 Hedged Request**：为 `reqwest` 启用 `http2` 与连接级 Keep-Alive 保活，使每个 DoH 上游复用单条 TLS 长连接（竞速取消仅发 `RST_STREAM` 而不拆毁底层 TCP 连接）；新增 `(qname, qtype)` 粒度在途 Singleflight 合并去重（保留各客户端独立报文 ID 与 EDNS Cookie）；将 `UpstreamGroup` 无条件多路并发改造为基于实测 EWMA 延迟排序的阶梯式 Hedged Request（优先单发最快主节点，超时 150ms 未回再补发备节点），彻底根除代理握手风暴与境外请求倍增。
+- **持久化高优先级自定义分流覆盖规则（`custom_proxy_domains` / `custom_direct_domains`）**：在 `config.yaml` 与「分流规则」页面新增独立于在线订阅文件之外的自定义强制代理/强制直连域名覆盖表（`GET/PUT /api/v1/routing/custom`），匹配优先级高于 `direct.txt` / `proxy.txt` 且按最长规则特异性裁决，完美解决托管于 Cloudflare 等海外 CDN 的 `.cn` 域名被 `.cn` 规则强制直连的问题，且不受定时自动更新覆盖。
+- **DoT 全局共享 TLS 配置与 DoT/TCP 空闲连接池复用**：使用 `OnceLock<TlsConnector>` 全局复用根证书库与客户端配置，并为 DoT（`tls://`）与 TCP（`tcp://`）上游引入空闲长连接池、单帧合并写入、`TCP_NODELAY` 及对端静默断连自动透明重连重试。
+- **开箱体验与单栈环境一键优化**：新装默认开启智能分流（`routing.enabled: true`）并将默认缓存上限调优至 `cache.max_ttl: 1800` 秒；首页新增分流未开启提醒横幅与一键启用入口；系统设置页标注「无 IPv6 出口必开」并提供「一键开启仅 IPv4 优化」快捷入口，0.05ms 本地返回带 SOA 的 NODATA，立省 50% 上游查询。
+
+### 🐛 Bug Fixes
+- **修复后台 Prefetch 绕过防污染检测将污染 IP 覆盖干净缓存的严重问题**：80% TTL 后台静默预取统一接入完整的「自定义覆盖 + 智能分流 + 非中国 IP 防污染校验 + `response_mode` 地址族过滤 + 测速」流水线，并在境外上游瞬断触发降级兜底时保护现有干净缓存不被污染结果覆盖。
+- **修复 `speed_check` 测速缓存内存泄漏、180ms 硬编码超时截断与境外无效直连探测**：测速缓存增加 `8192` 条上限与过期/抽样淘汰机制；移除 `180ms` 硬编码截断以严格遵循用户配置的 `timeout_ms`；新增 16 路全局并发探测信号量；真正按 `speed_check.mode` 解析探测端口，并默认开启 `direct_only` 跳过 `gfw` / `overseas` 代理组直连探测（同时保持 RFC 1034 `CNAME` 记录置顶）。
+- **收敛分裂配置项并完整接线 `connect_ip_version` 与 `fallback_timeout_ms`**：统一收敛防污染开关至 `routing.anti_pollution`（兼容迁移并自动剥离旧版顶层 `anti_pollution`）；打通 `dns.connect_ip_version` 控制出站连接协议栈、打通 `routing.fallback_timeout_ms` 控制未命中域名首轮大陆探测回退超时，并令 `PipelineEngine` 与 `SpeedCheckPlugin` 共享同一份 `Arc<AtomicBool>` 启停状态。
+
 ## [0.1.9] - 2026-11-12
 
 ### 🚀 Features

@@ -51,30 +51,39 @@ impl DomainMatcher {
         }
     }
 
-    pub fn matches(&self, qname: &str) -> bool {
+    pub fn match_specificity(&self, qname: &str) -> Option<usize> {
         let clean = qname.trim_end_matches('.').to_lowercase();
+        if clean.is_empty() {
+            return None;
+        }
         if self.exact.contains(&clean) {
-            return true;
+            return Some(clean.len() + 10_000);
         }
 
         let mut sub = clean.as_str();
         if self.suffix.contains(sub) {
-            return true;
+            return Some(sub.len());
         }
         while let Some(idx) = sub.find('.') {
             sub = &sub[idx + 1..];
             if self.suffix.contains(sub) {
-                return true;
+                return Some(sub.len());
             }
         }
 
+        let mut best_kw: Option<usize> = None;
         for kw in &self.keywords {
             if clean.contains(kw) {
-                return true;
+                best_kw = Some(best_kw.map_or(kw.len(), |cur| cur.max(kw.len())));
             }
         }
 
-        false
+        best_kw
+    }
+
+    #[allow(dead_code)]
+    pub fn matches(&self, qname: &str) -> bool {
+        self.match_specificity(qname).is_some()
     }
 }
 
@@ -100,12 +109,12 @@ impl DomainListRegistry {
         w.insert(matcher.name.clone(), matcher);
     }
 
-    pub fn matches(&self, list_name: &str, qname: &str) -> bool {
+    pub fn match_specificity(&self, list_name: &str, qname: &str) -> Option<usize> {
         let r = self.matchers.read();
-        if let Some(matcher) = r.get(list_name) {
-            matcher.matches(qname)
-        } else {
-            false
-        }
+        r.get(list_name).and_then(|matcher| matcher.match_specificity(qname))
+    }
+
+    pub fn matches(&self, list_name: &str, qname: &str) -> bool {
+        self.match_specificity(list_name, qname).is_some()
     }
 }

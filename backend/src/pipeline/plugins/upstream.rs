@@ -162,6 +162,35 @@ fn check_ip_version_allowed(addr: &SocketAddr, connect_ip_version: &str) -> Resu
     }
 }
 
+/// 解析 DoH 地址中的显式字面量 IP 与端口（如 `https://8.8.8.8/dns-query` 或 `https://[2001:4860:4860::8888]:8443/dns-query`）
+pub fn parse_doh_ip_endpoint(addr: &str) -> Option<(SocketAddr, String)> {
+    let rest = addr.strip_prefix("https://")?;
+    let (host_port_str, path) = match rest.find('/') {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => (rest, "/dns-query"),
+    };
+    let sa = if host_port_str.starts_with('[') {
+        if let Some((bracket_ip, port_str)) = host_port_str.rsplit_once("]:") {
+            let clean_ip = bracket_ip.trim_start_matches('[');
+            let ip = IpAddr::from_str(clean_ip).ok()?;
+            let port = port_str.parse::<u16>().ok()?;
+            SocketAddr::new(ip, port)
+        } else {
+            let clean_ip = host_port_str.trim_matches(|c| c == '[' || c == ']');
+            let ip = IpAddr::from_str(clean_ip).ok()?;
+            SocketAddr::new(ip, 443)
+        }
+    } else if let Some((ip_part, port_part)) = host_port_str.split_once(':') {
+        let ip = IpAddr::from_str(ip_part).ok()?;
+        let port = port_part.parse::<u16>().ok()?;
+        SocketAddr::new(ip, port)
+    } else {
+        let ip = IpAddr::from_str(host_port_str).ok()?;
+        SocketAddr::new(ip, 443)
+    };
+    Some((sa, path.to_string()))
+}
+
 async fn resolve_upstream_socket_addr(
     raw_addr: &str,
     default_port: u16,
@@ -293,12 +322,29 @@ impl UpstreamServer {
             .http2_keep_alive_timeout(Duration::from_secs(10))
             .http2_adaptive_window(true);
 
+        let doh_ip_override = self
+            .host_name
+            .as_ref()
+            .and_then(|_| parse_doh_ip_endpoint(&self.addr));
+
         let mut has_proxy = false;
         if let Some(ref p) = self.proxy {
             if p != "none" && !p.is_empty() {
                 has_proxy = true;
                 let mut p_addr = p.clone();
-                if !p_addr.contains("://") {
+                // 关键区分：
+                // - 若上游 URL 本身已给定纯 IP + `#sni=`（如 `https://8.8.8.8/dns-query#sni=dns.google&proxy=default`），
+                //   下方 `builder.resolve(host, sa)` 已将该域名静态映射至目标 IP（进程内 0ms 查表，绝不触发系统 DNS）。
+                //   此时必须使用 `socks5://` (DnsResolve::Local)，让 SOCKS5 直接 CONNECT 目标 IP (`8.8.8.8:443`)，
+                //   同时由 rustls 发送指定的 TLS SNI (`dns.google`)！
+                // - 若上游是纯域名无固定 IP（如 `https://dns.google/dns-query#proxy=default`），则使用 `socks5h://` 交由远端代理解析。
+                if doh_ip_override.is_some() {
+                    if !p_addr.contains("://") {
+                        p_addr = format!("socks5://{}", p_addr);
+                    } else if p_addr.starts_with("socks5h://") {
+                        p_addr = p_addr.replacen("socks5h://", "socks5://", 1);
+                    }
+                } else if !p_addr.contains("://") {
                     p_addr = format!("socks5h://{}", p_addr);
                 } else if p_addr.starts_with("socks5://") {
                     p_addr = p_addr.replacen("socks5://", "socks5h://", 1);
@@ -326,38 +372,12 @@ impl UpstreamServer {
             }
         }
 
-        // Handle -host-name / #sni= override (e.g. https://101.226.4.6/dns-query#sni=doh.360.cn)
-        if let Some(ref host) = self.host_name {
-            if let Some(rest) = self.addr.strip_prefix("https://") {
-                let (host_port_str, _path) = match rest.find('/') {
-                    Some(idx) => (&rest[..idx], &rest[idx..]),
-                    None => (rest, "/dns-query"),
-                };
-                let parsed_sa: Option<SocketAddr> = if host_port_str.starts_with('[') {
-                    if let Some((bracket_ip, port_str)) = host_port_str.rsplit_once("]:") {
-                        let clean_ip = bracket_ip.trim_start_matches('[');
-                        IpAddr::from_str(clean_ip)
-                            .ok()
-                            .map(|ip| SocketAddr::new(ip, port_str.parse().unwrap_or(443)))
-                    } else {
-                        let clean_ip = host_port_str.trim_matches(|c| c == '[' || c == ']');
-                        IpAddr::from_str(clean_ip).ok().map(|ip| SocketAddr::new(ip, 443))
-                    }
-                } else {
-                    let (ip_str, port) = match host_port_str.split_once(':') {
-                        Some((ip_part, port_part)) => (ip_part, port_part.parse().unwrap_or(443)),
-                        None => (host_port_str, 443),
-                    };
-                    IpAddr::from_str(ip_str).ok().map(|ip| SocketAddr::new(ip, port))
-                };
-
-                if let Some(sa) = parsed_sa {
-                    if !has_proxy {
-                        check_ip_version_allowed(&sa, &self.connect_ip_version)?;
-                    }
-                    builder = builder.resolve(host, sa);
-                }
+        // Handle -host-name / #sni= override (e.g. https://8.8.8.8/dns-query#sni=dns.google)
+        if let (Some(ref host), Some((sa, _))) = (&self.host_name, doh_ip_override) {
+            if !has_proxy {
+                check_ip_version_allowed(&sa, &self.connect_ip_version)?;
             }
+            builder = builder.resolve(host, sa);
         }
 
         let client = builder.build().map_err(|e| e.to_string())?;
@@ -624,7 +644,13 @@ impl UpstreamServer {
                         .replace("cloudflare-dns.com", "1.1.1.1")
                         .replace("dns.cloudflare.com", "1.1.1.1");
                 } else if let Some(ref host) = self.host_name {
-                    if let Some(rest) = self.addr.strip_prefix("https://") {
+                    if let Some((sa, path)) = parse_doh_ip_endpoint(&self.addr) {
+                        if sa.port() == 443 {
+                            final_url = format!("https://{}{}", host, path);
+                        } else {
+                            final_url = format!("https://{}:{}{}", host, sa.port(), path);
+                        }
+                    } else if let Some(rest) = self.addr.strip_prefix("https://") {
                         let path = match rest.find('/') {
                             Some(idx) => &rest[idx..],
                             None => "/dns-query",
@@ -633,19 +659,16 @@ impl UpstreamServer {
                     }
                 }
 
-                let mut req_builder = client
+                // 注意：严禁在此手动注入 `.header("host", host)`！
+                // `final_url` 已包含目标主机名，rustls 自动据此设置 TLS SNI 并校验证书，
+                // hyper 在 HTTP/2 下自动生成唯一合法的 `:authority` 伪首部（HTTP/1.1 下自动生成 `Host` 头）。
+                // 若手动附加 `host` 头，HTTP/2 帧会同时携带 `:authority` 与 `host`，违反 RFC 9113 §8.3.1，
+                // 导致 Google DoH (8.8.8.8 / 8.8.4.4) 等严格校验节点直接返回 RST_STREAM (PROTOCOL_ERROR)。
+                let resp = client
                     .post(&final_url)
                     .header("content-type", "application/dns-message")
                     .header("accept", "application/dns-message")
-                    .body(req_bytes.to_vec());
-
-                if let Some(ref host) = self.host_name {
-                    if !(has_proxy && (host == "cloudflare-dns.com" || host == "dns.cloudflare.com")) {
-                        req_builder = req_builder.header("host", host);
-                    }
-                }
-
-                let resp = req_builder
+                    .body(req_bytes.to_vec())
                     .send()
                     .await
                     .map_err(|e| e.to_string())?;

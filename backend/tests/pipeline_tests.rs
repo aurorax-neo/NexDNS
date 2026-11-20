@@ -1340,3 +1340,95 @@ async fn test_tcp_upstream_connection_pool_reuses_single_stream() {
     assert_eq!(accepts.load(Ordering::SeqCst), 1, "All 3 sequential TCP DNS queries must reuse 1 pooled TCP connection");
     assert_eq!(srv.tcp_pool.idle_len(), 1);
 }
+
+#[tokio::test]
+async fn test_doh_sni_with_socks5_pins_exact_ip_and_preserves_tls_sni_and_h2_alpn() {
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+    use hickory_proto::op::Query;
+    use nexdns::pipeline::plugins::upstream::{parse_doh_ip_endpoint, UpstreamServer};
+
+    // 1. Endpoint parser handles IPv4, custom port, and IPv6
+    let (sa1, path1) = parse_doh_ip_endpoint("https://8.8.8.8/dns-query").unwrap();
+    assert_eq!(sa1, "8.8.8.8:443".parse().unwrap());
+    assert_eq!(path1, "/dns-query");
+    let (sa2, path2) = parse_doh_ip_endpoint("https://8.8.4.4:8443/resolve").unwrap();
+    assert_eq!(sa2, "8.8.4.4:8443".parse().unwrap());
+    assert_eq!(path2, "/resolve");
+    assert!(parse_doh_ip_endpoint("https://dns.google/dns-query").is_none());
+
+    // 2. Mock SOCKS5 server verifying:
+    //    (a) `https://8.8.8.8:8443/dns-query#sni=dns.google` sends SOCKS5 ATYP=0x01 (IPv4 8.8.8.8:8443)
+    //        AND TLS ClientHello carries SNI="dns.google" + ALPN="h2"!
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let (tx, rx) = oneshot::channel::<(u8, [u8; 4], u16, Vec<u8>)>();
+
+    tokio::spawn(async move {
+        if let Ok((mut stream, _)) = proxy_listener.accept().await {
+            // Read SOCKS5 greeting (VER, NMETHODS, METHODS...)
+            let mut hdr = [0u8; 2];
+            stream.read_exact(&mut hdr).await.unwrap();
+            let mut methods = vec![0u8; hdr[1] as usize];
+            stream.read_exact(&mut methods).await.unwrap();
+            // Reply NO AUTH (0x05, 0x00)
+            stream.write_all(&[0x05, 0x00]).await.unwrap();
+
+            // Read CONNECT request header: VER(5), CMD(1), RSV(0), ATYP
+            let mut req_hdr = [0u8; 4];
+            stream.read_exact(&mut req_hdr).await.unwrap();
+            let atyp = req_hdr[3];
+            let mut ip_bytes = [0u8; 4];
+            if atyp == 0x01 {
+                stream.read_exact(&mut ip_bytes).await.unwrap();
+            } else if atyp == 0x03 {
+                let mut dlen = [0u8; 1];
+                stream.read_exact(&mut dlen).await.unwrap();
+                let mut dom = vec![0u8; dlen[0] as usize];
+                stream.read_exact(&mut dom).await.unwrap();
+            }
+            let mut port_buf = [0u8; 2];
+            stream.read_exact(&mut port_buf).await.unwrap();
+            let target_port = u16::from_be_bytes(port_buf);
+
+            // Reply SOCKS5 tunnel established
+            stream
+                .write_all(&[0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x01, 0xbb])
+                .await
+                .unwrap();
+
+            // Capture TLS ClientHello bytes sent by reqwest + rustls
+            let mut client_hello = vec![0u8; 1024];
+            let n = stream.read(&mut client_hello).await.unwrap_or(0);
+            client_hello.truncate(n);
+            let _ = tx.send((atyp, ip_bytes, target_port, client_hello));
+            // Close stream cleanly to end handshake immediately
+        }
+    });
+
+    let mut srv = UpstreamServer::parse(
+        "gfw",
+        "https://8.8.8.8:8443/dns-query#sni=dns.google&proxy=default",
+    )
+    .unwrap();
+    srv.set_proxy(Some(format!("socks5://{}", proxy_addr)));
+
+    let mut req = Message::query();
+    req.add_query(Query::query(Name::from_str("example.com.").unwrap(), RecordType::A));
+    let _ = srv.query(&req.to_vec().unwrap(), Duration::from_millis(800)).await;
+
+    let (atyp, ip_bytes, target_port, client_hello) = rx.await.expect("SOCKS5 proxy must receive connection");
+    assert_eq!(atyp, 0x01, "Expected SOCKS5 ATYP=0x01 (IPv4 pinned IP), got {}", atyp);
+    assert_eq!(ip_bytes, [8, 8, 8, 8]);
+    assert_eq!(target_port, 8443);
+    assert!(
+        client_hello.windows(b"dns.google".len()).any(|w| w == b"dns.google"),
+        "TLS ClientHello must carry SNI 'dns.google'"
+    );
+    assert!(
+        client_hello.windows(3).any(|w| w == b"\x02h2"),
+        "TLS ClientHello must advertise HTTP/2 ALPN 'h2'"
+    );
+}

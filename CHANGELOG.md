@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-11-20
+
+### 🐛 Bug Fixes
+- **修复开启 HTTP/2 后带 `#sni=` 的 DoH 上游（如 Google `8.8.8.8` / `8.8.4.4`）触发 `RST_STREAM (PROTOCOL_ERROR)` 不可达的问题**：移除 `upstream.rs` 中多余的手动 `.header("host", host)` 注入，完整保留 `#sni=` 的 TLS SNI 与证书校验能力，由 `hyper` 根据改写后的目标 URL 自动生成唯一合法的 HTTP/2 `:authority` 伪首部（或 HTTP/1.1 `Host` 头），彻底解决 `:authority` 与 `host` 同时出现违反 RFC 9113 §8.3.1 导致 Google DoH 断流的问题（同时补齐非 443 自定义端口拼接）。
+- **修复「固定 IP + `#sni=` + SOCKS5 代理」模式下目标 IP 被 `socks5h://` 绕过的问题**：当 DoH 上游已指定纯 IP 与 `#sni=`（如 `https://8.8.8.8/dns-query#sni=dns.google&proxy=default`）时，代理自动采用 `socks5://` 命中进程内 `builder.resolve` 零耗时静态映射（不发任何本地 DNS），使 SOCKS5 精准向目标 IP（`ATYP=0x01`）发起连接并携带指定 TLS SNI，避免代理端重复解析域名或发生 DNS 回环；纯域名无固定 IP 上游继续保持 `socks5h://` 远端解析。
+
 ## [0.1.10] - 2026-11-20
 
 ### 🚀 Features

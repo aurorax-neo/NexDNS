@@ -237,8 +237,8 @@ impl PipelineEngine {
     /// 若 `gfw` 提前失败或超过阈值（1200ms）仍未回包（如代理通道抖动卡顿），保留 `gfw` 在途等待的同时并发拉起 `overseas`（大陆可直连海外加密 DoH 组）竞速抢救。
     /// **严禁回退 `mainland` 大陆上游**，彻底杜绝代理抖动窗口内拉取并缓存大陆污染 IP！
     async fn query_clean_overseas_chain(&self, ctx: &mut QueryContext) {
-        let has_gfw = !self.forward_gfw.group.upstreams.read().is_empty();
-        let has_overseas = !self.forward_overseas.group.upstreams.read().is_empty();
+        let has_gfw = self.forward_gfw.group.has_usable_servers();
+        let has_overseas = self.forward_overseas.group.has_usable_servers();
 
         match (has_gfw, has_overseas) {
             (false, false) => {}

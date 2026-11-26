@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-11-26
+
+### 🐛 Bug Fixes
+- **替换纯国内宽带实测直连通达的 `overseas` 海外加密 DoH 节点组**：经 `lan-108` 纯国内宽带实机逐一拨测，`NestingDNS` 默认内置的 AdGuard (`94.140.14.140`)、Quad9 (`9.9.9.11`)、台湾 HiNet (`168.95.1.1`)、TWNIC (`101.101.101.101`)、Yandex (`77.88.8.8`) 目前在无代理环境下均已被 TCP 443/853 黑洞或 TLS SNI 重置；现已全量替换为经 `lan-108` 实测 HTTP/2 `POST` 100% 直连通达且返回真实无污染 IP 的 6 个跨国独立加密节点（Mullvad Global Anycast `194.242.2.2` / `194.242.2.4`、卢森堡国家科研网 RESTENA `158.64.1.29`、CleanBrowsing Anycast `185.228.169.9`、瑞士 Digitale Gesellschaft `185.95.218.43` / `185.95.218.42`，HTTP/2 热连接 RTT 低至 ~110ms），并在 `AppConfig::normalize()` 启动时自动清理并平滑升级旧版失效节点。
+- **修复未启用代理（`proxy.enabled: false`）时 `proxy=default` 节点错误退化为直连被墙 IP 的问题**：当全局未启用代理时，显式要求代理的 `gfw` 节点不再尝试裸连 `8.8.8.8` / `1.1.1.1` 白等超时，而是 0ms 立即跳过并直达 `overseas` 纯净海外直连组，彻底消除无代理环境下的超时阻塞与 `Server Failure`。
+- **兼容旧版 `anti_pollution: true` 配置升级**：当旧版配置开启了 `anti_pollution: true` 而 `routing.enabled: false` 时，启动归一化自动联动开启合并后的智能分流与防污染引擎。
+
 ## [0.1.12] - 2026-11-26
 
 ### 🚀 Features

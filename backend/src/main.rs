@@ -191,8 +191,7 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .filter_map(|u| {
             let mut s = UpstreamServer::parse("mainland", u)?;
-            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "none".to_string());
-            s.set_proxy(config.proxy.find_proxy_addr(&proxy_mode));
+            s.apply_proxy_config(&config.proxy, "none");
             s.set_connect_ip_version(&config.dns.connect_ip_version);
             Some(s)
         })
@@ -203,8 +202,7 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .filter_map(|u| {
             let mut s = UpstreamServer::parse("gfw", u)?;
-            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
-            s.set_proxy(config.proxy.find_proxy_addr(&proxy_mode));
+            s.apply_proxy_config(&config.proxy, "default");
             s.set_connect_ip_version(&config.dns.connect_ip_version);
             Some(s)
         })
@@ -215,8 +213,7 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .filter_map(|u| {
             let mut s = UpstreamServer::parse("overseas", u)?;
-            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
-            s.set_proxy(config.proxy.find_proxy_addr(&proxy_mode));
+            s.apply_proxy_config(&config.proxy, "none");
             s.set_connect_ip_version(&config.dns.connect_ip_version);
             Some(s)
         })

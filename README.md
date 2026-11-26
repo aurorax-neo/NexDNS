@@ -24,7 +24,7 @@ NexDNS 是一款自研原生统一单内核架构的下一代高性能 DNS 综�
 2. **智能分流与防污染一体化引擎 (Unified Smart Routing & Zero-Proxy Anti-Pollution)**：
    - **单一总开关统一联动**：域名智能分流调度与非大陆 IP 防污染探测深度融合（`routing.enabled` 默认开启）。
    - **最长后缀与精确特异度仲裁**：自动比对 `direct.txt` 与 `proxy.txt` 匹配粒度（如 `proxy.txt` 的 `domain:google.cn` 自动优先于 `direct.txt` 的 `domain:cn`；`direct.txt` 的 `full:dl.l.google.com` 自动优先于 `domain:google.com`），彻底消除 `.cn` 海外托管/跳转域名误走大陆直连。
-   - **无代理直连防污染备用链 (`gfw -> overseas`)**：内置大陆公网可直接建立加密 TLS HTTP/2 连接的未封锁海外纯净 DoH 节点组（AdGuard DNS、台湾 HiNet、TWNIC Quad101、Quad9）。无论在无代理环境还是跨境代理通道瞬时抖动窗口，均能无缝获取无污染真实境外 IP。
+   - **无代理直连防污染备用链 (`gfw -> overseas`)**：内置经纯国内宽带实机 HTTP/2 POST 报文拨测 100% 直连通达的 6 个海外纯净加密 DoH 节点（Mullvad Anycast、卢森堡 RESTENA、CleanBrowsing Anycast、瑞士 Digitale Gesellschaft，热连接 RTT ~110ms）；未开启代理时自动 0ms 跳过 `proxy=default` 节点并直连 `overseas`，无论无代理环境还是跨境代理抖动窗口均可秒级返回真实境外 IP。
    - **零大陆回退与防缓存投毒硬隔离**：代理域与检出非中国 IP 污染的冷门域**严禁回退 `mainland` 大陆上游、严禁将大陆污染应答写入缓存**；境外组应答缓存 TTL 自动封顶 `<= 300s`，确保线路异常恢复后快速收敛。
 
 3. **高效威胁与安全规则拦截 (Security Filtering)**：

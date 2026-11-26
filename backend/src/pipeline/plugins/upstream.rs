@@ -130,6 +130,8 @@ pub struct UpstreamServer {
     pub bootstrap_ip: Option<String>,
     pub host_name: Option<String>,
     pub proxy: Option<String>,
+    #[serde(skip)]
+    pub proxy_required_but_missing: bool,
     #[serde(default = "default_connect_ip_version")]
     pub connect_ip_version: String,
     #[serde(skip)]
@@ -280,6 +282,24 @@ impl UpstreamServer {
         self.fail_count.store(0, Ordering::Relaxed);
         self.ewma_rtt_us.store(0, Ordering::Relaxed);
         *self.cooldown_until.write() = Instant::now();
+    }
+
+    /// 根据全局代理配置解析当前节点的代理策略：
+    /// 若节点显式要求代理（如 `#proxy=default`），但当前全局未启用代理或对应代理不存在，
+    /// 标记 `proxy_required_but_missing = true`，查询时 0ms 立即跳过并交由海外直连组处理，绝不傻等直连被墙 IP 超时！
+    pub fn apply_proxy_config(&mut self, proxy_cfg: &crate::config::ProxyConfig, default_mode: &str) {
+        let mode = self.proxy.clone().unwrap_or_else(|| default_mode.to_string());
+        let trimmed = mode.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+            self.proxy_required_but_missing = false;
+            self.set_proxy(None);
+        } else if let Some(resolved_addr) = proxy_cfg.find_proxy_addr(trimmed) {
+            self.proxy_required_but_missing = false;
+            self.set_proxy(Some(resolved_addr));
+        } else {
+            self.proxy_required_but_missing = true;
+            self.set_proxy(None);
+        }
     }
 
     pub fn set_connect_ip_version(&mut self, ver: &str) {
@@ -466,6 +486,7 @@ impl UpstreamServer {
             bootstrap_ip: None,
             host_name,
             proxy,
+            proxy_required_but_missing: false,
             connect_ip_version: default_connect_ip_version(),
             doh_client: Arc::new(parking_lot::RwLock::new(None)),
             tcp_pool: TcpConnPool::default(),
@@ -477,6 +498,9 @@ impl UpstreamServer {
     }
 
     pub async fn query(&self, req_bytes: &[u8], timeout_duration: Duration) -> Result<Message, String> {
+        if self.proxy_required_but_missing {
+            return Err("该节点需走代理，当前未启用代理（已自动交由海外直连组解析）".to_string());
+        }
         let now = Instant::now();
         if now < *self.cooldown_until.read() {
             return Err(format!("上游节点 [{}] 熔断冷却中", self.addr));
@@ -805,6 +829,13 @@ impl UpstreamGroup {
         Duration::from_millis(self.timeout_ms.load(Ordering::Relaxed))
     }
 
+    pub fn has_usable_servers(&self) -> bool {
+        self.upstreams
+            .read()
+            .iter()
+            .any(|s| !s.proxy_required_but_missing)
+    }
+
     #[allow(dead_code)]
     pub async fn query_parallel(&self, req_bytes: &[u8]) -> Result<Message, String> {
         self.query_parallel_with_timeout(req_bytes, None).await
@@ -815,9 +846,15 @@ impl UpstreamGroup {
         req_bytes: &[u8],
         timeout_override: Option<Duration>,
     ) -> Result<Message, String> {
-        let servers = self.upstreams.read().clone();
+        let servers: Vec<UpstreamServer> = self
+            .upstreams
+            .read()
+            .iter()
+            .filter(|s| !s.proxy_required_but_missing)
+            .cloned()
+            .collect();
         if servers.is_empty() {
-            return Err(format!("Upstream group '{}' has no servers", self.name));
+            return Err(format!("Upstream group '{}' has no usable servers (proxy disabled or empty)", self.name));
         }
 
         let now = Instant::now();

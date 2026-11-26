@@ -1288,7 +1288,7 @@ async fn test_config_defaults_anti_pollution_unification_and_custom_domain_overr
     use nexdns::pipeline::plugins::upstream::{ForwardPlugin, UpstreamGroup, UpstreamServer};
 
     // 1. Fresh config defaults: routing.enabled=true, fallback_timeout_ms=800, upstreams.timeout_ms=4000, cache.max_ttl=1800,
-    //    and overseas contains direct-reachable unblocked encrypted DoH resolvers (never 1.1.1.1#proxy=none)
+    //    and overseas contains lan-108 verified direct-reachable encrypted DoH resolvers (never 1.1.1.1 / 94.140.14.140 / 9.9.9.11)
     let def_cfg = AppConfig::default();
     assert!(def_cfg.routing.enabled);
     assert!(def_cfg.routing.anti_pollution.is_none());
@@ -1296,28 +1296,31 @@ async fn test_config_defaults_anti_pollution_unification_and_custom_domain_overr
     assert_eq!(def_cfg.upstreams.timeout_ms, 4000);
     assert_eq!(def_cfg.cache.max_ttl, 1800);
     assert!(!def_cfg.upstreams.overseas.iter().any(|u| u.contains("1.1.1.1/dns-query#proxy=none")));
-    assert!(def_cfg.upstreams.overseas.iter().any(|u| u.contains("94.140.14.140")));
-    assert!(def_cfg.upstreams.overseas.iter().any(|u| u.contains("168.95.1.1")));
-    assert!(def_cfg.upstreams.overseas.iter().any(|u| u.contains("101.101.101.101")));
+    assert!(!def_cfg.upstreams.overseas.iter().any(|u| u.contains("94.140.14.140")));
+    assert!(def_cfg.upstreams.overseas.iter().any(|u| u.contains("194.242.2.2")));
+    assert!(def_cfg.upstreams.overseas.iter().any(|u| u.contains("158.64.1.29")));
+    assert!(def_cfg.upstreams.overseas.iter().any(|u| u.contains("185.95.218.43")));
 
-    // 2. Legacy anti_pollution fields & broken 3-item overseas list are cleanly normalized and stripped on serialize
+    // 2. Legacy anti_pollution fields & dead overseas nodes (v0.1.9-v0.1.12) are cleanly normalized & migrated
     let legacy_yaml = r#"
-anti_pollution: false
+anti_pollution: true
 routing:
-  enabled: true
-  anti_pollution: false
+  enabled: false
+  anti_pollution: true
 upstreams:
   overseas:
-    - "https://1.1.1.1/dns-query#proxy=none"
-    - "https://8.8.8.8/dns-query#sni=dns.google&proxy=none"
-    - "https://94.140.14.140/dns-query#sni=dns.adguard.com&proxy=none"
+    - "https://94.140.14.140/dns-query#sni=dns.adguard-dns.com&proxy=none"
+    - "https://168.95.1.1/dns-query#sni=dns.hinet.net&proxy=none"
+    - "https://101.101.101.101/dns-query#sni=dns.twnic.tw&proxy=none"
+    - "https://9.9.9.11/dns-query#sni=dns11.quad9.net&proxy=none"
 "#;
     let mut parsed: AppConfig = serde_yaml::from_str(legacy_yaml).unwrap();
     parsed.normalize();
-    assert!(parsed.routing.enabled);
+    assert!(parsed.routing.enabled, "旧版开启了 anti_pollution 时应自动升级启用统一智能分流防污染引擎");
     assert!(parsed.routing.anti_pollution.is_none());
-    assert!(!parsed.upstreams.overseas.iter().any(|u| u.contains("1.1.1.1/dns-query#proxy=none")));
-    assert!(parsed.upstreams.overseas.iter().any(|u| u.contains("dns.adguard-dns.com")));
+    assert!(!parsed.upstreams.overseas.iter().any(|u| u.contains("94.140.14.140")));
+    assert!(!parsed.upstreams.overseas.iter().any(|u| u.contains("168.95.1.1")));
+    assert!(parsed.upstreams.overseas.iter().any(|u| u.contains("194.242.2.2")));
     let dumped = serde_yaml::to_string(&parsed).unwrap();
     assert!(!dumped.contains("anti_pollution"), "独立 anti_pollution 字段合并入 routing.enabled 后不再序列化");
 

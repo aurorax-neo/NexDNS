@@ -97,7 +97,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onNavigate }) => {
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 whitespace-nowrap">服务正常运行中</span>
               <span className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/40 whitespace-nowrap shrink-0">
-                v{status?.version || '0.1.12'}
+                v{status?.version || '0.1.13'}
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">

@@ -43,22 +43,19 @@ impl AppState {
         };
         let mainland = cfg.upstreams.mainland.iter().filter_map(|u| {
             let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("mainland", u)?;
-            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "none".to_string());
-            s.set_proxy(proxy.find_proxy_addr(&proxy_mode));
+            s.apply_proxy_config(&proxy, "none");
             s.set_connect_ip_version(&cfg.dns.connect_ip_version);
             Some(s)
         }).collect();
         let gfw = cfg.upstreams.gfw.iter().filter_map(|u| {
             let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("gfw", u)?;
-            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
-            s.set_proxy(proxy.find_proxy_addr(&proxy_mode));
+            s.apply_proxy_config(&proxy, "default");
             s.set_connect_ip_version(&cfg.dns.connect_ip_version);
             Some(s)
         }).collect();
         let overseas = cfg.upstreams.overseas.iter().filter_map(|u| {
             let mut s = crate::pipeline::plugins::upstream::UpstreamServer::parse("overseas", u)?;
-            let proxy_mode = s.proxy.clone().unwrap_or_else(|| "default".to_string());
-            s.set_proxy(proxy.find_proxy_addr(&proxy_mode));
+            s.apply_proxy_config(&proxy, "none");
             s.set_connect_ip_version(&cfg.dns.connect_ip_version);
             Some(s)
         }).collect();
@@ -1149,10 +1146,8 @@ async fn probe_upstream_latency(
     let mut rtt = None;
 
     if let Some(mut s) = server {
-        let proxy_mode = s.proxy.clone().unwrap_or_else(|| {
-            if group == "mainland" || group == "bootstrap" { "none".to_string() } else { "default".to_string() }
-        });
-        s.set_proxy(proxy_cfg.find_proxy_addr(&proxy_mode));
+        let default_mode = if group == "gfw" { "default" } else { "none" };
+        s.apply_proxy_config(&proxy_cfg, default_mode);
         s.set_connect_ip_version(&connect_ip_version);
         let mut req = hickory_proto::op::Message::query();
         req.add_query(hickory_proto::op::Query::query(
@@ -1470,10 +1465,8 @@ async fn test_single_upstream(
     };
 
     if let Some(mut s) = server {
-        let proxy_mode = s.proxy.clone().unwrap_or_else(|| {
-            if payload.group == "mainland" || payload.group == "bootstrap" { "none".to_string() } else { "default".to_string() }
-        });
-        s.set_proxy(proxy_cfg.find_proxy_addr(&proxy_mode));
+        let default_mode = if payload.group == "gfw" { "default" } else { "none" };
+        s.apply_proxy_config(&proxy_cfg, default_mode);
         s.set_connect_ip_version(&connect_ip_ver);
 
         let mut req = hickory_proto::op::Message::query();

@@ -262,15 +262,16 @@ impl Default for UpstreamsConfig {
                 "https://8.8.8.8/dns-query#sni=dns.google&proxy=default".to_string(),
                 "https://8.8.4.4/dns-query#sni=dns.google&proxy=default".to_string(),
                 "https://1.1.1.1/dns-query#proxy=default".to_string(),
-                "https://94.140.14.140/dns-query#sni=dns.adguard-dns.com&proxy=default".to_string(),
+                "https://194.242.2.2/dns-query#sni=dns.mullvad.net&proxy=default".to_string(),
             ],
-            // 海外无代理防污染直连备用组（选用大陆公网未封锁、TLS 加密抗抢答的境外纯净 DoH 节点，对齐 NestingDNS）
+            // 海外无代理防污染直连备用组（全部经纯国内宽带 lan-108 实机 HTTP/2 POST 报文拨测验证 100% 直连通达、无污染返回真实境外 IP）
             overseas: vec![
-                "https://94.140.14.140/dns-query#sni=dns.adguard-dns.com&proxy=none".to_string(),
-                "https://94.140.14.141/dns-query#sni=dns.adguard-dns.com&proxy=none".to_string(),
-                "https://168.95.1.1/dns-query#sni=dns.hinet.net&proxy=none".to_string(),
-                "https://101.101.101.101/dns-query#sni=dns.twnic.tw&proxy=none".to_string(),
-                "https://9.9.9.11/dns-query#sni=dns11.quad9.net&proxy=none".to_string(),
+                "https://194.242.2.2/dns-query#sni=dns.mullvad.net&proxy=none".to_string(),
+                "https://194.242.2.4/dns-query#sni=base.dns.mullvad.net&proxy=none".to_string(),
+                "https://158.64.1.29/dns-query#sni=kaitain.restena.lu&proxy=none".to_string(),
+                "https://185.228.169.9/doh/security-filter/#sni=doh.cleanbrowsing.org&proxy=none".to_string(),
+                "https://185.95.218.43/dns-query#sni=dns.digitale-gesellschaft.ch&proxy=none".to_string(),
+                "https://185.95.218.42/dns-query#sni=dns.digitale-gesellschaft.ch&proxy=none".to_string(),
             ],
             timeout_ms: 4000,
         }
@@ -461,8 +462,11 @@ fn clean_domain_list(list: &mut Vec<String>) {
 
 impl AppConfig {
     pub fn normalize(&mut self) {
-        let _ = self.anti_pollution.take();
-        let _ = self.routing.anti_pollution.take();
+        let legacy_top_ap = self.anti_pollution.take();
+        let legacy_routing_ap = self.routing.anti_pollution.take();
+        if legacy_top_ap == Some(true) || legacy_routing_ap == Some(true) {
+            self.routing.enabled = true;
+        }
         if !self.custom_direct_domains.is_empty() {
             let extra = std::mem::take(&mut self.custom_direct_domains);
             self.routing.custom_direct_domains.extend(extra);
@@ -506,12 +510,44 @@ impl AppConfig {
         if self.upstreams.timeout_ms == 0 {
             self.upstreams.timeout_ms = 4000;
         }
-        // 自动升级旧版默认 overseas 中不可直连的 1.1.1.1#proxy=none / 8.8.8.8#proxy=none 死节点为大陆可直连海外加密节点
-        let is_legacy_broken_overseas = self.upstreams.overseas.len() == 3
-            && self.upstreams.overseas.iter().any(|u| u.contains("1.1.1.1/dns-query#proxy=none"))
-            && self.upstreams.overseas.iter().any(|u| u.contains("8.8.8.8/dns-query"));
-        if is_legacy_broken_overseas {
-            self.upstreams.overseas = UpstreamsConfig::default().overseas;
+        // 自动清理旧版默认 overseas 中在大陆纯直连环境下已被 TCP 黑洞或 TLS SNI 重置的失效公共节点，并无缝注入实测直连可用节点
+        let is_dead_direct_overseas = |u: &str| -> bool {
+            let is_direct = u.contains("proxy=none") || !u.contains("proxy=");
+            if !is_direct {
+                return false;
+            }
+            const DEAD_DIRECT_HOSTS: &[&str] = &[
+                "://1.1.1.1/",
+                "://1.0.0.1/",
+                "://8.8.8.8/",
+                "://8.8.4.4/",
+                "://94.140.14.140/",
+                "://94.140.14.141/",
+                "://168.95.1.1/",
+                "://168.95.192.1/",
+                "://101.101.101.101/",
+                "://9.9.9.11/",
+                "://9.9.9.9/",
+                "://9.9.9.10/",
+                "://149.112.112.11/",
+                "://149.112.112.112/",
+                "://77.88.8.8/",
+                "://77.88.8.1/",
+                "://208.67.222.222/",
+                "://208.67.220.220/",
+            ];
+            DEAD_DIRECT_HOSTS.iter().any(|pat| u.contains(pat))
+        };
+        let prev_len = self.upstreams.overseas.len();
+        self.upstreams.overseas.retain(|u| !is_dead_direct_overseas(u));
+        if self.upstreams.overseas.len() != prev_len || (prev_len > 0 && self.upstreams.overseas.is_empty()) {
+            let mut merged = UpstreamsConfig::default().overseas;
+            for custom in self.upstreams.overseas.drain(..) {
+                if !merged.contains(&custom) {
+                    merged.push(custom);
+                }
+            }
+            self.upstreams.overseas = merged;
         }
         for u in self.upstreams.gfw.iter_mut().chain(self.upstreams.overseas.iter_mut()) {
             if u.contains("#sni=dns.adguard.com") {
@@ -550,6 +586,7 @@ impl AppConfig {
             let content = fs::read_to_string(&path)?;
             let mut config: Self = serde_yaml::from_str(&content)?;
             config.normalize();
+            let _ = config.save(&path);
             Ok(config)
         } else {
             let mut default_cfg = Self::default();

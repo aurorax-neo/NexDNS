@@ -16,6 +16,9 @@ use crate::pipeline::plugins::rewrite::RewritePlugin;
 use crate::pipeline::plugins::speed_check::SpeedCheckPlugin;
 use crate::pipeline::plugins::upstream::ForwardPlugin;
 
+/// 对齐 NestingDNS `ttl 0-300`：境外代理组与海外备用组最大缓存 TTL 限制为 300s，加快线路切换收敛
+const OVERSEAS_GROUP_MAX_TTL_SECS: u32 = 300;
+
 #[derive(Clone)]
 struct InflightSnapshot {
     response: Option<Message>,
@@ -51,6 +54,7 @@ pub struct PipelineEngine {
     pub speed_check: Arc<SpeedCheckPlugin>,
     pub adblock_enabled: Arc<AtomicBool>,
     pub cache_enabled: Arc<AtomicBool>,
+    /// 智能分流与非大陆 IP 防污染探测统一总开关（二者共享同一原子状态）
     pub router_enabled: Arc<AtomicBool>,
     pub anti_pollution_enabled: Arc<AtomicBool>,
     pub speed_check_enabled: Arc<AtomicBool>,
@@ -71,10 +75,11 @@ impl PipelineEngine {
         forward_overseas: Arc<ForwardPlugin>,
         speed_check: Arc<SpeedCheckPlugin>,
         router_enabled: bool,
-        anti_pollution_enabled: bool,
+        _legacy_anti_pollution: bool,
         response_mode: String,
     ) -> Self {
         let shared_speed_enabled = speed_check.enabled.clone();
+        let shared_router_enabled = Arc::new(AtomicBool::new(router_enabled));
         Self {
             rewrite,
             adblock,
@@ -87,10 +92,10 @@ impl PipelineEngine {
             speed_check,
             adblock_enabled: Arc::new(AtomicBool::new(true)),
             cache_enabled: Arc::new(AtomicBool::new(true)),
-            router_enabled: Arc::new(AtomicBool::new(router_enabled)),
-            anti_pollution_enabled: Arc::new(AtomicBool::new(anti_pollution_enabled)),
+            router_enabled: shared_router_enabled.clone(),
+            anti_pollution_enabled: shared_router_enabled,
             speed_check_enabled: shared_speed_enabled,
-            fallback_timeout_ms: Arc::new(AtomicU64::new(1500)),
+            fallback_timeout_ms: Arc::new(AtomicU64::new(800)),
             response_mode: Arc::new(parking_lot::RwLock::new(response_mode)),
             inflight: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         }
@@ -124,23 +129,18 @@ impl PipelineEngine {
                 self.cache_enabled.store(enabled, Ordering::SeqCst);
                 true
             }
-            "router" => {
+            "router" | "anti_pollution" => {
                 if enabled {
                     let gfw_empty = self.forward_gfw.group.upstreams.read().is_empty();
                     let overseas_empty = self.forward_overseas.group.upstreams.read().is_empty();
-                    if gfw_empty || overseas_empty {
+                    if gfw_empty && overseas_empty {
                         return false;
                     }
                 }
                 self.router_enabled.store(enabled, Ordering::SeqCst);
                 true
             }
-            "anti_pollution" => {
-                self.anti_pollution_enabled.store(enabled, Ordering::SeqCst);
-                true
-            }
             "speed_check" => {
-                // speed_check_enabled 与 speed_check.enabled 共享同一 Arc<AtomicBool>
                 self.speed_check.set_enabled(enabled);
                 true
             }
@@ -223,29 +223,99 @@ impl PipelineEngine {
         }
     }
 
-    async fn query_proxy_chain(&self, ctx: &mut QueryContext) {
-        self.forward_gfw.execute(ctx).await;
+    fn is_valid_clean_upstream_resp(resp: &Option<Message>) -> bool {
+        resp.as_ref()
+            .map(|r| {
+                r.metadata.response_code == ResponseCode::NoError
+                    || r.metadata.response_code == ResponseCode::NXDomain
+            })
+            .unwrap_or(false)
+    }
 
-        let gfw_ok = ctx
-            .response
-            .as_ref()
-            .map(|r| r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty())
-            .unwrap_or(false);
+    /// 纯净境外解析链（对齐 NestingDNS `secondary_forward` + 阶梯并发抢救）：
+    /// 优先查 `gfw`（代理加密组，最大容忍 `upstreams.timeout_ms` 如 4000ms）；
+    /// 若 `gfw` 提前失败或超过阈值（1200ms）仍未回包（如代理通道抖动卡顿），保留 `gfw` 在途等待的同时并发拉起 `overseas`（大陆可直连海外加密 DoH 组）竞速抢救。
+    /// **严禁回退 `mainland` 大陆上游**，彻底杜绝代理抖动窗口内拉取并缓存大陆污染 IP！
+    async fn query_clean_overseas_chain(&self, ctx: &mut QueryContext) {
+        let has_gfw = !self.forward_gfw.group.upstreams.read().is_empty();
+        let has_overseas = !self.forward_overseas.group.upstreams.read().is_empty();
 
-        if !gfw_ok {
-            self.forward_overseas.execute(ctx).await;
-        }
+        match (has_gfw, has_overseas) {
+            (false, false) => {}
+            (true, false) => {
+                self.forward_gfw.execute(ctx).await;
+            }
+            (false, true) => {
+                ctx.tags.insert("fallback_to_overseas".to_string());
+                self.forward_overseas.execute(ctx).await;
+            }
+            (true, true) => {
+                let gfw_timeout = self.forward_gfw.group.timeout_duration();
+                let hedge_delay = Duration::from_millis(1200)
+                    .min((gfw_timeout / 2).max(Duration::from_millis(150)));
 
-        let overseas_ok = ctx
-            .response
-            .as_ref()
-            .map(|r| r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty())
-            .unwrap_or(false);
+                let mut gfw_ctx = ctx.clone();
+                gfw_ctx.response = None;
+                let gfw_plugin = self.forward_gfw.clone();
+                let mut gfw_task = tokio::spawn(async move {
+                    gfw_plugin.execute(&mut gfw_ctx).await;
+                    gfw_ctx
+                });
 
-        // 容灾兜底：若代理未开启或境外上游不可达，自动降级至大陆上游解析，防止 proxy 域名直接返回 ServFail 断网
-        if !overseas_ok {
-            ctx.tags.insert("fallback_restore_mainland".to_string());
-            self.forward_mainland.execute(ctx).await;
+                tokio::select! {
+                    res = &mut gfw_task => {
+                        if let Ok(done_gfw) = res {
+                            if Self::is_valid_clean_upstream_resp(&done_gfw.response) {
+                                *ctx = done_gfw;
+                                return;
+                            }
+                        }
+                        ctx.tags.insert("fallback_to_overseas".to_string());
+                        self.forward_overseas.execute(ctx).await;
+                    }
+                    _ = tokio::time::sleep(hedge_delay) => {
+                        let mut ovs_ctx = ctx.clone();
+                        ovs_ctx.response = None;
+                        ovs_ctx.tags.insert("fallback_to_overseas".to_string());
+                        let ovs_plugin = self.forward_overseas.clone();
+                        let mut ovs_task = tokio::spawn(async move {
+                            ovs_plugin.execute(&mut ovs_ctx).await;
+                            ovs_ctx
+                        });
+
+                        tokio::select! {
+                            res_gfw = &mut gfw_task => {
+                                if let Ok(done_gfw) = res_gfw {
+                                    if Self::is_valid_clean_upstream_resp(&done_gfw.response) {
+                                        ovs_task.abort();
+                                        *ctx = done_gfw;
+                                        return;
+                                    }
+                                }
+                                if let Ok(done_ovs) = ovs_task.await {
+                                    if Self::is_valid_clean_upstream_resp(&done_ovs.response) {
+                                        *ctx = done_ovs;
+                                    }
+                                }
+                            }
+                            res_ovs = &mut ovs_task => {
+                                if let Ok(done_ovs) = res_ovs {
+                                    if Self::is_valid_clean_upstream_resp(&done_ovs.response) {
+                                        gfw_task.abort();
+                                        *ctx = done_ovs;
+                                        return;
+                                    }
+                                }
+                                if let Ok(done_gfw) = gfw_task.await {
+                                    if Self::is_valid_clean_upstream_resp(&done_gfw.response) {
+                                        *ctx = done_gfw;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -289,7 +359,7 @@ impl PipelineEngine {
             ctx.tags.insert("route:bypass_disabled".to_string());
             self.forward_mainland.execute(ctx).await;
         } else {
-            // 最高优先级：用户自定义持久化分流覆盖表（高于 direct.txt / proxy.txt，免受在线自动更新覆盖）
+            // 1. 最高优先级：用户自定义持久化分流覆盖表（高于 direct.txt / proxy.txt，免受在线自动更新覆盖）
             let custom_direct_spec = self.domain_registry.match_specificity("custom_direct", &ctx.qname);
             let custom_proxy_spec = self.domain_registry.match_specificity("custom_proxy", &ctx.qname);
 
@@ -297,72 +367,82 @@ impl PipelineEngine {
                 if custom_proxy_spec >= custom_direct_spec {
                     ctx.tags.insert("route:custom_proxy".to_string());
                     ctx.matched_rule = Some("custom_proxy_domains".to_string());
-                    self.query_proxy_chain(ctx).await;
+                    self.query_clean_overseas_chain(ctx).await;
                 } else {
                     ctx.tags.insert("route:custom_direct".to_string());
                     ctx.matched_rule = Some("custom_direct_domains".to_string());
                     self.forward_mainland.execute(ctx).await;
                 }
             } else {
-                let is_direct = self.domain_registry.matches("domain_direct", &ctx.qname);
-                let is_proxy = self.domain_registry.matches("domain_proxy", &ctx.qname);
+                // 2. 订阅分流规则集：按最长后缀 / `full:` 精确特异度比对！
+                //    例如 `proxy.txt` 中的 `domain:google.cn` (len=9) 优先于 `direct.txt` 的 `domain:cn` (len=2)；
+                //    同时 `direct.txt` 中的 `full:dl.l.google.com` (20015) 优先于 `proxy.txt` 的 `domain:google.com` (len=10)。
+                let direct_spec = self.domain_registry.match_specificity("domain_direct", &ctx.qname);
+                let proxy_spec = self.domain_registry.match_specificity("domain_proxy", &ctx.qname);
 
-                if is_direct {
-                    ctx.tags.insert("route:direct".to_string());
-                    self.forward_mainland.execute(ctx).await;
-                } else if is_proxy {
-                    ctx.tags.insert("route:proxy".to_string());
-                    self.query_proxy_chain(ctx).await;
+                if direct_spec.is_some() || proxy_spec.is_some() {
+                    if proxy_spec > direct_spec {
+                        ctx.tags.insert("route:proxy".to_string());
+                        self.query_clean_overseas_chain(ctx).await;
+                    } else {
+                        ctx.tags.insert("route:direct".to_string());
+                        self.forward_mainland.execute(ctx).await;
+                    }
                 } else {
-                    // Fallback pipeline: try mainland first (bounded by fallback_timeout_ms)
+                    // 3. 未命中规则域名智能防污染回退（对齐 NestingDNS `primary_forward` + `secondary_forward`）：
+                    //    先以短超时探测 `mainland`：
+                    //    - 若返回含中国 IP (`has_china_ip`)，立即采纳直连结果；
+                    //    - 若返回非中国 IP (`!has_china_ip`)，判定为境外/污染结果并彻底丢弃（绝不保留回退兜底！），转查 `gfw -> overseas`；
+                    //    - 若大陆探测超时、报错或无有效记录，同样转查 `gfw -> overseas`。
                     ctx.tags.insert("route:fallback".to_string());
                     let fb_timeout = Duration::from_millis(self.fallback_timeout_ms.load(Ordering::Relaxed));
                     self.forward_mainland
                         .execute_with_timeout(ctx, Some(fb_timeout))
                         .await;
 
-                    let mut mainland_fallback_resp = None;
+                    let mut need_overseas_fallback = false;
+                    let mut clean_non_ip_backup: Option<Message> = None;
 
-                    // Anti-pollution check: if mainland returned an IP that is NOT in China IP list, drop response and fallback to GFW!
-                    if self.anti_pollution_enabled.load(Ordering::Relaxed) {
-                        if let Some(ref resp) = ctx.response {
-                            if self.has_ip_answers(resp) && !self.has_china_ip(resp) {
-                                ctx.tags.insert("pollution_detected".to_string());
-                                mainland_fallback_resp = ctx.response.take();
+                    match &ctx.response {
+                        None => {
+                            need_overseas_fallback = true;
+                        }
+                        Some(resp) => {
+                            if resp.metadata.response_code != ResponseCode::NoError {
+                                // 大陆返回 NXDomain / ServFail / Refused（可能为污染伪造否定应答），转查纯净境外确认
+                                need_overseas_fallback = true;
+                            } else if self.has_ip_answers(resp) {
+                                if !self.has_china_ip(resp) {
+                                    // 非中国 IP：彻底抛弃大陆结果（严禁缓存或兜底恢复！）
+                                    ctx.tags.insert("pollution_detected".to_string());
+                                    need_overseas_fallback = true;
+                                }
+                            } else if matches!(ctx.qtype, RecordType::A | RecordType::AAAA) {
+                                // A / AAAA 查询返回空记录，继续尝试境外解析
+                                clean_non_ip_backup = Some(resp.clone());
+                                need_overseas_fallback = true;
                             }
                         }
                     }
 
-                    // If mainland returned no response or dropped due to pollution, query GFW/Overseas
-                    if ctx.response.is_none() {
+                    if need_overseas_fallback {
+                        ctx.response = None;
                         ctx.tags.insert("fallback_to_gfw".to_string());
-                        self.forward_gfw.execute(ctx).await;
+                        self.query_clean_overseas_chain(ctx).await;
 
-                        let gfw_effective = match &ctx.response {
-                            Some(r) => r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty(),
-                            None => false,
-                        };
-
-                        if !gfw_effective {
-                            self.forward_overseas.execute(ctx).await;
-                        }
-
-                        let overseas_effective = match &ctx.response {
-                            Some(r) => r.metadata.response_code == ResponseCode::NoError && !r.answers.is_empty(),
-                            None => false,
-                        };
-
-                        if !overseas_effective && mainland_fallback_resp.is_some() {
-                            ctx.tags.insert("fallback_restore_mainland".to_string());
-                            ctx.response = mainland_fallback_resp;
-                            ctx.routing_group = Some("mainland (fallback)".to_string());
+                        // 仅当大陆原本返回的是干净无 IP 空应答（NODATA，绝非污染 IP）且境外全断时保留空 NODATA
+                        if ctx.response.is_none() && !ctx.tags.contains("pollution_detected") {
+                            if let Some(nodata_resp) = clean_non_ip_backup {
+                                ctx.response = Some(nodata_resp);
+                                ctx.routing_group = Some("mainland".to_string());
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Post-processing: Response Mode -> Speed Check -> Cache Storage
+        // Post-processing: Response Mode -> Speed Check -> Safe Cache Storage
         if ctx.response.is_some() {
             self.apply_response_mode(ctx);
 
@@ -373,19 +453,33 @@ impl PipelineEngine {
 
             if self.cache_enabled.load(Ordering::Relaxed) {
                 if let Some(ref resp) = ctx.response {
-                    let degraded_polluted_fallback = ctx.tags.contains("pollution_detected")
-                        && ctx.tags.contains("fallback_restore_mainland");
-                    let should_store = if is_prefetch {
-                        // 后台预取严禁将境外短暂断连时降级回退的污染 IP 覆盖已有干净缓存
-                        resp.metadata.response_code == ResponseCode::NoError
-                            && !resp.answers.is_empty()
-                            && !degraded_polluted_fallback
+                    let must_be_clean_overseas = ctx.tags.contains("route:proxy")
+                        || ctx.tags.contains("route:custom_proxy")
+                        || ctx.tags.contains("pollution_detected");
+                    let from_mainland = ctx
+                        .routing_group
+                        .as_deref()
+                        .map(|g| g.starts_with("mainland"))
+                        .unwrap_or(false);
+
+                    let mut should_store = if is_prefetch {
+                        resp.metadata.response_code == ResponseCode::NoError && !resp.answers.is_empty()
                     } else {
                         resp.metadata.response_code == ResponseCode::NoError
                             || resp.metadata.response_code == ResponseCode::NXDomain
                     };
+
+                    // 双重硬隔离护栏：凡属代理域或已检出非中国 IP 污染的查询，绝不允许任何来自 mainland 的结果写入缓存
+                    if must_be_clean_overseas && from_mainland {
+                        should_store = false;
+                    }
+
                     if should_store {
-                        self.cache.insert(&ctx.qname, ctx.qtype, resp.clone());
+                        let ttl_cap = match ctx.routing_group.as_deref() {
+                            Some("gfw") | Some("overseas") => Some(OVERSEAS_GROUP_MAX_TTL_SECS),
+                            _ => None,
+                        };
+                        self.cache.insert_with_max_ttl(&ctx.qname, ctx.qtype, resp.clone(), ttl_cap);
                     }
                 }
             }
@@ -464,7 +558,6 @@ impl PipelineEngine {
                         return;
                     }
                 }
-                // Leader 被提前取消时安全回退自行解析，确保下游请求绝不丢失
                 self.resolve_uncached_and_store(ctx, is_prefetch).await;
             }
         }
@@ -493,7 +586,7 @@ impl PipelineEngine {
             return;
         }
 
-        // RFC 6761 Section 6.3: localhost 与 *.localhost 必须本地直接解析为 127.0.0.1 / ::1，严禁外发公网
+        // RFC 6761 Section 6.3: localhost 与 *.localhost 必须本地直接解析为 127.0.0.1 / ::1
         if qname_lower == "localhost" || qname_lower.ends_with(".localhost") {
             use std::str::FromStr;
             let mut resp = Message::new(
@@ -572,7 +665,7 @@ impl PipelineEngine {
             return;
         }
 
-        // RFC 9462 (_dns.resolver.arpa) 与 RFC 7050 / RFC 8880 (ipv4only.arpa) 本地合成应答（附带 SOA 供客户端缓存）
+        // RFC 9462 (_dns.resolver.arpa) 与 RFC 7050 / RFC 8880 (ipv4only.arpa) 本地合成应答
         if qname_lower == "_dns.resolver.arpa" || qname_lower == "ipv4only.arpa" {
             use std::str::FromStr;
             let mut resp = Message::new(
@@ -627,7 +720,7 @@ impl PipelineEngine {
             }
         }
 
-        // 4.5. 下游单栈模式前置短路：若配置仅返回 IPv4 (或仅 IPv6)，直接对 AAAA (或 A) 返回空 NoError (NODATA) + SOA
+        // 4.5. 下游单栈模式前置短路
         {
             let mode = self.response_mode.read().clone();
             let short_circuit = matches!(
@@ -654,7 +747,7 @@ impl PipelineEngine {
             }
         }
 
-        // 5. Cache (命中极速秒返；剩余 TTL < 20% 时后台完整复用分流+防污染+response_mode+测速流水线静默预取)
+        // 5. Cache
         ctx.record_timing("cache");
         if self.cache_enabled.load(Ordering::Relaxed) {
             if let Some((mut cached_resp, should_prefetch)) = self.cache.get_with_prefetch(&ctx.qname, ctx.qtype) {
@@ -699,7 +792,7 @@ impl PipelineEngine {
             }
         }
 
-        // 6-9. Singleflight 合并去重 + 智能分流 + 防污染 + 下游地址族过滤 + 测速优选 + 缓存入库
+        // 6-9. Singleflight 合并去重 + 统一智能分流与防污染引擎 + 地址族过滤 + 测速优选 + 安全缓存入库
         self.resolve_with_singleflight(ctx, false).await;
 
         align_edns_response(ctx);

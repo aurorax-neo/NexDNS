@@ -212,45 +212,38 @@ export const PipelinePage: React.FC = () => {
             {selectedNode.id === 'router' && (
               <div className="space-y-4">
                 <h4 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-                  NexDNS 原生智能分流策略与调度拓扑
+                  一体化智能分流与防污染调度拓扑
                 </h4>
                 <div className="space-y-2 text-xs">
-                  <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center">
+                  <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center gap-3">
                     <div>
                       <div className="font-semibold text-neutral-900 dark:text-neutral-100">大陆直连规则匹配 (Direct Match)</div>
-                      <div className="text-[11px] text-neutral-500 mt-0.5">命中 direct.txt 及大陆直连分组的域名</div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">最长特异度命中 custom_direct / direct.txt 的国内域名</div>
                     </div>
-                    <span className="text-cyan-600 dark:text-cyan-400 font-semibold">&rarr; 转发大陆高速直连组 (mainland)</span>
+                    <span className="text-cyan-600 dark:text-cyan-400 font-semibold shrink-0">&rarr; 大陆直连组 (mainland)</span>
                   </div>
-                  <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center">
+                  <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center gap-3">
                     <div>
-                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">境外代理规则匹配 (Proxy Match)</div>
-                      <div className="text-[11px] text-neutral-500 mt-0.5">命中 proxy.txt 及出海代理分组的域名</div>
+                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">境外防污染规则匹配 (Proxy Match)</div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">最长特异度命中 custom_proxy / proxy.txt（含 google.cn 等 .cn 境外域），代理瞬断仅回退海外直连加密组，严禁回退大陆</div>
                     </div>
-                    <span className="text-rose-600 dark:text-rose-400 font-semibold">&rarr; 转发 GFW / 境外代理组 (gfw)</span>
+                    <span className="text-rose-600 dark:text-rose-400 font-semibold shrink-0">&rarr; GFW 组 &rarr; 海外备用组</span>
                   </div>
-                  <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center">
+                  <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center gap-3">
                     <div>
                       <div className="font-semibold text-neutral-900 dark:text-neutral-100">局域网私有域名 (Private Match)</div>
-                      <div className="text-[11px] text-neutral-500 mt-0.5">命中 private.txt 及局域网本地域名</div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">命中 private.txt 及 RFC 保留域，本地权威拦截</div>
                     </div>
-                    <span className="text-purple-600 dark:text-purple-400 font-semibold">&rarr; 本地内网优先解析 (private)</span>
+                    <span className="text-purple-600 dark:text-purple-400 font-semibold shrink-0">&rarr; 本地权威响应</span>
                   </div>
-                  <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center">
+                  <div className="p-3 rounded bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 flex justify-between items-center gap-3">
                     <div>
-                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">未命中规则域名 (智能回退与防污染探测)</div>
-                      <div className="text-[11px] text-neutral-500 mt-0.5">优先直连；若返回非中国 IP 触发 GFW 回退；境外不可达时大陆公网 IP 优雅降级保底</div>
+                      <div className="font-semibold text-neutral-900 dark:text-neutral-100">未命中域名 (非中国 IP 自动抛弃防污染回退)</div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">先探测 mainland：含中国 IP 则采纳；非中国 IP 立即彻底丢弃（绝不缓存污染 IP）并切入 gfw &rarr; overseas 纯净加密链路</div>
                     </div>
-                    <span className="text-amber-600 dark:text-amber-400 font-semibold">&rarr; 智能回退 + 降级保底</span>
+                    <span className="text-amber-600 dark:text-amber-400 font-semibold shrink-0">&rarr; 防污染硬隔离回退</span>
                   </div>
                 </div>
-              </div>
-            )}
-
-            {selectedNode.id === 'anti_pollution' && (
-              <div className="p-4 rounded-lg bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800 space-y-2 text-xs text-neutral-700 dark:text-neutral-300 leading-relaxed">
-                <p>• <strong>中国 IP 段真实性校验</strong>: 当未命中显式规则的域名先向大陆上游探测时，内核自动比对返回 IP 是否属于 <code className="font-mono">ipv4_china.txt</code> / <code className="font-mono">ipv6_china.txt</code>。</p>
-                <p>• <strong>自动丢弃污染并回退</strong>: 若返回非中国 IP（疑似被抢答投毒或该域名本属境外服务），立即丢弃大陆污染响应并切换至 GFW / 海外纯净加密 DoH 组。</p>
               </div>
             )}
 

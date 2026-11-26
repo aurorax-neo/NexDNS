@@ -1,15 +1,14 @@
-ARG RUST_IMAGE=rust:alpine
-ARG BASE_IMAGE=alpine:latest
+ARG BASE_IMAGE=alpine:3.21
+ARG BUILDER_IMAGE=rust:alpine
 
-FROM ${RUST_IMAGE} AS builder
-RUN apk add --no-cache musl-dev gcc
+FROM ${BUILDER_IMAGE} AS builder
+RUN apk add --no-cache musl-dev gcc cmake make perl
 WORKDIR /app
-COPY Cargo.toml ./
-COPY backend/Cargo.toml backend/
-COPY backend/src backend/src
-COPY frontend/dist frontend/dist
+COPY Cargo.toml Cargo.lock ./
+COPY backend/ backend/
+COPY frontend/dist/ frontend/dist/
 WORKDIR /app/backend
-RUN cargo build --release
+RUN cargo build --release --locked
 
 FROM ${BASE_IMAGE}
 WORKDIR /app

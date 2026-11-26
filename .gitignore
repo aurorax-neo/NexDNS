@@ -1,5 +1,8 @@
 target/
 docker-bin/
+release-packages/
+stage-*/
+RELEASE_BODY.md
 frontend/node_modules/
 frontend/dist/
 data/*.db

@@ -206,7 +206,7 @@ export interface AppSettings {
   anti_pollution?: boolean;
   routing: {
     enabled: boolean;
-    anti_pollution: boolean;
+    anti_pollution?: boolean;
     fallback_timeout_ms: number;
     custom_direct_domains?: string[];
     custom_proxy_domains?: string[];

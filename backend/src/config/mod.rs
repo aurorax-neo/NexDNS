@@ -260,21 +260,25 @@ impl Default for UpstreamsConfig {
             ],
             gfw: vec![
                 "https://8.8.8.8/dns-query#sni=dns.google&proxy=default".to_string(),
-                "https://94.140.14.140/dns-query#sni=dns.adguard.com&proxy=default".to_string(),
+                "https://8.8.4.4/dns-query#sni=dns.google&proxy=default".to_string(),
                 "https://1.1.1.1/dns-query#proxy=default".to_string(),
+                "https://94.140.14.140/dns-query#sni=dns.adguard-dns.com&proxy=default".to_string(),
             ],
+            // 海外无代理防污染直连备用组（选用大陆公网未封锁、TLS 加密抗抢答的境外纯净 DoH 节点，对齐 NestingDNS）
             overseas: vec![
-                "https://1.1.1.1/dns-query#proxy=none".to_string(),
-                "https://8.8.8.8/dns-query#sni=dns.google&proxy=none".to_string(),
+                "https://94.140.14.140/dns-query#sni=dns.adguard-dns.com&proxy=none".to_string(),
+                "https://94.140.14.141/dns-query#sni=dns.adguard-dns.com&proxy=none".to_string(),
                 "https://168.95.1.1/dns-query#sni=dns.hinet.net&proxy=none".to_string(),
+                "https://101.101.101.101/dns-query#sni=dns.twnic.tw&proxy=none".to_string(),
+                "https://9.9.9.11/dns-query#sni=dns11.quad9.net&proxy=none".to_string(),
             ],
-            timeout_ms: 2000,
+            timeout_ms: 4000,
         }
     }
 }
 
 fn default_fallback_timeout_ms() -> u64 {
-    1500
+    800
 }
 
 fn default_retention_mins() -> u32 {
@@ -296,10 +300,12 @@ fn default_max_db_size_mb() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RoutingConfig {
+    /// 智能分流与非中国 IP 防污染引擎总开关（合二为一）
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_true")]
-    pub anti_pollution: bool,
+    /// 兼容旧版独立 anti_pollution 字段反序列化，运行时已合并入智能分流引擎
+    #[serde(default, skip_serializing)]
+    pub anti_pollution: Option<bool>,
     #[serde(default = "default_fallback_timeout_ms")]
     pub fallback_timeout_ms: u64,
     #[serde(default)]
@@ -312,8 +318,8 @@ impl Default for RoutingConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            anti_pollution: true,
-            fallback_timeout_ms: 1500,
+            anti_pollution: None,
+            fallback_timeout_ms: 800,
             custom_direct_domains: Vec::new(),
             custom_proxy_domains: Vec::new(),
         }
@@ -455,11 +461,8 @@ fn clean_domain_list(list: &mut Vec<String>) {
 
 impl AppConfig {
     pub fn normalize(&mut self) {
-        if let Some(legacy_ap) = self.anti_pollution.take() {
-            if !legacy_ap {
-                self.routing.anti_pollution = false;
-            }
-        }
+        let _ = self.anti_pollution.take();
+        let _ = self.routing.anti_pollution.take();
         if !self.custom_direct_domains.is_empty() {
             let extra = std::mem::take(&mut self.custom_direct_domains);
             self.routing.custom_direct_domains.extend(extra);
@@ -501,7 +504,19 @@ impl AppConfig {
             self.logging.max_db_size_mb = default_max_db_size_mb();
         }
         if self.upstreams.timeout_ms == 0 {
-            self.upstreams.timeout_ms = 2000;
+            self.upstreams.timeout_ms = 4000;
+        }
+        // 自动升级旧版默认 overseas 中不可直连的 1.1.1.1#proxy=none / 8.8.8.8#proxy=none 死节点为大陆可直连海外加密节点
+        let is_legacy_broken_overseas = self.upstreams.overseas.len() == 3
+            && self.upstreams.overseas.iter().any(|u| u.contains("1.1.1.1/dns-query#proxy=none"))
+            && self.upstreams.overseas.iter().any(|u| u.contains("8.8.8.8/dns-query"));
+        if is_legacy_broken_overseas {
+            self.upstreams.overseas = UpstreamsConfig::default().overseas;
+        }
+        for u in self.upstreams.gfw.iter_mut().chain(self.upstreams.overseas.iter_mut()) {
+            if u.contains("#sni=dns.adguard.com") {
+                *u = u.replace("#sni=dns.adguard.com", "#sni=dns.adguard-dns.com");
+            }
         }
         self.dns.listen_mode = match self.dns.listen_mode.trim().to_lowercase().as_str() {
             "ipv4" | "ipv4_only" => "ipv4".to_string(),
@@ -552,6 +567,7 @@ impl AppConfig {
         let mut cloned = self.clone();
         cloned.logging.retention_days = None;
         cloned.anti_pollution = None;
+        cloned.routing.anti_pollution = None;
         cloned.custom_direct_domains.clear();
         cloned.custom_proxy_domains.clear();
         let content = serde_yaml::to_string(&cloned)?;

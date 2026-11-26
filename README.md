@@ -21,9 +21,11 @@ NexDNS 是一款自研原生统一单内核架构的下一代高性能 DNS 综�
    - 客户端来源 IP 与全流程耗时纳秒级贯穿，日志记录 100% 真实。
    - 单二进制交付，前端 SPA 静态资源由 Rust 内部原生内嵌服务。
 
-2. **智能分流调度引擎与防污染 (Dynamic Routing & Anti-Pollution)**：
-   - 域名分类规则（Direct 大陆直连、Proxy 境外代理、Private 私有网络）。
-   - **未命中智能回退与防污染探测**：大陆上游返回非中国 IP 时触发防污染探测，回退至纯净境外组，并在境外不可达时提供大陆公网 IP 优雅降级保底。
+2. **智能分流与防污染一体化引擎 (Unified Smart Routing & Zero-Proxy Anti-Pollution)**：
+   - **单一总开关统一联动**：域名智能分流调度与非大陆 IP 防污染探测深度融合（`routing.enabled` 默认开启）。
+   - **最长后缀与精确特异度仲裁**：自动比对 `direct.txt` 与 `proxy.txt` 匹配粒度（如 `proxy.txt` 的 `domain:google.cn` 自动优先于 `direct.txt` 的 `domain:cn`；`direct.txt` 的 `full:dl.l.google.com` 自动优先于 `domain:google.com`），彻底消除 `.cn` 海外托管/跳转域名误走大陆直连。
+   - **无代理直连防污染备用链 (`gfw -> overseas`)**：内置大陆公网可直接建立加密 TLS HTTP/2 连接的未封锁海外纯净 DoH 节点组（AdGuard DNS、台湾 HiNet、TWNIC Quad101、Quad9）。无论在无代理环境还是跨境代理通道瞬时抖动窗口，均能无缝获取无污染真实境外 IP。
+   - **零大陆回退与防缓存投毒硬隔离**：代理域与检出非中国 IP 污染的冷门域**严禁回退 `mainland` 大陆上游、严禁将大陆污染应答写入缓存**；境外组应答缓存 TTL 自动封顶 `<= 300s`，确保线路异常恢复后快速收敛。
 
 3. **高效威胁与安全规则拦截 (Security Filtering)**：
    - 兼容 Adblock Plus (ABP) 规则语法（`||domain^`、`@@||whitelist^`）、Hosts 格式及正则表达式。

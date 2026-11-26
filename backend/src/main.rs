@@ -260,7 +260,7 @@ async fn main() -> anyhow::Result<()> {
         forward_overseas,
         speed_check,
         config.routing.enabled,
-        config.routing.anti_pollution,
+        config.routing.enabled,
         config.dns.response_mode.clone(),
     ));
     engine.set_fallback_timeout_ms(config.routing.fallback_timeout_ms);

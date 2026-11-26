@@ -725,7 +725,8 @@ async fn test_response_mode_ipv4_only_short_circuits_and_filters_cache() {
 }
 
 #[tokio::test]
-async fn test_proxy_route_fallback_to_mainland_when_gfw_unreachable() {
+async fn test_proxy_and_polluted_fallback_never_query_or_cache_mainland() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::net::UdpSocket;
     use hickory_proto::op::{MessageType, OpCode, Query, ResponseCode};
@@ -734,69 +735,166 @@ async fn test_proxy_route_fallback_to_mainland_when_gfw_unreachable() {
     use nexdns::pipeline::plugins::adblock::{AdblockPlugin, BlockType};
     use nexdns::pipeline::plugins::cache::CachePlugin;
     use nexdns::pipeline::plugins::domain_match::{DomainListRegistry, DomainMatcher};
-    use nexdns::pipeline::plugins::ip_match::IpListRegistry;
+    use nexdns::pipeline::plugins::ip_match::{IpListRegistry, IpMatcher};
     use nexdns::pipeline::plugins::rewrite::RewritePlugin;
     use nexdns::pipeline::plugins::speed_check::SpeedCheckPlugin;
     use nexdns::pipeline::plugins::upstream::{ForwardPlugin, UpstreamGroup, UpstreamServer};
 
-    // 启动本地模拟大陆 UDP DNS 上游
+    // 模拟大陆上游：返回典型 GFW 抢答/污染境外 IP 185.45.5.35，并统计收到的查询次数
+    let mainland_hits = Arc::new(AtomicUsize::new(0));
+    let mainland_hits_bg = mainland_hits.clone();
     let mock_mainland = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let mainland_addr = mock_mainland.local_addr().unwrap();
     tokio::spawn(async move {
         let mut buf = [0u8; 512];
-        loop {
-            if let Ok((len, src)) = mock_mainland.recv_from(&mut buf).await {
-                if let Ok(req) = Message::from_vec(&buf[..len]) {
-                    let mut resp = Message::new(req.metadata.id, MessageType::Response, OpCode::Query);
-                    resp.metadata.response_code = ResponseCode::NoError;
-                    resp.queries = req.queries.clone();
-                    if let Some(q) = req.queries.first() {
-                        resp.add_answer(Record::from_rdata(
-                            q.name().clone(),
-                            60,
-                            RData::A(A(Ipv4Addr::new(104, 16, 1, 1))),
-                        ));
-                    }
-                    let _ = mock_mainland.send_to(&resp.to_vec().unwrap(), src).await;
+        while let Ok((len, src)) = mock_mainland.recv_from(&mut buf).await {
+            mainland_hits_bg.fetch_add(1, Ordering::SeqCst);
+            if let Ok(req) = Message::from_vec(&buf[..len]) {
+                let mut resp = Message::new(req.metadata.id, MessageType::Response, OpCode::Query);
+                resp.metadata.response_code = ResponseCode::NoError;
+                resp.queries = req.queries.clone();
+                if let Some(q) = req.queries.first() {
+                    resp.add_answer(Record::from_rdata(
+                        q.name().clone(),
+                        600,
+                        RData::A(A(Ipv4Addr::new(185, 45, 5, 35))),
+                    ));
                 }
+                let _ = mock_mainland.send_to(&resp.to_vec().unwrap(), src).await;
+            }
+        }
+    });
+
+    // 模拟海外无代理直连备用组 overseas：返回真实 Google IP 142.251.157.119（原始 TTL 3600s，验证 <=300s 截断）
+    let mock_overseas = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let overseas_addr = mock_overseas.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 512];
+        while let Ok((len, src)) = mock_overseas.recv_from(&mut buf).await {
+            if let Ok(req) = Message::from_vec(&buf[..len]) {
+                let mut resp = Message::new(req.metadata.id, MessageType::Response, OpCode::Query);
+                resp.metadata.response_code = ResponseCode::NoError;
+                resp.queries = req.queries.clone();
+                if let Some(q) = req.queries.first() {
+                    resp.add_answer(Record::from_rdata(
+                        q.name().clone(),
+                        3600,
+                        RData::A(A(Ipv4Addr::new(142, 251, 157, 119))),
+                    ));
+                }
+                let _ = mock_overseas.send_to(&resp.to_vec().unwrap(), src).await;
             }
         }
     });
 
     let domain_reg = Arc::new(DomainListRegistry::new());
     let mut proxy_matcher = DomainMatcher::new("domain_proxy");
-    proxy_matcher.load_from_text("github.com");
+    proxy_matcher.load_from_text("domain:google.com");
     domain_reg.register(proxy_matcher);
 
-    let mainland_srv = UpstreamServer::parse("mainland", &format!("udp://{}", mainland_addr)).unwrap();
-    // 指向未监听的本地 TCP 端口模拟境外上游不可达（立即 Connection refused）
-    let dead_gfw = UpstreamServer::parse("gfw", "tcp://127.0.0.1:1").unwrap();
-    let dead_overseas = UpstreamServer::parse("overseas", "tcp://127.0.0.1:2").unwrap();
+    let ip_reg = Arc::new(IpListRegistry::new());
+    let mut cn_ip = IpMatcher::new("ipv4_china");
+    cn_ip.load_from_text("114.114.114.0/24");
+    ip_reg.register(cn_ip);
 
-    let engine = PipelineEngine::new(
+    // 场景 A：代理通道瞬时故障（gfw 不可达），但海外直连加密备用组 overseas 正常
+    // 预期：www.google.com 无缝切到 overseas 返回干净 IP，绝不触碰 mainland，且缓存 TTL 被截断 <= 300s
+    let cache_a = Arc::new(CachePlugin::new(100, false, 60, 1800));
+    let engine_a = PipelineEngine::new(
         Arc::new(RewritePlugin::new()),
         Arc::new(AdblockPlugin::new(BlockType::ZeroIp, 60)),
-        Arc::new(CachePlugin::new(100, false, 60, 300)),
-        domain_reg,
-        Arc::new(IpListRegistry::new()),
-        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("mainland", vec![mainland_srv], 300)))),
-        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("gfw", vec![dead_gfw], 300)))),
-        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new("overseas", vec![dead_overseas], 300)))),
+        cache_a.clone(),
+        domain_reg.clone(),
+        ip_reg.clone(),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new(
+            "mainland",
+            vec![UpstreamServer::parse("mainland", &format!("udp://{}", mainland_addr)).unwrap()],
+            300,
+        )))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new(
+            "gfw",
+            vec![UpstreamServer::parse("gfw", "tcp://127.0.0.1:1").unwrap()],
+            300,
+        )))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new(
+            "overseas",
+            vec![UpstreamServer::parse("overseas", &format!("udp://{}", overseas_addr)).unwrap()],
+            300,
+        )))),
         Arc::new(SpeedCheckPlugin::new(false, 200, 5)),
         true,
         true,
         "dual".to_string(),
     );
 
-    let mut req = Message::query();
-    req.add_query(Query::query(Name::from_str("github.com.").unwrap(), RecordType::A));
-    let mut ctx = QueryContext::new("127.0.0.1".parse().unwrap(), req);
-    engine.process(&mut ctx).await;
+    let mut req_a = Message::query();
+    req_a.add_query(Query::query(Name::from_str("www.google.com.").unwrap(), RecordType::A));
+    let mut ctx_a = QueryContext::new("127.0.0.1".parse().unwrap(), req_a);
+    engine_a.process(&mut ctx_a).await;
 
-    let resp = ctx.response.expect("response should exist");
-    assert_eq!(resp.metadata.response_code, ResponseCode::NoError);
-    assert_eq!(resp.answers.len(), 1);
-    assert!(ctx.tags.contains("fallback_restore_mainland"));
+    let resp_a = ctx_a.response.expect("overseas fallback should succeed");
+    assert_eq!(resp_a.metadata.response_code, ResponseCode::NoError);
+    assert_eq!(resp_a.answers[0].data, RData::A(A(Ipv4Addr::new(142, 251, 157, 119))));
+    assert!(ctx_a.tags.contains("fallback_to_overseas"));
+    assert!(!ctx_a.tags.contains("fallback_restore_mainland"));
+    assert_eq!(mainland_hits.load(Ordering::SeqCst), 0, "proxy 域名绝不允许回退查询 mainland");
+    let cached_msg = cache_a.get("www.google.com", RecordType::A).expect("clean overseas answer should be cached");
+    assert!(cached_msg.answers[0].ttl <= 300, "境外组缓存 TTL 必须截断 <= 300s");
+
+    // 场景 B：极端故障（gfw 与 overseas 全部中断）
+    // 预期：www.google.com 直接返回不落缓存的 ServFail，严禁回退 mainland 拉取并缓存污染 IP 185.45.5.35！
+    let cache_b = Arc::new(CachePlugin::new(100, false, 60, 1800));
+    let engine_b = PipelineEngine::new(
+        Arc::new(RewritePlugin::new()),
+        Arc::new(AdblockPlugin::new(BlockType::ZeroIp, 60)),
+        cache_b.clone(),
+        domain_reg,
+        ip_reg,
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new(
+            "mainland",
+            vec![UpstreamServer::parse("mainland", &format!("udp://{}", mainland_addr)).unwrap()],
+            300,
+        )))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new(
+            "gfw",
+            vec![UpstreamServer::parse("gfw", "tcp://127.0.0.1:1").unwrap()],
+            300,
+        )))),
+        Arc::new(ForwardPlugin::new(Arc::new(UpstreamGroup::new(
+            "overseas",
+            vec![UpstreamServer::parse("overseas", "tcp://127.0.0.1:2").unwrap()],
+            300,
+        )))),
+        Arc::new(SpeedCheckPlugin::new(false, 200, 5)),
+        true,
+        true,
+        "dual".to_string(),
+    );
+
+    let mut req_b = Message::query();
+    req_b.add_query(Query::query(Name::from_str("www.google.com.").unwrap(), RecordType::A));
+    let mut ctx_b = QueryContext::new("127.0.0.1".parse().unwrap(), req_b);
+    engine_b.process(&mut ctx_b).await;
+
+    let resp_b = ctx_b.response.expect("should return ServFail");
+    assert_eq!(resp_b.metadata.response_code, ResponseCode::ServFail);
+    assert!(resp_b.answers.is_empty());
+    assert_eq!(mainland_hits.load(Ordering::SeqCst), 0, "gfw+overseas 全挂时依然严禁回退 mainland");
+    assert!(cache_b.get("www.google.com", RecordType::A).is_none(), "污染/失败结果绝不能写入缓存");
+
+    // 场景 C：未命中规则冷门境外域名走 route:fallback，mainland 返回非中国污染 IP 185.45.5.35 且境外全断
+    // 预期：识别 pollution_detected 并彻底丢弃 185.45.5.35，返回不落缓存的 ServFail，绝不恢复或缓存污染 IP！
+    let mut req_c = Message::query();
+    req_c.add_query(Query::query(Name::from_str("unknown-foreign.io.").unwrap(), RecordType::A));
+    let mut ctx_c = QueryContext::new("127.0.0.1".parse().unwrap(), req_c);
+    engine_b.process(&mut ctx_c).await;
+
+    assert!(ctx_c.tags.contains("route:fallback"));
+    assert!(ctx_c.tags.contains("pollution_detected"));
+    let resp_c = ctx_c.response.expect("should return ServFail rather than polluted mainland IP");
+    assert_eq!(resp_c.metadata.response_code, ResponseCode::ServFail);
+    assert!(resp_c.answers.is_empty());
+    assert!(cache_b.get("unknown-foreign.io", RecordType::A).is_none(), "防污染丢弃结果严禁写入缓存");
 }
 
 #[tokio::test]
@@ -1189,22 +1287,44 @@ async fn test_config_defaults_anti_pollution_unification_and_custom_domain_overr
     use nexdns::pipeline::plugins::speed_check::SpeedCheckPlugin;
     use nexdns::pipeline::plugins::upstream::{ForwardPlugin, UpstreamGroup, UpstreamServer};
 
-    // 1. Fresh config defaults: routing.enabled=true, cache.max_ttl=1800
+    // 1. Fresh config defaults: routing.enabled=true, fallback_timeout_ms=800, upstreams.timeout_ms=4000, cache.max_ttl=1800,
+    //    and overseas contains direct-reachable unblocked encrypted DoH resolvers (never 1.1.1.1#proxy=none)
     let def_cfg = AppConfig::default();
     assert!(def_cfg.routing.enabled);
-    assert!(def_cfg.routing.anti_pollution);
+    assert!(def_cfg.routing.anti_pollution.is_none());
+    assert_eq!(def_cfg.routing.fallback_timeout_ms, 800);
+    assert_eq!(def_cfg.upstreams.timeout_ms, 4000);
     assert_eq!(def_cfg.cache.max_ttl, 1800);
+    assert!(!def_cfg.upstreams.overseas.iter().any(|u| u.contains("1.1.1.1/dns-query#proxy=none")));
+    assert!(def_cfg.upstreams.overseas.iter().any(|u| u.contains("94.140.14.140")));
+    assert!(def_cfg.upstreams.overseas.iter().any(|u| u.contains("168.95.1.1")));
+    assert!(def_cfg.upstreams.overseas.iter().any(|u| u.contains("101.101.101.101")));
 
-    // 2. Legacy top-level anti_pollution: false migrates to routing.anti_pollution and is stripped on serialize
-    let legacy_yaml = "anti_pollution: false\n";
+    // 2. Legacy anti_pollution fields & broken 3-item overseas list are cleanly normalized and stripped on serialize
+    let legacy_yaml = r#"
+anti_pollution: false
+routing:
+  enabled: true
+  anti_pollution: false
+upstreams:
+  overseas:
+    - "https://1.1.1.1/dns-query#proxy=none"
+    - "https://8.8.8.8/dns-query#sni=dns.google&proxy=none"
+    - "https://94.140.14.140/dns-query#sni=dns.adguard.com&proxy=none"
+"#;
     let mut parsed: AppConfig = serde_yaml::from_str(legacy_yaml).unwrap();
     parsed.normalize();
-    assert!(!parsed.routing.anti_pollution);
+    assert!(parsed.routing.enabled);
+    assert!(parsed.routing.anti_pollution.is_none());
+    assert!(!parsed.upstreams.overseas.iter().any(|u| u.contains("1.1.1.1/dns-query#proxy=none")));
+    assert!(parsed.upstreams.overseas.iter().any(|u| u.contains("dns.adguard-dns.com")));
     let dumped = serde_yaml::to_string(&parsed).unwrap();
-    assert!(!dumped.lines().any(|l| l.starts_with("anti_pollution:")));
-    assert!(dumped.contains("anti_pollution: false"));
+    assert!(!dumped.contains("anti_pollution"), "独立 anti_pollution 字段合并入 routing.enabled 后不再序列化");
 
-    // 3. custom_proxy_domains overrides `.cn` in direct.txt (e.g. fd.myzwq.cn hosted on Cloudflare)
+    // 3. Longest-suffix / `full:` specificity & custom_proxy_domains override:
+    //    - `domain:google.cn` in proxy.txt beats `domain:cn` in direct.txt -> route:proxy
+    //    - `full:dl.l.google.com` in direct.txt beats `domain:google.com` in proxy.txt -> route:direct
+    //    - `fd.myzwq.cn` in custom_proxy_domains beats `domain:cn` in direct.txt -> route:custom_proxy
     let spawn_dns = |ip: Ipv4Addr| async move {
         let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let addr = sock.local_addr().unwrap();
@@ -1230,8 +1350,11 @@ async fn test_config_defaults_anti_pollution_unification_and_custom_domain_overr
 
     let domain_reg = Arc::new(DomainListRegistry::new());
     let mut direct_matcher = DomainMatcher::new("domain_direct");
-    direct_matcher.load_from_text(".cn");
+    direct_matcher.load_from_text("domain:cn\nfull:dl.l.google.com");
     domain_reg.register(direct_matcher);
+    let mut proxy_matcher = DomainMatcher::new("domain_proxy");
+    proxy_matcher.load_from_text("domain:google.cn\ndomain:google.com");
+    domain_reg.register(proxy_matcher);
 
     let engine = PipelineEngine::new(
         Arc::new(RewritePlugin::new()),
@@ -1261,6 +1384,7 @@ async fn test_config_defaults_anti_pollution_unification_and_custom_domain_overr
     );
     engine.update_custom_routing_domains(&[], &["fd.myzwq.cn".to_string()]);
 
+    // 3a. custom_proxy_domains overrides domain:cn
     let mut req_cf_cn = Message::query();
     req_cf_cn.add_query(Query::query(Name::from_str("fd.myzwq.cn.").unwrap(), RecordType::A));
     let mut ctx_cf = QueryContext::new("127.0.0.1".parse().unwrap(), req_cf_cn);
@@ -1268,6 +1392,25 @@ async fn test_config_defaults_anti_pollution_unification_and_custom_domain_overr
     assert!(ctx_cf.tags.contains("route:custom_proxy"));
     assert_eq!(ctx_cf.response.unwrap().answers[0].data, RData::A(A(Ipv4Addr::new(172, 67, 1, 1))));
 
+    // 3b. domain:google.cn (specificity=9) beats domain:cn (specificity=2) -> route:proxy (gfw)
+    for host in ["google.cn.", "www.google.cn."] {
+        let mut req_gcn = Message::query();
+        req_gcn.add_query(Query::query(Name::from_str(host).unwrap(), RecordType::A));
+        let mut ctx_gcn = QueryContext::new("127.0.0.1".parse().unwrap(), req_gcn);
+        engine.process(&mut ctx_gcn).await;
+        assert!(ctx_gcn.tags.contains("route:proxy"), "{} 必须命中更具体的 domain:google.cn 走代理组", host);
+        assert_eq!(ctx_gcn.response.unwrap().answers[0].data, RData::A(A(Ipv4Addr::new(172, 67, 1, 1))));
+    }
+
+    // 3c. full:dl.l.google.com (specificity=20015) beats domain:google.com (specificity=10) -> route:direct (mainland)
+    let mut req_dl = Message::query();
+    req_dl.add_query(Query::query(Name::from_str("dl.l.google.com.").unwrap(), RecordType::A));
+    let mut ctx_dl = QueryContext::new("127.0.0.1".parse().unwrap(), req_dl);
+    engine.process(&mut ctx_dl).await;
+    assert!(ctx_dl.tags.contains("route:direct"));
+    assert_eq!(ctx_dl.response.unwrap().answers[0].data, RData::A(A(Ipv4Addr::new(114, 114, 114, 114))));
+
+    // 3d. ordinary .cn domain still matches domain:cn -> route:direct
     let mut req_normal_cn = Message::query();
     req_normal_cn.add_query(Query::query(Name::from_str("gov.cn.").unwrap(), RecordType::A));
     let mut ctx_cn = QueryContext::new("127.0.0.1".parse().unwrap(), req_normal_cn);

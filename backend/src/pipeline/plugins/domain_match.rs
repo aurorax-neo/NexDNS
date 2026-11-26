@@ -29,14 +29,19 @@ impl DomainMatcher {
             let lower = trimmed.to_lowercase();
             if let Some(rest) = lower.strip_prefix("full:") {
                 let clean = rest.trim_end_matches('.').to_string();
-                self.exact.insert(clean);
+                if !clean.is_empty() {
+                    self.exact.insert(clean);
+                }
             } else if let Some(rest) = lower.strip_prefix("domain:") {
                 let clean = rest.trim_end_matches('.').to_string();
-                self.suffix.insert(clean.clone());
-                self.exact.insert(clean);
+                if !clean.is_empty() {
+                    self.suffix.insert(clean);
+                }
             } else if let Some(rest) = lower.strip_prefix("keyword:") {
                 let clean = rest.trim_end_matches('.').to_string();
-                self.keywords.push(clean);
+                if !clean.is_empty() {
+                    self.keywords.push(clean);
+                }
             } else {
                 let mut d = lower.as_str();
                 if let Some(rest) = d.strip_prefix("+.") {
@@ -45,8 +50,9 @@ impl DomainMatcher {
                     d = rest;
                 }
                 let clean = d.trim_end_matches('.').to_string();
-                self.suffix.insert(clean.clone());
-                self.exact.insert(clean);
+                if !clean.is_empty() {
+                    self.suffix.insert(clean);
+                }
             }
         }
     }
@@ -56,10 +62,12 @@ impl DomainMatcher {
         if clean.is_empty() {
             return None;
         }
+        // `full:` 精确匹配优先级最高
         if self.exact.contains(&clean) {
-            return Some(clean.len() + 10_000);
+            return Some(clean.len() + 20_000);
         }
 
+        // `domain:` / 后缀匹配按最长匹配域名长度计算特异度（如 `google.cn` len=9 > `cn` len=2）
         let mut sub = clean.as_str();
         if self.suffix.contains(sub) {
             return Some(sub.len());

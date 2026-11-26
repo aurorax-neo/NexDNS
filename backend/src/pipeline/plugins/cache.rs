@@ -66,12 +66,26 @@ impl CachePlugin {
         self.get_with_prefetch(qname, qtype).map(|(msg, _)| msg)
     }
 
-    pub fn insert(&self, qname: &str, qtype: RecordType, mut message: Message) {
+    pub fn insert(&self, qname: &str, qtype: RecordType, message: Message) {
+        self.insert_with_max_ttl(qname, qtype, message, None);
+    }
+
+    pub fn insert_with_max_ttl(
+        &self,
+        qname: &str,
+        qtype: RecordType,
+        mut message: Message,
+        cap_max_ttl: Option<u32>,
+    ) {
         // 根据 RFC 6891 / RFC 7873，EDNS(0) 与 Cookie 属于逐跳 (Hop-by-hop) 协议头，严禁存入 DNS 共享缓存中
         message.edns = None;
 
         let min_limit = self.min_ttl.load(Ordering::Relaxed).max(1);
-        let max_limit = self.max_ttl.load(Ordering::Relaxed).max(min_limit);
+        let configured_max = self.max_ttl.load(Ordering::Relaxed).max(min_limit);
+        let max_limit = match cap_max_ttl {
+            Some(cap) => configured_max.min(cap.max(min_limit)),
+            None => configured_max,
+        };
 
         let mut record_ttl = 300u32;
         if !message.answers.is_empty() {
@@ -91,6 +105,10 @@ impl CachePlugin {
         } else {
             record_ttl.clamp(min_limit, max_limit)
         };
+
+        for ans in &mut message.answers {
+            ans.ttl = ans.ttl.min(effective_ttl);
+        }
 
         let key = (qname.to_lowercase(), qtype);
         let mut w = self.entries.write();

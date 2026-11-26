@@ -6,6 +6,20 @@
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-11-26
+
+### 🚀 Features
+- **智能分流与防污染探测一体化融合**：将原本割裂的「智能分流调度引擎 (`router`)」与「非大陆 IP 防污染探测 (`anti_pollution`)」统一收敛为单一总开关 `routing.enabled`（兼容自动清理旧版 `anti_pollution` 字段），并在首页移除「分流未开启一键启用」提示横幅，保持总览面板纯净。
+- **无代理环境下直连加密防污染能力（对齐 NestingDNS 架构）**：将默认 `overseas` 海外备用组升级为大陆公网可直接建立 TLS HTTP/2 连接且无污染的 5 个纯净海外 DoH 节点（AdGuard DNS `94.140.14.140/141`、台湾 HiNet `168.95.1.1`、TWNIC Quad101 `101.101.101.101`、Quad9 `9.9.9.11`），启动时自动无感升级旧版失效的 `1.1.1.1#proxy=none` 列表；无论无代理环境还是跨境代理通道抖动，均可无缝获取真实境外 IP。
+- **`gfw -> overseas` 1200ms 阶梯并发抢救与超时参数调优**：默认单组上游超时 `upstreams.timeout_ms` 调优至 `4000` ms，未收录冷门域大陆先行探测超时 `routing.fallback_timeout_ms` 调优至 `800` ms；当 `gfw` 代理组超过 `1200` ms 未回包时，保留 `gfw` 在途等待的同时并发拉起直连 `overseas` 竞速抢救，兼顾代理抖动容忍度与秒级故障恢复。
+
+### 🐛 Bug Fixes
+- **彻底根除代理通道瞬时抖动回退大陆 DoH 引发的缓存投毒事故**：永久废除 `fallback_restore_mainland` 降级逻辑，`route:proxy` / `route:custom_proxy` 与检出非中国 IP（`pollution_detected`）的查询仅走纯净境外链（`gfw -> overseas`），严禁回退 `mainland` 大陆上游且增加入库前双重防污染硬隔离；同时将 `gfw` / `overseas` 缓存最大 TTL 封顶为 `<= 300s`。
+- **修复 `google.cn` 等 46 个 `.cn` 海外代理域被 `domain:cn` 抢先直连的问题**：重构规则匹配器区分 `full:` 精确匹配与后缀匹配特异度（最长后缀优先），使 `proxy.txt` 中的 `domain:google.cn` 自动优先于 `direct.txt` 的 `domain:cn` 走纯净境外解析，同时保留 `full:dl.l.google.com` 精确直连优先级。
+
+### 🧰 Maintenance
+- **全面接入 GitHub Actions v3.0 零 QEMU · 零 Annotations 发布规范**：新增 1x `validate-release` 秒级守门员与本地制品短路门控，全量升级至原生 Node 24 Actions 基线与固定 LTS Runner 标签（`ubuntu-24.04` / `macos-15` 单机双架构同编 / `windows-2025`），采用 `taiki-e/install-action` 秒装预编译 `cross` 与 `Dockerfile.release` `$BUILDPLATFORM` 纯 `COPY` 零 `RUN` 多架构镜像装配。
+
 ## [0.1.11] - 2026-11-20
 
 ### 🐛 Bug Fixes

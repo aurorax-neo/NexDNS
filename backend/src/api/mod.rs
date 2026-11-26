@@ -353,10 +353,10 @@ fn validate_config_safety(payload: &AppConfig) -> Result<(), (StatusCode, String
     if payload.routing.enabled {
         let gfw_has_server = payload.upstreams.gfw.iter().any(|s| !s.trim().is_empty());
         let overseas_has_server = payload.upstreams.overseas.iter().any(|s| !s.trim().is_empty());
-        if !gfw_has_server || !overseas_has_server {
+        if !gfw_has_server && !overseas_has_server {
             return Err((
                 StatusCode::BAD_REQUEST,
-                "无法开启动态分流调度引擎：GFW / 境外组 (gfw) 与海外备用组 (overseas) 必须各自至少配置一个上游 DNS 服务器".to_string(),
+                "无法开启智能分流与防污染引擎：GFW 代理组 (gfw) 或海外直连备用组 (overseas) 至少需配置一个上游 DNS 服务器".to_string(),
             ));
         }
     }
@@ -370,7 +370,6 @@ fn apply_config_to_runtime(state: &AppState, payload: &AppConfig) {
             || prev.routing.custom_proxy_domains != payload.routing.custom_proxy_domains
     };
 
-    state.engine.anti_pollution_enabled.store(payload.routing.anti_pollution, Ordering::SeqCst);
     state.engine.router_enabled.store(payload.routing.enabled, Ordering::SeqCst);
     state.engine.set_fallback_timeout_ms(payload.routing.fallback_timeout_ms);
     state.engine.update_custom_routing_domains(
@@ -852,17 +851,10 @@ async fn get_pipeline(State(state): State<AppState>) -> Json<Vec<PipelineNode>> 
         },
         PipelineNode {
             id: "router",
-            name: "智能分流调度引擎",
+            name: "智能分流与防污染引擎",
             stage: "routing",
-            description: "集成自定义强制覆盖、Direct/Proxy 分流与未命中智能回退，带优雅降级保底",
+            description: "一体化执行自定义高优覆盖、Direct/Proxy 最长后缀分流与非中国 IP 防污染自动探测回退（严禁境外/污染结果回退大陆并落盘缓存）",
             enabled: state.engine.router_enabled.load(Ordering::Relaxed),
-        },
-        PipelineNode {
-            id: "anti_pollution",
-            name: "非大陆 IP 防污染探测",
-            stage: "security",
-            description: "对未命中规则的大陆回包自动校验中国 IP 段，发现非大陆污染 IP 自动无缝切换纯净境外组",
-            enabled: state.engine.anti_pollution_enabled.load(Ordering::Relaxed),
         },
         PipelineNode {
             id: "speed_check",
@@ -884,14 +876,14 @@ async fn toggle_pipeline_stage(
     State(state): State<AppState>,
     Json(payload): Json<TogglePipelinePayload>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if payload.id == "router" && payload.enabled {
+    if (payload.id == "router" || payload.id == "anti_pollution") && payload.enabled {
         let cfg = state.config.read();
         let gfw_has_server = cfg.upstreams.gfw.iter().any(|s| !s.trim().is_empty());
         let overseas_has_server = cfg.upstreams.overseas.iter().any(|s| !s.trim().is_empty());
-        if !gfw_has_server || !overseas_has_server {
+        if !gfw_has_server && !overseas_has_server {
             return Err((
                 StatusCode::BAD_REQUEST,
-                "无法开启动态分流调度引擎：GFW / 境外组 (gfw) 与海外备用组 (overseas) 必须各自至少配置一个上游 DNS 服务器".to_string(),
+                "无法开启智能分流与防污染引擎：GFW 代理组 (gfw) 或海外直连备用组 (overseas) 至少需配置一个上游 DNS 服务器".to_string(),
             ));
         }
     }
@@ -901,8 +893,7 @@ async fn toggle_pipeline_stage(
         {
             let mut cfg = state.config.write();
             match payload.id.as_str() {
-                "router" => cfg.routing.enabled = payload.enabled,
-                "anti_pollution" => cfg.routing.anti_pollution = payload.enabled,
+                "router" | "anti_pollution" => cfg.routing.enabled = payload.enabled,
                 "speed_check" => cfg.speed_check.enabled = payload.enabled,
                 _ => {}
             }

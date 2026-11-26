@@ -61,21 +61,20 @@ export const SettingsPage: React.FC = () => {
       if (!settingsRes.routing) {
         settingsRes.routing = {
           enabled: true,
-          anti_pollution: settingsRes.anti_pollution ?? true,
-          fallback_timeout_ms: 1500,
+          fallback_timeout_ms: 400,
           custom_direct_domains: [],
           custom_proxy_domains: [],
         };
       } else {
         settingsRes.routing = {
           enabled: settingsRes.routing.enabled ?? true,
-          anti_pollution: settingsRes.routing.anti_pollution ?? settingsRes.anti_pollution ?? true,
-          fallback_timeout_ms: settingsRes.routing.fallback_timeout_ms || 1500,
+          fallback_timeout_ms: settingsRes.routing.fallback_timeout_ms || 400,
           custom_direct_domains: settingsRes.routing.custom_direct_domains || [],
           custom_proxy_domains: settingsRes.routing.custom_proxy_domains || [],
         };
       }
       delete settingsRes.anti_pollution;
+      delete settingsRes.routing.anti_pollution;
       if (settingsRes.speed_check.direct_only === undefined) {
         settingsRes.speed_check.direct_only = true;
       }
@@ -790,20 +789,20 @@ export const SettingsPage: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
-                    上游查询超时 (timeout_ms)
+                    上游单组查询超时 (timeout_ms，默认 4000 ms)
                   </label>
                   <input
                     type="number"
                     min={200}
                     max={30000}
                     step={100}
-                    value={settings.upstreams?.timeout_ms ?? 2000}
+                    value={settings.upstreams?.timeout_ms ?? 4000}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
                         upstreams: {
                           ...settings.upstreams,
-                          timeout_ms: Math.max(200, parseInt(e.target.value, 10) || 2000),
+                          timeout_ms: Math.max(200, parseInt(e.target.value, 10) || 4000),
                         },
                       })
                     }
@@ -908,20 +907,20 @@ export const SettingsPage: React.FC = () => {
 
           {/* 右列: 分流防污染、缓存、日志策略与密码修改 */}
           <div className="space-y-6">
-            {/* 智能分流与防污染策略 (Routing & Anti-Pollution) */}
+            {/* 智能分流与防污染策略 (Unified Routing & Anti-Pollution) */}
             <div className="p-5 rounded-lg bg-white dark:bg-surface-1 border border-neutral-200 dark:border-neutral-800 shadow-xs space-y-4">
               <div className="flex items-center gap-2 pb-3 border-b border-neutral-200 dark:border-neutral-800">
                 <Shield className="w-4 h-4 text-emerald-600 dark:text-emerald-400 align-icon" />
-                <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">智能分流与防 DNS 污染策略</h4>
+                <h4 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">智能分流与防污染引擎</h4>
               </div>
               <div className="space-y-3 text-xs">
                 <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
                   <div>
                     <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
-                      启用智能分流调度引擎 (routing.enabled)
+                      启用智能分流与非中国 IP 防污染引擎
                     </span>
                     <span className="text-[11px] text-neutral-500">
-                      按自定义覆盖、Direct 大陆直连、Proxy 境外代理与未命中智能回退调度解析
+                      一体化执行自定义覆盖、Direct/Proxy 最长后缀分流与非中国 IP 自动抛弃防污染探测；代理抖动时仅回退海外无代理加密组，严禁向大陆回退缓存污染 IP
                     </span>
                   </div>
                   <Switch
@@ -935,47 +934,30 @@ export const SettingsPage: React.FC = () => {
                   />
                 </div>
 
-                <div className="flex items-center justify-between p-3 rounded-md bg-neutral-50 dark:bg-surface-2 border border-neutral-200 dark:border-neutral-800">
-                  <div>
-                    <span className="font-medium text-neutral-800 dark:text-neutral-200 block">
-                      非中国 IP 防污染自动探测 (routing.anti_pollution)
-                    </span>
-                    <span className="text-[11px] text-neutral-500">
-                      未命中规则的大陆回包若不含中国 IP，自动丢弃污染结果并切换境外纯净加密组
-                    </span>
-                  </div>
-                  <Switch
-                    checked={settings.routing?.anti_pollution ?? true}
-                    onChange={(v) =>
-                      setSettings({
-                        ...settings,
-                        routing: { ...settings.routing, anti_pollution: v },
-                      })
-                    }
-                  />
-                </div>
-
                 <div>
                   <label className="block text-neutral-600 dark:text-neutral-400 mb-1">
-                    未命中域名大陆探测回退超时 (fallback_timeout_ms)
+                    未命中规则域名：大陆先行探测超时 (fallback_timeout_ms，默认 800 ms)
                   </label>
                   <input
                     type="number"
                     min={100}
                     max={30000}
-                    step={100}
-                    value={settings.routing?.fallback_timeout_ms ?? 1500}
+                    step={50}
+                    value={settings.routing?.fallback_timeout_ms ?? 800}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
                         routing: {
                           ...settings.routing,
-                          fallback_timeout_ms: Math.max(100, parseInt(e.target.value, 10) || 1500),
+                          fallback_timeout_ms: Math.max(100, parseInt(e.target.value, 10) || 800),
                         },
                       })
                     }
                     className="w-full min-h-[38px] px-3 bg-neutral-50 dark:bg-surface-2 border border-neutral-300 dark:border-neutral-700 rounded-md text-neutral-900 dark:text-neutral-100 font-mono"
                   />
+                  <p className="mt-1 text-[11px] text-neutral-500">
+                    仅控制未收录冷门域名先探查大陆 DNS 的最大等待时间（建议 600~1000 ms）；切勿设过大（如 4000 ms），否则冷门外网域会先在大陆组卡满该时长才切入境外组。
+                  </p>
                 </div>
               </div>
             </div>
